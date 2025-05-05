@@ -81,7 +81,7 @@ public class URLUtil {
             return parseUrl(bytes);
         } catch (Exception e) {
             logger.error("connect 报文解析错误 ==========={}", new String(bytes));
-            throw new RuntimeException(e);
+            throw e;
         }
     }
 }
