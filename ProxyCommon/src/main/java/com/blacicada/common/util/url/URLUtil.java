@@ -21,22 +21,21 @@ public class URLUtil {
         }
         for (int i = 0; i < bytes.length; i++) {
             if (us == 0) {
-                if (https && bytes[i] == 58 && bytes[i + 1] != 32 && bytes[i + 1] != 47) {
+                if (https && ps == 0 && bytes[i] == 58 && bytes[i + 1] != 32 && bytes[i + 1] != 47) {
                     ps = i + 1;
                 }
-                if (https && ps != 0 && bytes[i] == 32 && pe == 0) {
+                if (https && pe == 0 && ps != 0 && bytes[i] == 32) {
                     pe = i;
                 }
                 //上面两个if 从 CONNECT www.baidu.com:443 HTTP/1.1 中获取端口
 
-                if (
-                        bytes[i] == 10    //判断是不是换行符'/n' 换行符 由两个字符组成 13 10
-                                && (bytes[i + 1] == 72 || bytes[i + 1] == 104)//判断是不是大写的H或小写的h
-                                && bytes[i + 2] == 111//判断是不是小写的o
-                                && bytes[i + 3] == 115//判断是不是小写的s
-                                && bytes[i + 4] == 116//判断是不是小写的t
-                                && bytes[i + 5] == 58//判断是不是:
-                                && bytes[i + 6] == 32//判断是不是空格' '
+                if (bytes[i] == 10    //判断是不是换行符'/n' 换行符 由两个字符组成 13 10
+                        && (bytes[i + 1] == 72 || bytes[i + 1] == 104)//判断是不是大写的H或小写的h
+                        && bytes[i + 2] == 111//判断是不是小写的o
+                        && bytes[i + 3] == 115//判断是不是小写的s
+                        && bytes[i + 4] == 116//判断是不是小写的t
+                        && bytes[i + 5] == 58//判断是不是:
+                        && bytes[i + 6] == 32//判断是不是空格' '
                 ) {
                     us = i + 7;
                     i += 6;
