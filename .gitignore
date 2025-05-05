@@ -1,0 +1,10 @@
+### Example user template template
+### Example user template
+
+# IntelliJ project files
+.idea
+target
+log
+logc
+*.iml
+dependency-reduced-pom.xml

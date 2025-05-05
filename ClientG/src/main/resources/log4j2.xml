@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration>
+    <Properties>
+        <Property name="logDir">logc</Property>
+    </Properties>
+    <Appenders>
+        <Console name="abc" target="SYSTEM_OUT">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{0} - %msg%n"/>
+        </Console>
+        <RollingFile name="infoLog" fileName="${logDir}/log.txt"
+                     filePattern="${logDir}/info/$${date:yyyy-MM}/info-%d{yyyy-MM-dd}-%i.log">
+            <!--ThresholdFilter :日志输出过滤-->
+            <!--level="info" :日志级别,onMatch="ACCEPT" :级别在info之上则接受,onMismatch="DENY" :级别在info之下则拒绝-->
+            <ThresholdFilter level="INFO" onMatch="ACCEPT" onMismatch="DENY"/>
+            <PatternLayout pattern="[%d{HH:mm:ss:SSS}] [%p] - %l - %m%n"/>
+            <!-- Policies :日志滚动策略-->
+            <!--
+
+            -->
+            <Policies>
+                <!-- TimeBasedTriggeringPolicy :时间滚动策略,默认0点小时产生新的文件,interval="6" : 自定义文件滚动时间间隔,每隔6小时产生新文件, modulate="true" : 产生文件是否以0点偏移时间,即6点,12点,18点,0点-->
+                <TimeBasedTriggeringPolicy interval="6" modulate="true"/>
+                <!-- SizeBasedTriggeringPolicy :文件大小滚动策略-->
+                <SizeBasedTriggeringPolicy size="100 MB"/>
+            </Policies>
+            <!-- DefaultRolloverStrategy属性如不设置，则默认为最多同一文件夹下7个文件，这里设置了20 -->
+            <DefaultRolloverStrategy max="20"/>
+        </RollingFile>
+
+    </Appenders>
+    <Loggers>
+        <root level="all">
+            <appender-ref ref="infoLog"/>
+        </root>
+<!--        <root level="info">-->
+<!--            <appender-ref ref="abc"/>-->
+<!--        </root>-->
+    </Loggers>
+</Configuration>
