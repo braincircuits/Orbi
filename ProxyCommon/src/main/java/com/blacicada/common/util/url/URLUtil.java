@@ -73,6 +73,17 @@ public class URLUtil {
         return new Host(url, Integer.parseInt(port), https);
     }
 
+    public static void main(String[] args) {
+        String a = """
+CONNECT www.google-analytics.com:443 HTTP/1.1
+user-agent: Dart/3.7 (dart:io)
+accept-encoding: gzip
+host: www.google-analytics.com:443
+                """;
+        Host host = parseUrl(a.getBytes());
+        System.out.println(host);
+    }
+
     public static Host parseUrl(ByteBuf byteBuf) {
         byte[] bytes = new byte[byteBuf.readableBytes()];
         byteBuf.getBytes(0, bytes);

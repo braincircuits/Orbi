@@ -37,7 +37,6 @@ public class ProxyClientRequestHandler extends ChannelInboundHandlerAdapter
                 Channel channel = ctx.channel();
                 NettyCommon.closeChannel(channel);
                 logger.fatal("无效连接"+channel.remoteAddress());
-                System.out.println("无效连接"+channel.remoteAddress());
             }
         }, 5, TimeUnit.SECONDS);
     }

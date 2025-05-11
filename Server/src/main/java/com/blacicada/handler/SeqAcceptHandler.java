@@ -16,18 +16,6 @@ import java.util.concurrent.TimeUnit;
 public class SeqAcceptHandler extends ChannelInboundHandlerAdapter
 {
     private final static Logger logger = LogManager.getLogger(SeqAcceptHandler.class);
-    @Override
-    public void channelActive(ChannelHandlerContext ctx) throws Exception
-    {
-        System.out.println(Thread.currentThread().getName()+"  11");
-        // 防止无效连接不释放
-        // 连接建立后若为校验密码则断开连接
-        ScheduledFuture<?> schedule = ctx.channel().eventLoop().schedule(() -> {
-            System.out.println("无效连接" + ctx.isRemoved());
-            ctx.channel().close();
-        }, 5, TimeUnit.SECONDS);
-
-    }
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception
@@ -47,7 +35,6 @@ public class SeqAcceptHandler extends ChannelInboundHandlerAdapter
         pipeline.remove(this.getClass());
         if (byteBuf.readableBytes() == 0)
         {
-            logger.fatal("提示=======");
             ReferenceCountUtil.release(msg);
             return;
         }
