@@ -11,8 +11,6 @@
         <module>Server</module>
         <module>ClientG</module>
         <module>ProxyCommon</module>
-        <module>ClientOne</module>
-        <module>ServerOne</module>
     </modules>
 
     <properties>
