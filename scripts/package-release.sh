@@ -33,7 +33,7 @@ secret=$(openssl rand -hex 32)
 cat > "$release_dir/server/config/server.properties" <<CONFIG
 bind=0.0.0.0
 port=4433
-password=$secret
+usersFile=users.properties
 tls.cert=../certs/server.crt
 tls.key=../certs/server.key
 connectTimeoutMillis=10000
@@ -45,6 +45,7 @@ bind=127.0.0.1
 port=8080
 server.host=127.0.0.1
 server.port=4433
+username=client1
 password=$secret
 tls.ca=../certs/server.crt
 tls.serverName=localhost
@@ -53,6 +54,7 @@ connectTimeoutMillis=10000
 idleTimeoutSeconds=300
 maxStreams=256
 CONFIG
+printf '# 每行一个账号及其独立密码。修改后重启服务端。\nclient1=%s\n' "$secret" > "$release_dir/server/config/users.properties"
 printf '# 每行填写一个直连域名、IP 或 CIDR 网段；为空时全部走代理。\n' > "$release_dir/client/config/pac.txt"
 cp "$project_dir/scripts/release/README.md" "$release_dir/README.md"
 printf '\n未压缩的发布目录已生成：%s\n' "$release_dir"

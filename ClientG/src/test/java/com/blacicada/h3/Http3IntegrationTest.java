@@ -225,6 +225,76 @@ class Http3IntegrationTest {
         }
     }
 
+    private ProxyConfig accountClientConfig(String username, String password) throws Exception {
+        var values = new Properties();
+        values.setProperty("username", username); values.setProperty("password", password);
+        values.setProperty("port", "0"); values.setProperty("server.host", "127.0.0.1");
+        values.setProperty("server.port", Integer.toString(server.address().getPort()));
+        values.setProperty("tls.ca", resource("localhost.crt")); values.setProperty("tls.serverName", "localhost");
+        values.setProperty("connectTimeoutMillis", "3000");
+        return new ProxyConfig(values, directory);
+    }
+
+    @Test void independentAccountsAuthenticateAndIsolateClients() throws Exception {
+        client.close(); server.close();
+        Files.writeString(directory.resolve("users.properties"), "alice=alice-secret\nbob=bob-secret\n");
+        var options = new Properties();
+        options.setProperty("usersFile", "users.properties");
+        options.setProperty("bind", "127.0.0.1"); options.setProperty("port", "0");
+        options.setProperty("tls.cert", resource("localhost.crt"));
+        options.setProperty("tls.key", resource("localhost.key"));
+        server = new Http3ProxyServer(new ProxyConfig(options, directory)).start();
+        try (var alice = new LocalProxyServer(accountClientConfig("alice", "alice-secret")).start();
+             var bob = new LocalProxyServer(accountClientConfig("bob", "bob-secret")).start();
+             var bad = new LocalProxyServer(accountClientConfig("alice", "bob-secret")).start();
+             Socket first = tunnel(alice, echo.port()); Socket second = tunnel(bob, echo.port());
+             Socket rejected = socket(bad)) {
+            send(rejected, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            assertTrue(headers(rejected.getInputStream()).startsWith("HTTP/1.1 502"));
+            assertEquals(2, echo.accepted.get(), "认证失败的客户端不能连接目标服务");
+            send(first, "a"); assertEquals('a', first.getInputStream().read());
+            send(second, "b"); assertEquals('b', second.getInputStream().read());
+            alice.close();
+            send(second, "c"); assertEquals('c', second.getInputStream().read());
+        }
+    }
+
+    @Test void multipleClientsHaveIndependentConnectionsAndStreamLimits() throws Exception {
+        useSinglePeerStream();
+        try (var second = new LocalProxyServer(clientConfig("integration-test-secret", "localhost", false, 1)).start();
+             var third = new LocalProxyServer(clientConfig("integration-test-secret", "localhost", false, 1)).start();
+             Socket firstTunnel = tunnel(client, echo.port());
+             Socket secondTunnel = tunnel(second, echo.port());
+             Socket thirdTunnel = tunnel(third, echo.port());
+             var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            // 每个客户端各占一个流，验证服务端上限按 QUIC 连接分别计算。
+            var sockets = List.of(firstTunnel, secondTunnel, thirdTunnel);
+            var tasks = new ArrayList<Future<?>>();
+            for (int i = 0; i < sockets.size(); i++) {
+                Socket socket = sockets.get(i);
+                String payload = "client-" + i;
+                tasks.add(executor.submit(() -> {
+                    for (int n = 0; n < 20; n++) {
+                        send(socket, payload);
+                        assertEquals(payload, new String(socket.getInputStream().readNBytes(payload.length()),
+                                StandardCharsets.US_ASCII), "不同客户端的数据不能串流");
+                    }
+                    return null;
+                }));
+            }
+            for (Future<?> task : tasks) task.get(10, TimeUnit.SECONDS);
+            assertEquals(3, server.acceptedConnections());
+            assertEquals(1, client.connectionCount());
+            assertEquals(1, second.connectionCount());
+            assertEquals(1, third.connectionCount());
+            second.close();
+            for (Socket socket : List.of(firstTunnel, thirdTunnel)) {
+                send(socket, "ok");
+                assertEquals("ok", new String(socket.getInputStream().readNBytes(2), StandardCharsets.US_ASCII));
+            }
+        }
+    }
+
     private void useSinglePeerStream() throws Exception {
         client.close(); server.close();
         var options = new Properties();

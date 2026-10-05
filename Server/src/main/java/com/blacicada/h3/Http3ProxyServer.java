@@ -27,9 +27,9 @@ public final class Http3ProxyServer implements AutoCloseable {
     private Channel listener;
     private final ChannelHandler codec;
 
-    public Http3ProxyServer(ProxyConfig config) {
+    public Http3ProxyServer(ProxyConfig config) throws java.io.IOException {
         this.config = config;
-        String authorization = Transport.authorization(config.required("password"));
+        ProxyCredentials credentials = ProxyCredentials.loadServer(config);
         Quic.ensureAvailability();
         var ssl = QuicSslContextBuilder.forServer(config.path("tls.key", "certs/server.key").toFile(), null,
                         config.path("tls.cert", "certs/server.crt").toFile())
@@ -65,7 +65,7 @@ public final class Http3ProxyServer implements AutoCloseable {
                                     @Override protected void initChannel(QuicStreamChannel stream) {
                                         stream.config().setAllowHalfClosure(true);
                                         stream.config().setWriteBufferWaterMark(Transport.WATERMARK);
-                                        stream.pipeline().addLast(new ServerConnectHandler(config, authorization, resolver));
+                                        stream.pipeline().addLast(new ServerConnectHandler(config, credentials, resolver));
                                     }
                                 }, null, null, settings, true));
                     }

@@ -47,7 +47,7 @@ release/
 ├── server/
 │   ├── server.jar
 │   ├── start.sh / start.cmd / background.sh
-│   ├── config/server.properties
+│   ├── config/server.properties、users.properties
 │   └── certs/server.crt、server.key
 └── client/
     ├── client.jar
@@ -75,10 +75,10 @@ release/
 1. 将整个 `release/server/` 复制到服务端机器，将整个 `release/client/` 复制到客户端机器，保留各自内部目录结构。
 2. 编辑客户端 `config/client.properties`，把 `server.host` 改为服务端可访问的 IP 或域名。`server.port` 必须与服务端 `port` 一致。
 3. 在服务端防火墙、安全组及必要的路由器端口转发中放行对应 **UDP** 端口，默认 `4433`。
-4. 保持两端 `password` 一致。使用脚本生成的证书时，保留 `tls.serverName=localhost` 和 `tls.ca=../certs/server.crt`；连接地址与证书验证名称是两个独立配置。
+4. 保持客户端 `username`、`password` 与服务端账号文件对应。使用脚本生成的证书时，保留 `tls.serverName=localhost` 和 `tls.ca=../certs/server.crt`；连接地址与证书验证名称是两个独立配置。
 5. 先启动服务端，再启动客户端，然后将浏览器/应用的 HTTP 和 HTTPS 代理地址均设为 `127.0.0.1:8080`。本地代理入口使用 HTTP，HTTPS 网站通过 CONNECT 隧道访问。
 
-每次打包生成新的随机共享密码及有效期 365 天的自签名证书。客户端只需要公开证书，私钥保留在服务端。更换证书时需同步客户端信任证书及 `tls.serverName`，名称必须匹配新证书的 SAN；证书到期需要手动更新。客户端目录含访问凭证，只分发给获准使用代理的用户。
+每次打包生成默认账号 `client1` 的随机密码及有效期 365 天的自签名证书。客户端只需要公开证书，私钥保留在服务端。更换证书时需同步客户端信任证书及 `tls.serverName`，名称必须匹配新证书的 SAN；证书到期需要手动更新。客户端目录含访问凭证，只分发给获准使用代理的用户。
 
 发布目录已被 Git 忽略。脚本拒绝覆盖已有目录；再次生成可使用 `sh scripts/package-release.sh /tmp/network-release-next`。升级现有部署时，停止两端进程，将新构建的两个 JAR 分别替换为 `server/server.jar` 和 `client/client.jar`，保留原有配置、PAC 和证书后重启。不要混用不同次打包生成的密码或证书。
 
@@ -157,7 +157,8 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 | 配置 | 含义 |
 | --- | --- |
 | `bind` / `port` | HTTP/3 的 UDP 监听地址与端口；默认 `0.0.0.0:4433` |
-| `password` | 必填，与客户端一致的随机长密码 |
+| `password` | 共享密码模式下必填；启用 `usersFile` 后不再使用 |
+| `usersFile` | 可选的独立账号文件路径；配置后仅接受账号认证 |
 | `tls.cert` | PEM 证书链，默认 `certs/server.crt` |
 | `tls.key` | PEM 私钥，默认 `certs/server.key` |
 
@@ -167,7 +168,8 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 | --- | --- |
 | `bind` / `port` | 本地 HTTP 代理入口；默认 `127.0.0.1:8080` |
 | `server.host` / `server.port` | 代理服务端地址与 UDP 端口 |
-| `password` | 必填，每个 CONNECT 请求都进行认证 |
+| `username` | 独立账号模式下必填；省略时使用旧的共享密码模式 |
+| `password` | 必填，账号密码或旧模式的共享密码；每个 CONNECT 请求均认证 |
 | `tls.serverName` | TLS 验证的服务端名称，默认等于 `server.host`，必须匹配证书 SAN |
 | `tls.ca` | 可选的 PEM 信任证书；省略则使用系统/JDK 默认信任链 |
 | `routesFile` | 直连域名/IP/CIDR 规则列表，默认 `pac.txt`；不存在或为空则全部走远程代理 |
@@ -180,6 +182,40 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 - `maxStreams`：流并发上限，默认 256。客户端计入正在等待建立的流，超过本地上限的请求直接失败，不影响已有隧道。服务端 QUIC 流额度暂时耗尽时，客户端等待 MAX_STREAMS 更新后继续创建流，等待最长为 `connectTimeoutMillis`，不会为此断开共享连接。
 
 远程部署需要开放服务端 UDP 端口。自签名部署将服务器证书配置为客户端 `tls.ca`；公开证书使用正常的信任链。程序不会跳过证书或主机名验证，也不启用 TLS 0-RTT。
+
+## 多客户端与独立账号
+
+一个服务端可以同时接受多个客户端；每个客户端进程各自建立一条 QUIC 连接并复用自己的代理流。`maxStreams` 按连接计算，不是全服务端的总额度。同一账号可在多台机器上使用，当前不限制每账号设备数量。
+
+服务端 `config/server.properties` 启用账号文件：
+
+```properties
+usersFile=users.properties
+```
+
+在同目录创建 UTF-8 编码的 `users.properties`，每个账号一个独立密码：
+
+```properties
+client1=替换为客户端1的随机长密码
+client2=替换为客户端2的随机长密码
+```
+
+账号名为 1 至 64 位字母、数字、下划线、点或连字符，且以字母或数字开头。文件采用 Java properties 格式，反斜杠需按该格式转义；推荐用 `openssl rand -hex 32` 生成密码。空文件、空密码、重复或非法账号会阻止服务端启动。
+
+客户端 1 的 `config/client.properties`：
+
+```properties
+username=client1
+password=替换为客户端1的随机长密码
+```
+
+客户端 2 填写 `username=client2` 及对应密码。两者连接相同的 `server.host` 和 `server.port`，使用同一份服务端公开证书。不要分发服务端私钥或完整账号文件。不同机器都可使用本地端口 `8080`；同机运行多个客户端时，每个实例使用独立目录及不同本地 `port`。
+
+每个 CONNECT 流都会验证账号和密码，认证信息由 TLS 加密传输，不记录到日志。启用 `usersFile` 后，即使仍配置服务端 `password`，也不再接受旧的共享密码认证；未配置 `usersFile` 时保持旧模式，客户端省略 `username`，两端 `password` 相同即可。
+
+新增、删除账号或修改密码后重启服务端；客户端修改账号配置后重启自身。重启服务端会断开所有现有客户端连接，后续请求按需重连。当前不提供账号热更新、每账号带宽限制或每账号连接总数限制。
+
+新生成的发布目录默认启用账号模式，创建随机密码的 `client1` 并写入配套客户端配置。既有发布目录的凭证不会因更新 JAR 自动切换认证模式。
 
 ## PAC 直连规则（域名、IP 与网段）
 
@@ -264,7 +300,7 @@ fc00::/7
 | 启动提示端口占用 | 停止旧进程或修改 `port`；服务端修改端口后同步客户端 `server.port`，客户端修改端口后同步浏览器代理设置 |
 | 客户端启动成功，但无法访问网站 | 共享 QUIC 连接按需建立，启动成功不代表已连接服务端；检查 `server.host`、端口以及 UDP 防火墙规则 |
 | TLS 握手或证书校验失败 | 检查证书有效期、`tls.ca` 是否信任当前服务端证书，以及 `tls.serverName` 是否匹配证书 SAN |
-| 返回 502 | 查看客户端和服务端终端日志；检查共享密码、目标 DNS 和目标 TCP 可达性。直连目标由客户端访问，代理目标由服务端访问 |
+| 返回 502 | 查看客户端和服务端终端日志；检查账号和密码、目标 DNS 和目标 TCP 可达性。直连目标由客户端访问，代理目标由服务端访问 |
 | 返回 504 | 初始请求建立超时；检查网络和服务端可达性，再按需调整 `connectTimeoutMillis` |
 | PAC 修改没有生效 | 确认 `routesFile` 实际指向的文件，重启客户端，再建立新连接测试 |
 | hello world 测试未经过服务端 | 清空测试配置的直连规则；回环地址或网段命中时会直接连接本机接收端 |

@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit;
 
 final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
     private final ProxyConfig config;
-    private final String authorization;
+    private final ProxyCredentials credentials;
     private final DnsAddressResolverGroup resolver;
     private final ArrayDeque<ByteBuf> pending = new ArrayDeque<>();
     private int pendingBytes;
@@ -24,8 +24,8 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
     private Channel target;
     private ScheduledFuture<?> timeout;
 
-    ServerConnectHandler(ProxyConfig config, String authorization, DnsAddressResolverGroup resolver) {
-        this.config = config; this.authorization = authorization; this.resolver = resolver;
+    ServerConnectHandler(ProxyConfig config, ProxyCredentials credentials, DnsAddressResolverGroup resolver) {
+        this.config = config; this.credentials = credentials; this.resolver = resolver;
     }
 
     @Override public void handlerAdded(ChannelHandlerContext ctx) {
@@ -36,7 +36,7 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
         if (finished) { ReferenceCountUtil.release(msg); return; }
         if (msg instanceof Http3HeadersFrame frame && !receivedHeaders) {
             receivedHeaders = true;
-            if (!Transport.authorized(authorization, frame.headers().get("proxy-authorization"))) {
+            if (credentials.authenticate(frame.headers().get("proxy-authorization")) == null) {
                 fail(ctx, "407"); return;
             }
             if (!"CONNECT".contentEquals(frame.headers().method()) || frame.headers().scheme() != null
@@ -84,7 +84,7 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
         releasePending();
         if (target != null) target.close();
         var response = new DefaultHttp3HeadersFrame(); response.headers().status(status);
-        if (status.equals("407")) response.headers().set("proxy-authenticate", "Bearer");
+        if (status.equals("407")) response.headers().set("proxy-authenticate", credentials.challenge());
         ctx.writeAndFlush(response).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
         // 避免未认证的对端无限期占用半关闭的流。
         ctx.executor().schedule(() -> ctx.close(), 1, TimeUnit.SECONDS);

@@ -7,7 +7,7 @@ release/
 ├── server/
 │   ├── server.jar
 │   ├── start.sh / start.cmd / background.sh
-│   ├── config/server.properties
+│   ├── config/server.properties、users.properties
 │   └── certs/server.crt、server.key
 └── client/
     ├── client.jar
@@ -68,14 +68,48 @@ macOS 使用目录锁防止管理命令并发执行；若命令被强制终止�
 
 - 默认服务端监听 UDP `4433`，客户端提供 `127.0.0.1:8080` HTTP 代理。
 - 默认客户端连接本机服务端，可以直接进行本机测试。远程部署时，在 `client/config/client.properties` 中将 `server.host` 改为服务端 IP 或域名，并开放服务端 UDP `4433`。
-- 每次打包生成一组新的随机共享密码和有效期 365 天的自签名证书。客户端仅包含公开证书，服务端私钥仅位于 `server/certs/server.key`。
+- 每次打包生成默认账号 `client1` 的随机密码和有效期 365 天的自签名证书。客户端仅包含公开证书，服务端私钥仅位于 `server/certs/server.key`。
 - 默认 `tls.serverName=localhost` 与此次生成证书的身份匹配，即使修改连接地址，也应保留该值；若换用域名证书，需同步修改 `tls.serverName` 和客户端信任证书。证书和主机名校验始终启用。
-- 更改密码时，需要同时修改两端的 `password`。
+- 更改密码时，修改服务端 `config/users.properties` 中该账号的密码，并同步对应客户端的 `password`。
 - `client/config/pac.txt` 默认无直连规则，全部经过 HTTP/3 服务端。每行可填写直连域名、单个 IP 或 CIDR 网段，例如 `192.168.0.0/16`、`fd00::/8`，修改后重启客户端。域名未命中规则时，若存在 IP/CIDR 规则，会异步解析并直连命中的 IP；无匹配或本地解析失败则走远程代理。
 - 配置中的相对文件路径以配置文件所在目录为基准。
 - 浏览器使用 HTTP/HTTPS 代理 `127.0.0.1:8080`。两端通信使用 HTTP/3，目标连接为 TCP。
 
 目录内包含实际运行凭证，请仅将客户端目录分发给获准使用代理的用户。
+
+## 多客户端与独立账号
+
+一个服务端可以同时接受多个客户端；每个客户端进程各自建立一条 QUIC 连接并复用自己的代理流。`maxStreams` 按连接计算，不是全服务端的总额度。同一账号可在多台机器上使用，当前不限制每账号设备数量。
+
+服务端 `config/server.properties` 启用账号文件：
+
+```properties
+usersFile=users.properties
+```
+
+在同目录创建 UTF-8 编码的 `users.properties`，每个账号一个独立密码：
+
+```properties
+client1=替换为客户端1的随机长密码
+client2=替换为客户端2的随机长密码
+```
+
+账号名为 1 至 64 位字母、数字、下划线、点或连字符，且以字母或数字开头。文件采用 Java properties 格式，反斜杠需按该格式转义；推荐用 `openssl rand -hex 32` 生成密码。空文件、空密码、重复或非法账号会阻止服务端启动。
+
+客户端 1 的 `config/client.properties`：
+
+```properties
+username=client1
+password=替换为客户端1的随机长密码
+```
+
+客户端 2 填写 `username=client2` 及对应密码。两者连接相同的 `server.host` 和 `server.port`，使用同一份服务端公开证书。不要分发服务端私钥或完整账号文件。不同机器都可使用本地端口 `8080`；同机运行多个客户端时，每个实例使用独立目录及不同本地 `port`。
+
+每个 CONNECT 流都会验证账号和密码，认证信息由 TLS 加密传输，不记录到日志。启用 `usersFile` 后，即使仍配置服务端 `password`，也不再接受旧的共享密码认证；未配置 `usersFile` 时保持旧模式，客户端省略 `username`，两端 `password` 相同即可。
+
+新增、删除账号或修改密码后重启服务端；客户端修改账号配置后重启自身。重启服务端会断开所有现有客户端连接，后续请求按需重连。当前不提供账号热更新、每账号带宽限制或每账号连接总数限制。
+
+新生成的发布目录默认启用账号模式，创建随机密码的 `client1` 并写入配套客户端配置。既有发布目录的凭证不会因更新 JAR 自动切换认证模式。
 
 ## 配置直连网段
 
@@ -127,7 +161,7 @@ curl --noproxy "" --proxy http://127.0.0.1:8080 https://example.com/
 | 找不到证书或配置 | 保留目录结构，配置内相对路径以 properties 文件目录为基准 |
 | 客户端启动后请求失败 | 连接服务端按需发生；检查 `server.host`、`server.port`、服务端进程和 UDP 端口放行情况 |
 | TLS 校验失败 | 检查证书有效期、客户端 `tls.ca` 与 `tls.serverName` 是否对应当前服务端证书 |
-| 502 | 查看两端终端日志，检查密码一致性、目标 DNS 和目标 TCP 可达性 |
+| 502 | 查看两端终端日志，检查账号和密码、目标 DNS 和目标 TCP 可达性 |
 | 504 | 请求建立超时，先检查网络，再按需调整 `connectTimeoutMillis` |
 | 网段规则不生效 | 检查实际 `routesFile` 路径，重启客户端并建立新连接 |
 

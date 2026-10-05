@@ -42,7 +42,7 @@ public final class Http3Session implements AutoCloseable {
 
     public Http3Session(EventLoop loop, ProxyConfig config, DnsAddressResolverGroup resolver) throws Exception {
         this.loop = loop; this.config = config; this.resolver = resolver;
-        authorization = Transport.authorization(config.required("password"));
+        authorization = ProxyCredentials.clientAuthorization(config);
         server = serverAddress(config);
         Quic.ensureAvailability();
         var sslBuilder = QuicSslContextBuilder.forClient().earlyData(false)
