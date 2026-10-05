@@ -1,29 +1,17 @@
 package com.blacicada;
 
-import com.blacicada.common.init.ServerInit;
-import com.blacicada.handler.ProxyServerInitializer;
-import io.netty.bootstrap.ServerBootstrap;
-import io.netty.channel.ChannelOption;
-import io.netty.channel.EventLoopGroup;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-
-import static com.blacicada.common.netty.NettyCommon.getGroup;
-import static com.blacicada.common.netty.NettyCommon.getServerSocketChannel;
+import com.blacicada.common.h3.ProxyConfig;
+import com.blacicada.h3.Http3ProxyServer;
+import java.nio.file.Path;
 
 public class NettyServer {
-    private final static Logger logger= LogManager.getLogger(NettyServer.class);
-    public static void main(String[] args) throws InterruptedException {
-        EventLoopGroup bossGroup = getGroup(2);
-        ServerBootstrap bootstrap = new ServerBootstrap();
-        bootstrap.group(bossGroup)
-                .channel(getServerSocketChannel())
-                .option(ChannelOption.SO_BACKLOG, 128)
-                .childHandler(new ProxyServerInitializer())
-                .childOption(ChannelOption.SO_KEEPALIVE,true)
-        ;
-        bootstrap.bind(ServerInit.port).addListener(future -> {
-            logger.info("启动成功:"+future.isSuccess()+"=================");
-        }).sync();
+    public static void main(String[] args) throws Exception {
+        var config = ProxyConfig.load(Path.of(args.length == 0 ? "server.properties" : args[0]));
+        try (var server = new Http3ProxyServer(config).start()) {
+            var shutdown = new Thread(server::close, "proxy-server-shutdown");
+            Runtime.getRuntime().addShutdownHook(shutdown);
+            System.out.println("HTTP/3 proxy listening on UDP " + server.address());
+            server.await();
+        }
     }
 }

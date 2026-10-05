@@ -14,50 +14,27 @@
     </modules>
 
     <properties>
-        <netty>4.1.91.Final</netty>
-        <maven.compiler.source>24</maven.compiler.source>
-        <maven.compiler.target>24</maven.compiler.target>
-        <commons-io>2.11.0</commons-io>
-        <commons-lang3>3.12.0</commons-lang3>
-        <hibernate>1.1.9.Final</hibernate>
-        <vertx-mysql-client>4.3.4</vertx-mysql-client>
-        <lomback>1.18.30</lomback>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <netty>4.2.18.Final</netty>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
         <log4j>2.24.2</log4j>
         <disruptor>3.4.4</disruptor>
         <junit>5.8.2</junit>
     </properties>
     <dependencyManagement>
         <dependencies>
-
             <dependency>
-                <groupId>commons-io</groupId>
-                <artifactId>commons-io</artifactId>
-                <version>${commons-io}</version>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-bom</artifactId>
+                <version>${netty}</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter</artifactId>
                 <version>${junit}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-lang3</artifactId>
-                <version>${commons-lang3}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.hibernate.reactive</groupId>
-                <artifactId>hibernate-reactive-core</artifactId>
-                <version>${hibernate}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.vertx</groupId>
-                <artifactId>vertx-mysql-client</artifactId>
-                <version>${vertx-mysql-client}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.projectlombok</groupId>
-                <artifactId>lombok</artifactId>
-                <version>${lomback}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.logging.log4j</groupId>
@@ -69,47 +46,19 @@
                 <artifactId>disruptor</artifactId>
                 <version>${disruptor}</version>
             </dependency>
-            <dependency>
-                <groupId>io.netty</groupId>
-                <artifactId>netty-common</artifactId>
-                <version>${netty}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.netty</groupId>
-                <artifactId>netty-handler</artifactId>
-                <version>${netty}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.netty</groupId>
-                <artifactId>netty-transport-native-epoll</artifactId>
-                <version>${netty}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.netty</groupId>
-                <artifactId>netty-transport-native-kqueue</artifactId>
-                <version>${netty}</version>
-            </dependency>
         </dependencies>
     </dependencyManagement>
-    <dependencies>
-        <dependency>
-            <groupId>io.netty</groupId>
-            <artifactId>netty-handler</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.netty</groupId>
-            <artifactId>netty-transport-native-epoll</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.netty</groupId>
-            <artifactId>netty-transport-native-kqueue</artifactId>
-        </dependency>
-    </dependencies>
     <build>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.16.0</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+                <configuration><argLine>--enable-native-access=ALL-UNNAMED -Dio.netty.leakDetection.level=paranoid</argLine></configuration>
             </plugin>
         </plugins>
     </build>

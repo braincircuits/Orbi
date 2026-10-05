@@ -8,3 +8,7 @@ log
 logc
 *.iml
 dependency-reduced-pom.xml
+
+# Local HTTP/3 credentials and certificates
+.local-h3/
+certs/

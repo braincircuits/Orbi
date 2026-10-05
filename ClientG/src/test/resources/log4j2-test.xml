@@ -1,0 +1,1 @@
+<Configuration><Appenders><Console name="console"><PatternLayout pattern="%level %logger{1}: %msg%n"/></Console></Appenders><Loggers><Root level="warn"><AppenderRef ref="console"/></Root></Loggers></Configuration>
