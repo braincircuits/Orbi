@@ -10,7 +10,7 @@ public class NettyServer {
         try (var server = new Http3ProxyServer(config).start()) {
             var shutdown = new Thread(server::close, "proxy-server-shutdown");
             Runtime.getRuntime().addShutdownHook(shutdown);
-            System.out.println("HTTP/3 proxy listening on UDP " + server.address());
+            System.out.println("HTTP/3 代理服务端已监听 UDP " + server.address());
             server.await();
         }
     }

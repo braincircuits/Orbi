@@ -86,7 +86,7 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
         var response = new DefaultHttp3HeadersFrame(); response.headers().status(status);
         if (status.equals("407")) response.headers().set("proxy-authenticate", "Bearer");
         ctx.writeAndFlush(response).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
-        // Do not allow an unauthenticated peer to keep a half-open stream indefinitely.
+        // 避免未认证的对端无限期占用半关闭的流。
         ctx.executor().schedule(() -> ctx.close(), 1, TimeUnit.SECONDS);
     }
 

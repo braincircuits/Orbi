@@ -51,7 +51,7 @@ class Http3IntegrationTest {
         options.setProperty("connectTimeoutMillis", "3000");
         options.setProperty("maxStreams", Integer.toString(streams));
         if (direct) {
-            Path routes = directory.resolve("direct.txt"); Files.writeString(routes, "# comment\n\n127.0.0.1\n");
+            Path routes = directory.resolve("direct.txt"); Files.writeString(routes, "# 注释\n\n127.0.0.1\n");
             options.setProperty("routesFile", routes.toString());
         }
         return new ProxyConfig(options, directory);
@@ -82,7 +82,7 @@ class Http3IntegrationTest {
             out.write(b);
             state = b == ending[state] ? state + 1 : (b == '\r' ? 1 : 0);
             if (state == 4) return out.toString(StandardCharsets.US_ASCII);
-            if (out.size() > 32768) throw new IOException("Oversized header");
+            if (out.size() > 32768) throw new IOException("请求头超过大小限制");
         }
         throw new EOFException(out.toString(StandardCharsets.US_ASCII));
     }
@@ -181,6 +181,120 @@ class Http3IntegrationTest {
             assertEquals(0, direct.connectionCount());
         }
     }
+    @Test void cidrBypassesProxyForLiteralAndResolvedDomainEvenWhenServerIsDown() throws Exception {
+        Files.writeString(directory.resolve("pac.txt"), "127.0.0.0/8\n");
+        server.close();
+        try (var direct = new LocalProxyServer(clientConfig("wrong", "localhost", false, 8)).start()) {
+            for (String host : List.of("127.0.0.1", "localhost")) {
+                try (Socket s = socket(direct)) {
+                    send(s, "CONNECT " + host + ":" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+                    assertTrue(headers(s.getInputStream()).startsWith("HTTP/1.1 200"));
+                    send(s, "cidr");
+                    assertEquals("cidr", new String(s.getInputStream().readNBytes(4), StandardCharsets.US_ASCII));
+                }
+            }
+            assertEquals(0, direct.connectionCount());
+            assertEquals(0, server.acceptedConnections());
+        }
+    }
+
+    @Test void nonMatchingCidrStillUsesHttp3() throws Exception {
+        Files.writeString(directory.resolve("pac.txt"), "10.0.0.0/8\n");
+        try (var routed = new LocalProxyServer(clientConfig("integration-test-secret", "localhost", false, 8)).start();
+             Socket s = tunnel(routed, echo.port())) {
+            send(s, "proxy");
+            assertEquals("proxy", new String(s.getInputStream().readNBytes(5), StandardCharsets.US_ASCII));
+            assertEquals(1, routed.connectionCount());
+            assertEquals(1, server.acceptedConnections());
+        }
+    }
+
+    @Test void cidrAlsoAppliesToOrdinaryHttpRequests() throws Exception {
+        Files.writeString(directory.resolve("pac.txt"), "127.0.0.0/8\n");
+        try (Origin http = new Origin(s -> {
+            assertTrue(headers(s.getInputStream()).startsWith("GET /cidr HTTP/1.1"));
+            send(s, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        }); var direct = new LocalProxyServer(clientConfig("wrong", "localhost", false, 8)).start();
+             Socket s = socket(direct)) {
+            send(s, "GET http://localhost:" + http.port() + "/cidr HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            assertTrue(headers(s.getInputStream()).startsWith("HTTP/1.1 200"));
+            assertEquals("ok", new String(s.getInputStream().readNBytes(2)));
+            assertEquals(0, direct.connectionCount());
+            assertEquals(0, server.acceptedConnections());
+            http.check();
+        }
+    }
+
+    private void useSinglePeerStream() throws Exception {
+        client.close(); server.close();
+        var options = new Properties();
+        options.setProperty("password", "integration-test-secret");
+        options.setProperty("bind", "127.0.0.1"); options.setProperty("port", "0");
+        options.setProperty("tls.cert", resource("localhost.crt"));
+        options.setProperty("tls.key", resource("localhost.key"));
+        options.setProperty("maxStreams", "1");
+        server = new Http3ProxyServer(new ProxyConfig(options, directory)).start();
+        client = new LocalProxyServer(clientConfig("integration-test-secret", "localhost", false, 32)).start();
+    }
+
+    @Test void waitsForPeerStreamCreditWithoutReconnecting() throws Exception {
+        useSinglePeerStream();
+        try (Socket active = tunnel(client, echo.port());
+             Socket waiting = socket(client);
+             var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            send(waiting, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            var response = executor.submit(() -> headers(waiting.getInputStream()));
+            assertThrows(TimeoutException.class, () -> response.get(200, TimeUnit.MILLISECONDS),
+                    "对端额度耗尽时应等待，而不是立即返回 502");
+            send(active, "x"); assertEquals('x', active.getInputStream().read());
+            active.close();
+            assertTrue(response.get(5, TimeUnit.SECONDS).startsWith("HTTP/1.1 200"));
+            send(waiting, "y"); assertEquals('y', waiting.getInputStream().read());
+        }
+        assertEquals(1, client.connectionCount(), "额度恢复后应继续复用原连接");
+    }
+
+    @Test void peerCreditTimeoutPreservesActiveTunnel() throws Exception {
+        useSinglePeerStream();
+        try (Socket active = tunnel(client, echo.port()); Socket waiting = socket(client)) {
+            send(waiting, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            assertTrue(headers(waiting.getInputStream()).startsWith("HTTP/1.1 502"));
+            send(active, "x"); assertEquals('x', active.getInputStream().read());
+        }
+        try (Socket next = tunnel(client, echo.port())) {
+            send(next, "y"); assertEquals('y', next.getInputStream().read());
+        }
+        assertEquals(1, client.connectionCount(), "等待超时不得关闭共享连接或永久占用额度");
+    }
+
+    @Test void disconnectFailsRequestsWaitingForCredit() throws Exception {
+        useSinglePeerStream();
+        try (Socket active = tunnel(client, echo.port()); Socket waiting = socket(client);
+             var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            send(waiting, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            var response = executor.submit(() -> headers(waiting.getInputStream()));
+            assertThrows(TimeoutException.class, () -> response.get(200, TimeUnit.MILLISECONDS));
+            server.disconnectClients();
+            assertTrue(response.get(2, TimeUnit.SECONDS).startsWith("HTTP/1.1 502"));
+            assertEquals(-1, active.getInputStream().read());
+        }
+        try (Socket next = tunnel(client, echo.port())) {
+            send(next, "x"); assertEquals('x', next.getInputStream().read());
+        }
+        assertEquals(2, client.connectionCount(), "断开后新请求应能重新建立连接");
+    }
+
+    @Test void closedTunnelsReplenishStreamCredit() throws Exception {
+        // 请求总数超过服务端默认额度，且每次只保留少量活跃流。
+        for (int i = 0; i < 600; i++) {
+            try (Socket current = tunnel(client, echo.port())) {
+                send(current, "x");
+                assertEquals('x', current.getInputStream().read());
+            }
+        }
+        assertEquals(1, client.connectionCount(), "连续请求应复用同一条 QUIC 连接");
+    }
+
     @Test void reconnectsAfterConnectionLoss() throws Exception {
         try (Socket first = tunnel(client, echo.port())) {
             send(first, "a"); assertEquals('a', first.getInputStream().read());

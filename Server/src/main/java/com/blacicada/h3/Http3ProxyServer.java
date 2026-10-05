@@ -10,11 +10,14 @@ import io.netty.handler.codec.http3.*;
 import io.netty.handler.codec.quic.*;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.util.concurrent.GlobalEventExecutor;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import java.net.InetSocketAddress;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class Http3ProxyServer implements AutoCloseable {
+    private static final Logger LOGGER = LogManager.getLogger(Http3ProxyServer.class);
     private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
     private final ProxyConfig config;
     private final EventLoopGroup group;
@@ -36,6 +39,22 @@ public final class Http3ProxyServer implements AutoCloseable {
                 .tokenHandler(new RetryTokenHandler())
                 .handler(new ChannelInitializer<QuicChannel>() {
                     @Override protected void initChannel(QuicChannel ch) {
+                        ch.pipeline().addLast("connectionLog", new ChannelInboundHandlerAdapter() {
+                            private boolean connected;
+                            private java.net.SocketAddress peerAddress;
+                            @Override public void channelActive(ChannelHandlerContext ctx) {
+                                connected = true;
+                                peerAddress = ch.remoteSocketAddress();
+                                LOGGER.info("与客户端的 HTTP/3 连接成功：客户端={}，连接 ID={}",
+                                        peerAddress, ch.id().asShortText());
+                                ctx.fireChannelActive();
+                            }
+                            @Override public void channelInactive(ChannelHandlerContext ctx) {
+                                if (connected) LOGGER.info("与客户端的 HTTP/3 连接已断开：客户端={}，连接 ID={}",
+                                        peerAddress, ch.id().asShortText());
+                                ctx.fireChannelInactive();
+                            }
+                        });
                         connections.add(ch);
                         acceptedConnections.incrementAndGet();
                         var settings = new DefaultHttp3SettingsFrame();

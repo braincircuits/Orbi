@@ -65,7 +65,7 @@
 <!--            <appender-ref ref="warnLog"/>-->
 <!--            <appender-ref ref="infoLog"/>-->
 <!--        </root>-->
-        <root level="all">
+        <root level="info">
             <appender-ref ref="abc"/>
             <appender-ref ref="fatalLog"/>
             <appender-ref ref="errorLog"/>

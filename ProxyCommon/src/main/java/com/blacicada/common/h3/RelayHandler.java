@@ -5,7 +5,7 @@ import io.netty.channel.socket.ChannelInputShutdownEvent;
 import io.netty.channel.socket.DuplexChannel;
 import io.netty.util.ReferenceCountUtil;
 
-/** Both endpoints use manual reads. A slow destination naturally pauses its source. */
+/** 两端均手动读取；目标写入变慢时暂停源端读取。 */
 public class RelayHandler extends ChannelInboundHandlerAdapter {
     protected final Channel peer;
     private int pendingWrites;

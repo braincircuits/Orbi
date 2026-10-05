@@ -1,7 +1,7 @@
-### Example user template template
-### Example user template
+### 项目忽略规则
+### 用户忽略规则
 
-# IntelliJ project files
+# IntelliJ 项目文件
 .idea
 target
 log
@@ -9,6 +9,7 @@ logc
 *.iml
 dependency-reduced-pom.xml
 
-# Local HTTP/3 credentials and certificates
+# 本机 HTTP/3 凭证与证书
 .local-h3/
 certs/
+/release/

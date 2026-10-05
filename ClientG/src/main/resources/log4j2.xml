@@ -29,7 +29,7 @@
 
     </Appenders>
     <Loggers>
-        <root level="all">
+        <root level="info">
             <appender-ref ref="infoLog"/>
             <appender-ref ref="abc"/>
         </root>

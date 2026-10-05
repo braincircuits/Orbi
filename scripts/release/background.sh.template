@@ -1,0 +1,107 @@
+#!/bin/sh
+# 管理此发布目录中的 Linux 和 macOS 后台进程。
+set -eu
+umask 077
+app_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+action=${1:-start}
+case "${action}" in
+    start|stop|restart|status) ;;
+    *) echo "用法：$0 {start|stop|restart|status}" >&2; exit 2 ;;
+esac
+platform=$(uname -s)
+case "${platform}" in
+    Linux|Darwin) ;;
+    *) echo "此脚本仅支持 Linux 和 macOS。" >&2; exit 1 ;;
+esac
+mkdir -p "${app_dir}/run" "${app_dir}/logs"
+pid_file="${app_dir}/run/app.pid"
+log_file="${app_dir}/logs/app.log"
+# Linux 使用 flock；macOS 使用原子目录锁，无需安装额外工具。
+if [ "${platform}" = Linux ]; then
+    command -v flock >/dev/null 2>&1 || {
+        echo "缺少 flock，请安装 util-linux。" >&2; exit 1;
+    }
+    exec 9>"${app_dir}/run/control.lock"
+    flock -x 9
+else
+    lock_dir="${app_dir}/run/control.lock.d"
+    if ! mkdir "${lock_dir}" 2>/dev/null; then
+        echo "其他管理命令正在执行，或存在残留锁：${lock_dir}" >&2
+        echo "请稍后重试；确认没有管理命令运行后，才可用 rmdir 删除残留锁目录。" >&2
+        exit 1
+    fi
+    trap 'rmdir "${lock_dir}"' 0
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
+
+# 同时校验 PID 和启动时间，避免旧 PID 文件误指向其他进程；忽略僵尸进程。
+process_stamp() {
+    if [ "${platform}" = Linux ]; then
+        [ -r "/proc/$1/stat" ] || return 1
+        awk '{ sub(/^.*\) /, ""); if ($1 != "Z" && $1 != "X") print $20; }' "/proc/$1/stat" 2>/dev/null
+    else
+        LC_ALL=C ps -p "$1" -o stat= -o lstart= 2>/dev/null |
+            awk '$1 !~ /^[ZX]/ && NF >= 6 { print $2, $3, $4, $5, $6 }'
+    fi
+}
+is_running() {
+    [ -f "${pid_file}" ] || return 1
+    read -r pid stamp < "${pid_file}" || return 1
+    case "${pid}" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${pid}" -gt 1 ] || return 1
+    [ -n "${stamp}" ] || return 1
+    current_stamp=$(process_stamp "${pid}") || return 1
+    [ "${current_stamp}" = "${stamp}" ] && kill -0 "${pid}" 2>/dev/null
+}
+start_app() {
+    if is_running; then
+        echo "进程已在运行（PID ${pid}）。"; return 0
+    fi
+    [ -f "${app_dir}/start.sh" ] && [ -r "${app_dir}/start.sh" ] || {
+        echo "启动脚本不存在或不可读：${app_dir}/start.sh" >&2; return 1;
+    }
+    rm -f "${pid_file}"
+    nohup sh "${app_dir}/start.sh" >> "${log_file}" 2>&1 < /dev/null 9>&- &
+    pid=$!
+    stamp=$(process_stamp "${pid}") || stamp=
+    if [ -z "${stamp}" ]; then
+        echo "启动失败，请查看 ${log_file}" >&2; return 1
+    fi
+    printf '%s %s\n' "${pid}" "${stamp}" > "${pid_file}"
+    sleep 1
+    if ! is_running; then
+        rm -f "${pid_file}"
+        echo "启动失败，请查看 ${log_file}" >&2; return 1
+    fi
+    echo "后台进程已启动（PID ${pid}）。日志：${log_file}"
+    echo "进程仍在运行，请查看日志确认应用已就绪。"
+}
+stop_app() {
+    if ! is_running; then
+        rm -f "${pid_file}"
+        echo "进程未运行。"; return 0
+    fi
+    kill -TERM "${pid}"
+    remaining=30
+    while is_running; do
+        if [ "${remaining}" -eq 0 ]; then
+            echo "等待 30 秒后进程仍在运行（PID ${pid}）；已保留 PID 文件，请检查日志。" >&2
+            return 1
+        fi
+        sleep 1
+        remaining=$((remaining - 1))
+    done
+    rm -f "${pid_file}"
+    echo "进程已停止。"
+}
+case "${action}" in
+    start) start_app ;;
+    stop) stop_app ;;
+    restart) stop_app; start_app ;;
+    status)
+        if is_running; then echo "进程正在运行（PID ${pid}）。"
+        else echo "进程未运行。"; exit 1; fi
+        ;;
+esac

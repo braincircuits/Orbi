@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+app_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -n "${JAVA_HOME:-}" ]; then
+    java_command="$JAVA_HOME/bin/java"
+else
+    java_command=java
+fi
+cd "$app_dir"
+exec "$java_command" --enable-native-access=ALL-UNNAMED -jar "$app_dir/@APP@.jar" "$app_dir/config/@APP@.properties"

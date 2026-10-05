@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the packaged client/server against a local HTTP origin; no internet access."""
+"""使用本地 HTTP 目标服务验证客户端和服务端 JAR，无需访问公网。"""
 import http.client
 import http.server
 import pathlib
@@ -8,6 +8,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PAYLOAD = b"packaged-http3-ok"
@@ -25,7 +26,7 @@ class Origin(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def launch(jar, config, marker, processes):
+def launch(jar, config, marker, processes, captured=None):
     process = subprocess.Popen(
         ["java", "--enable-native-access=ALL-UNNAMED", "-jar", str(jar), str(config)],
         cwd=config.parent, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -35,6 +36,8 @@ def launch(jar, config, marker, processes):
 
     def collect():
         for line in process.stdout:
+            if captured is not None:
+                captured.append(line)
             lines.put(line)
         lines.put(None)
 
@@ -43,16 +46,26 @@ def launch(jar, config, marker, processes):
     while True:
         line = lines.get(timeout=15)
         if line is None:
-            raise RuntimeError("JAR exited before startup:\n" + "".join(output))
+            raise RuntimeError("JAR 在启动完成前退出：\n" + "".join(output))
         output.append(line)
         if marker in line:
             return int(re.search(r":(\d+)\s*$", line).group(1))
+
+
+def wait_for_log(captured, marker, timeout=25):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if any(marker in line for line in captured):
+            return
+        time.sleep(0.05)
+    raise AssertionError("未收到预期日志：" + marker + "\n" + "".join(captured))
 
 
 def main():
     origin = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Origin)
     threading.Thread(target=origin.serve_forever, daemon=True).start()
     processes = []
+    server_logs, client_logs = [], []
     try:
         with tempfile.TemporaryDirectory(prefix="http3-packaged-smoke-") as temp:
             base = pathlib.Path(temp)
@@ -60,17 +73,17 @@ def main():
             key = ROOT / "ClientG/src/test/resources/tls/localhost.key"
             server_config = base / "server.properties"
             server_config.write_text(
-                f"bind=127.0.0.1\nport=0\npassword=smoke-only\ntls.cert={cert}\ntls.key={key}\n"
+                f"bind=127.0.0.1\nport=0\npassword=smoke-only\ntls.cert={cert}\ntls.key={key}\nidleTimeoutSeconds=10\n"
             )
             udp_port = launch(ROOT / "Server/target/Server-1.0-SNAPSHOT.jar", server_config,
-                              "HTTP/3 proxy listening", processes)
+                              "HTTP/3 代理服务端已监听", processes, server_logs)
             client_config = base / "client.properties"
             client_config.write_text(
                 f"port=0\npassword=smoke-only\nserver.host=127.0.0.1\nserver.port={udp_port}\n"
-                f"tls.ca={cert}\ntls.serverName=localhost\n"
+                f"tls.ca={cert}\ntls.serverName=localhost\nidleTimeoutSeconds=10\n"
             )
             proxy_port = launch(ROOT / "ClientG/target/clientG-1.0-SNAPSHOT.jar", client_config,
-                                "Local HTTP proxy listening", processes)
+                                "本地 HTTP 代理已监听", processes, client_logs)
             origin_port = origin.server_port
             for tunnel in (False, True):
                 connection = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=10)
@@ -83,7 +96,14 @@ def main():
                     assert response.read() == PAYLOAD
                 finally:
                     connection.close()
-            print("Packaged JAR smoke test passed: HTTP forwarding and CONNECT over HTTP/3.")
+            # 等待真实 QUIC 空闲断开，验证两端连接日志，避免进程退出影响日志收集。
+            for captured, peer in ((server_logs, "客户端"), (client_logs, "服务端")):
+                wait_for_log(captured, f"与{peer}的 HTTP/3 连接成功")
+                wait_for_log(captured, f"与{peer}的 HTTP/3 连接已断开")
+                assert sum(f"与{peer}的 HTTP/3 连接成功" in line for line in captured) == 1
+                assert sum(f"与{peer}的 HTTP/3 连接已断开" in line for line in captured) == 1
+            assert not any("客户端=null" in line for line in server_logs), "断开日志应保留客户端地址"
+            print("JAR 冒烟测试通过：HTTP 转发、CONNECT 及两端连接成功与断开日志均正常。")
     finally:
         for process in reversed(processes):
             process.terminate()

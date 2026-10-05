@@ -1,0 +1,9 @@
+@echo off
+setlocal
+cd /d "%~dp0"
+if defined JAVA_HOME (
+    "%JAVA_HOME%\bin\java.exe" --enable-native-access=ALL-UNNAMED -jar "%~dp0@APP@.jar" "%~dp0config\@APP@.properties"
+) else (
+    java --enable-native-access=ALL-UNNAMED -jar "%~dp0@APP@.jar" "%~dp0config\@APP@.properties"
+)
+exit /b %errorlevel%

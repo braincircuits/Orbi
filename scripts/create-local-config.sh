@@ -3,7 +3,7 @@ set -eu
 umask 077
 config_dir=${1:-.local-h3}
 if [ -e "$config_dir" ]; then
-    echo "Refusing to overwrite existing directory: $config_dir" >&2
+    echo "拒绝覆盖已有目录：$config_dir" >&2
     exit 1
 fi
 mkdir -p "$config_dir"
@@ -29,5 +29,5 @@ tls.ca=server.crt
 tls.serverName=localhost
 routesFile=pac.txt
 CONFIG
-printf '# Empty: route all destinations through HTTP/3.\n' > "$config_dir/pac.txt"
-printf 'Local development configuration created in %s\n' "$config_dir"
+printf '# 为空时，所有目标均通过 HTTP/3 代理访问。\n' > "$config_dir/pac.txt"
+printf '本机开发配置已生成：%s\n' "$config_dir"

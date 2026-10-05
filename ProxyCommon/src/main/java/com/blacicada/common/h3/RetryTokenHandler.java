@@ -12,7 +12,7 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.function.LongSupplier;
 
-/** Short-lived, authenticated QUIC Retry tokens bound to the sender's IP and UDP port. */
+/** 带认证的短期 QUIC Retry 令牌，绑定发送方 IP 与 UDP 端口。 */
 public final class RetryTokenHandler implements QuicTokenHandler {
     private static final int PREFIX = 1 + Long.BYTES;
     private static final int OFFSET = PREFIX + 32;
@@ -47,7 +47,7 @@ public final class RetryTokenHandler implements QuicTokenHandler {
             mac.update(address.getAddress().getAddress());
             mac.update(ByteBuffer.allocate(4).putInt(address.getPort()).array());
             return mac.doFinal(id);
-        } catch (GeneralSecurityException e) { throw new IllegalStateException("HMAC-SHA256 unavailable", e); }
+        } catch (GeneralSecurityException e) { throw new IllegalStateException("HMAC-SHA256 不可用", e); }
     }
     @Override public int maxTokenLength() { return OFFSET + Quic.MAX_CONN_ID_LEN; }
 }

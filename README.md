@@ -9,6 +9,12 @@ Java 25 + Netty 4.2.18.Final。客户端提供本地 HTTP 代理入口，与服�
                             Server -- 多个 TCP 连接 --> 目标网站
 ```
 
+## 使用入口
+
+- 已有发布目录：按下面的「发布目录启动与远程部署」启动，不需要 Maven。
+- 从源码构建：安装 JDK 25、Maven 3.9，以及支持 `-addext` 的 OpenSSL（生成证书使用）。
+- 配置直连网段：查看「PAC 直连规则」，修改客户端实际使用的规则文件。
+
 ## 构建与测试
 
 需要 JDK 25、Maven 3.9。HTTP/3 依赖包含 QUIC 原生库，打包时保留其平台资源。
@@ -27,7 +33,83 @@ mvn -DskipTests package
 
 集成测试启动真实的本地 TCP/UDP 服务，覆盖并发流复用、拆包、请求体、半关闭、认证、证书校验、目标失败、直连规则和连接重建。测试不需要访问公网。`ClientG/src/test/resources/tls` 中的公开证书和私钥仅为测试夹具，不能用于部署。
 
-## 本机体验
+## 发布目录启动与远程部署
+
+在项目根目录执行以下命令。脚本会构建并运行测试，生成未压缩的发布目录：
+
+```sh
+sh scripts/package-release.sh
+```
+
+```text
+release/
+├── README.md
+├── server/
+│   ├── server.jar
+│   ├── start.sh / start.cmd / background.sh
+│   ├── config/server.properties
+│   └── certs/server.crt、server.key
+└── client/
+    ├── client.jar
+    ├── start.sh / start.cmd / background.sh
+    ├── config/client.properties、pac.txt
+    └── certs/server.crt
+```
+
+在两个终端分别启动服务端和客户端：
+
+```sh
+./release/server/start.sh
+```
+
+```sh
+./release/client/start.sh
+```
+
+脚本支持从任意工作目录调用，优先使用 `JAVA_HOME` 中的 Java，否则使用 PATH 中的 `java`。运行机器需要 JDK 25，无需 Maven。Windows 在命令提示符中分别执行 `release\server\start.cmd` 和 `release\client\start.cmd`。进程在前台运行，日志输出到终端，按 Ctrl+C 停止。
+
+默认生成的配置可以直接在本机使用：服务端监听 UDP `4433`，客户端连接本机服务端，并提供 TCP `127.0.0.1:8080` HTTP 代理入口。
+
+远程部署步骤：
+
+1. 将整个 `release/server/` 复制到服务端机器，将整个 `release/client/` 复制到客户端机器，保留各自内部目录结构。
+2. 编辑客户端 `config/client.properties`，把 `server.host` 改为服务端可访问的 IP 或域名。`server.port` 必须与服务端 `port` 一致。
+3. 在服务端防火墙、安全组及必要的路由器端口转发中放行对应 **UDP** 端口，默认 `4433`。
+4. 保持两端 `password` 一致。使用脚本生成的证书时，保留 `tls.serverName=localhost` 和 `tls.ca=../certs/server.crt`；连接地址与证书验证名称是两个独立配置。
+5. 先启动服务端，再启动客户端，然后将浏览器/应用的 HTTP 和 HTTPS 代理地址均设为 `127.0.0.1:8080`。本地代理入口使用 HTTP，HTTPS 网站通过 CONNECT 隧道访问。
+
+每次打包生成新的随机共享密码及有效期 365 天的自签名证书。客户端只需要公开证书，私钥保留在服务端。更换证书时需同步客户端信任证书及 `tls.serverName`，名称必须匹配新证书的 SAN；证书到期需要手动更新。客户端目录含访问凭证，只分发给获准使用代理的用户。
+
+发布目录已被 Git 忽略。脚本拒绝覆盖已有目录；再次生成可使用 `sh scripts/package-release.sh /tmp/network-release-next`。升级现有部署时，停止两端进程，将新构建的两个 JAR 分别替换为 `server/server.jar` 和 `client/client.jar`，保留原有配置、PAC 和证书后重启。不要混用不同次打包生成的密码或证书。
+
+发布目录自带的说明来源于 [发布使用说明模板](scripts/release/README.md)。
+
+## Linux / macOS 后台运行
+
+发布目录中的客户端和服务端均提供 `background.sh`。支持 Linux 和 macOS，需要 JDK 25。Linux 需要 `flock`（通常由 `util-linux` 提供），macOS 使用系统自带工具。以下命令从发布目录执行，客户端将 `server` 替换为 `client`：
+
+```sh
+./server/background.sh start
+./server/background.sh status
+./server/background.sh stop
+./server/background.sh restart
+```
+
+不传参数时默认执行 `start`。脚本使用 `nohup`，关闭终端后进程继续运行；支持从任意工作目录调用，并沿用 `start.sh` 的 `JAVA_HOME` 和配置路径。请使用同一个系统用户管理进程，且不要同时通过前台脚本和后台脚本启动同一实例。
+
+日志追加到各自目录的 `logs/app.log`，进程信息保存在 `run/app.pid`。例如查看服务端日志：
+
+```sh
+tail -f server/logs/app.log
+```
+
+重复启动不会创建第二个后台实例；停止时发送 SIGTERM，最多等待 30 秒，超时保留进程信息并报告错误，不强制杀进程。`status` 在运行时返回 0，未运行时返回 1。启动提示只确认进程仍存活，是否监听成功请查看日志。
+
+macOS 使用目录锁防止管理命令并发执行；若命令被强制终止后留下 `run/control.lock.d`，确认没有管理命令运行后，可使用 `rmdir` 删除该空目录再重试。
+
+脚本不会注册开机自启、崩溃重启或日志轮转；需要这些功能时可按系统另行配置 systemd、launchd 或日志轮转工具。重新打包会自动附带此脚本。
+
+## 源码构建后的本机体验
 
 以下脚本生成独立的 `.local-h3/` 配置、随机密码和 localhost 自签名证书，不覆盖已有配置。需要支持 `-addext` 的 OpenSSL。
 
@@ -51,7 +133,9 @@ curl --proxy http://127.0.0.1:8080 http://example.com/
 
 ## IDEA 手动 hello world 测试
 
-两个测试类均有 `main` 方法，直接点击 IDEA 的运行按钮即可。数据路径为：
+先使用 JDK 25 导入 Maven 项目，并执行 `sh scripts/create-local-config.sh` 生成本机配置。项目已提供 `.run/` 运行配置，依次启动 `HTTP3 Receiver`、`HTTP3 Server`、`HTTP3 Client`、`HTTP3 Sender` 即可。
+
+两个测试类均有 `main` 方法，也可以直接点击 IDEA 的运行按钮。数据路径为：
 
 ```text
 ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHelloReceiver
@@ -86,22 +170,118 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 | `password` | 必填，每个 CONNECT 请求都进行认证 |
 | `tls.serverName` | TLS 验证的服务端名称，默认等于 `server.host`，必须匹配证书 SAN |
 | `tls.ca` | 可选的 PEM 信任证书；省略则使用系统/JDK 默认信任链 |
-| `routesFile` | 直连域名列表，默认 `pac.txt`；不存在或为空则全部走远程代理 |
+| `routesFile` | 直连域名/IP/CIDR 规则列表，默认 `pac.txt`；不存在或为空则全部走远程代理 |
 | `serversFile` | 未设置 `server.host` 时，兼容读取旧的编号服务器列表 `config.txt` |
 
 两端均支持：
 
 - `connectTimeoutMillis`：DNS/连接或 CONNECT 握手的等待限制，默认 10000 毫秒。本地初始请求整体等待限制为其两倍。
 - `idleTimeoutSeconds`：共享 QUIC 连接空闲超时，默认 300 秒。
-- `maxStreams`：流并发上限，默认 256。客户端计入正在等待建立的流，超限请求直接失败，不影响已有隧道。
+- `maxStreams`：流并发上限，默认 256。客户端计入正在等待建立的流，超过本地上限的请求直接失败，不影响已有隧道。服务端 QUIC 流额度暂时耗尽时，客户端等待 MAX_STREAMS 更新后继续创建流，等待最长为 `connectTimeoutMillis`，不会为此断开共享连接。
 
 远程部署需要开放服务端 UDP 端口。自签名部署将服务器证书配置为客户端 `tls.ca`；公开证书使用正常的信任链。程序不会跳过证书或主机名验证，也不启用 TLS 0-RTT。
+
+## PAC 直连规则（域名、IP 与网段）
+
+这里的 `pac.txt` 是**客户端读取的直连列表**，不是浏览器执行的 JavaScript PAC 脚本。浏览器仍配置普通 HTTP 代理，不要把此文件填到浏览器的自动代理配置 URL 中。规则命中时由客户端直接连接目标，不经过 HTTP/3 服务端；未命中时走远程代理。普通 HTTP 和 HTTPS CONNECT 都适用。
+
+### 修改哪个文件
+
+| 启动方式 | 默认规则文件 |
+| --- | --- |
+| 发布目录启动脚本 | `release/client/config/pac.txt`（部署后为客户端目录下的 `config/pac.txt`） |
+| `.local-h3` 本机配置 / IDEA 保存的运行配置 | `.local-h3/pac.txt` |
+| 自定义配置文件 | `routesFile` 指向的文件；相对路径以该 properties 文件所在目录为基准 |
+
+例如发布配置 `release/client/config/client.properties` 中：
+
+```properties
+routesFile=pac.txt
+```
+
+此时读取同目录的 `pac.txt`，不会读取项目根目录同名文件。文件不存在、为空或只有注释时，全部目标走远程代理。程序不会自动添加内网直连规则。
+
+### 网段配置示例
+
+按需将以下内容写入实际使用的 `pac.txt`，UTF-8 编码，每行一条：
+
+```text
+# 域名自身及其所有子域名直连；不填写协议、路径或端口
+example.com
+
+# 单个 IP 直连
+192.168.1.10
+
+# IPv4 内网和回环网段
+10.0.0.0/8
+172.16.0.0/12
+192.168.0.0/16
+127.0.0.0/8
+
+# IPv6 回环和唯一本地地址网段
+::1/128
+fc00::/7
+```
+
+这些是可选示例，不是默认配置。仅需要 `192.168.1.*` 直连时，填写 `192.168.1.0/24` 即可，不必加入更大的 `192.168.0.0/16`。
+
+| 写法 | 匹配范围 |
+| --- | --- |
+| `192.168.1.0/24` | `192.168.1.0` 至 `192.168.1.255` |
+| `192.168.0.0/16` | `192.168.0.0` 至 `192.168.255.255` |
+| `10.0.0.0/8` | `10.0.0.0` 至 `10.255.255.255` |
+| `172.16.0.0/12` | `172.16.0.0` 至 `172.31.255.255` |
+| `192.168.1.10/32` | 仅一个 IPv4 地址，等同于 `192.168.1.10` |
+| `::1/128` | 仅 IPv6 回环地址 |
+| `fc00::/7` | IPv6 唯一本地地址范围，包含 `fc` 和 `fd` 开头的地址 |
+
+斜杠后的数字是网络前缀长度，数值越大范围越小；IPv4 为 0–32，IPv6 为 0–128。`0.0.0.0/0` 会使所有 IPv4 地址命中，`::/0` 会使所有 IPv6 地址命中，只有确实需要全量直连时才使用。
+
+规则格式与加载行为：
+
+- 域名忽略大小写，`example.com` 同时匹配自身和 `www.example.com` 等子域名。
+- 忽略空行和 `#` 注释，也支持行尾注释，例如 `192.168.1.0/24 # 办公网`。
+- 不支持 `*.example.com`、URL、端口、`192.168.*.*`、起止 IP 范围或 `255.255.255.0` 子网掩码写法。
+- 所有规则都是直连规则，没有反向规则或按顺序覆盖机制。CIDR 中的主机位不影响匹配，建议填写规范网络地址。
+- 非法 CIDR 会报告文件、行号和规则并阻止启动。修改规则后必须**重启客户端**，无需重启服务端。
+
+更多注释示例见 [examples/pac.txt](examples/pac.txt)。
+
+### 域名如何匹配网段
+
+1. 先检查域名规则，命中则客户端直接连接。
+2. 域名未命中且列表中有 IP/CIDR 规则时，客户端异步解析域名，检查返回的 IP 地址。
+3. 选择解析结果中第一个命中规则的 IP 并直接连接该 IP，避免再次解析改变目标。
+4. 没有命中 IP 或本地 DNS 解析失败时，通过 HTTP/3 转发原域名，由服务端解析并连接。
+
+因此添加网段规则后，未命中域名规则的域名也可能在客户端产生 DNS 查询。直连连接失败会返回错误，不会自动改走远程代理。直连时 `127.0.0.1` 指客户端自身；走代理时该地址指服务端自身。
+
+## 常见问题
+
+| 现象 | 检查方式 |
+| --- | --- |
+| 启动提示找不到配置、证书或私钥 | 使用启动脚本，或显式传入 properties 路径；检查路径是否相对于配置文件目录，复制部署时是否保留 `certs/` |
+| 启动提示端口占用 | 停止旧进程或修改 `port`；服务端修改端口后同步客户端 `server.port`，客户端修改端口后同步浏览器代理设置 |
+| 客户端启动成功，但无法访问网站 | 共享 QUIC 连接按需建立，启动成功不代表已连接服务端；检查 `server.host`、端口以及 UDP 防火墙规则 |
+| TLS 握手或证书校验失败 | 检查证书有效期、`tls.ca` 是否信任当前服务端证书，以及 `tls.serverName` 是否匹配证书 SAN |
+| 返回 502 | 查看客户端和服务端终端日志；检查共享密码、目标 DNS 和目标 TCP 可达性。直连目标由客户端访问，代理目标由服务端访问 |
+| 返回 504 | 初始请求建立超时；检查网络和服务端可达性，再按需调整 `connectTimeoutMillis` |
+| PAC 修改没有生效 | 确认 `routesFile` 实际指向的文件，重启客户端，再建立新连接测试 |
+| hello world 测试未经过服务端 | 清空测试配置的直连规则；回环地址或网段命中时会直接连接本机接收端 |
+
+验证 HTTP 和 HTTPS 代理时可显式排除环境中 `NO_PROXY` 的影响：
+
+```sh
+curl --noproxy "" --proxy http://127.0.0.1:8080 http://example.com/
+curl --noproxy "" --proxy http://127.0.0.1:8080 https://example.com/
+```
+
+这些命令访问公网，需目标网站可达；无公网环境可以使用前面的 IDEA hello world 测试或 `scripts/smoke-test.py`。
 
 ## 转发行为与边界
 
 - HTTPS：浏览器发出的 HTTP/1.1 CONNECT 在客户端解析，再通过远程 HTTP/3 CONNECT 建立隧道。目标 HTTPS 内容保持端到端加密，代理不解密目标 TLS。
 - 普通 HTTP：支持各请求方法、Content-Length、chunked 和 `Expect: 100-continue`；请求体分块转发。当前每条本地普通 HTTP 连接只处理一个请求，并向目标发送 `Connection: close`。不支持普通 HTTP 的流水线请求或 WebSocket Upgrade；HTTPS 隧道内的连接复用和 WSS 不受此限制。
-- `pac.txt` 中的域名及其子域名直接连接目标；空行与 `#` 注释忽略。使用域名集合匹配，不依赖哈希碰撞。
 - HTTP/3 流关闭只清理对应目标连接；共享连接中断会使其已有隧道结束，下一次请求按需重新建立共享连接。不会重放请求或假装恢复已中断的 TCP 会话。
 - 每个方向使用手动读取、写完成通知与可写状态传播背压；建立连接期间的应用缓冲有上限。目标 DNS 查询不阻塞网络事件线程。
 - 没有 TCP/HTTP2 回退、SOCKS5、CONNECT-UDP 或 UDP 目标代理。

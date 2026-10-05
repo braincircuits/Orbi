@@ -6,7 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
 
-/** Configuration is loaded once, before any sockets or threads are started. */
+/** 配置仅加载一次，在创建任何套接字或启动线程之前完成。 */
 public final class ProxyConfig {
     private final Properties values;
     private final Path base;
@@ -31,13 +31,13 @@ public final class ProxyConfig {
 
     public String required(String name) {
         String value = get(name, "");
-        if (value.isEmpty()) throw new IllegalArgumentException("Missing configuration: " + name);
+        if (value.isEmpty()) throw new IllegalArgumentException("缺少配置：" + name);
         return value;
     }
 
     public int integer(String name, int fallback, int min, int max) {
         int value = Integer.parseInt(get(name, Integer.toString(fallback)));
-        if (value < min || value > max) throw new IllegalArgumentException("Invalid configuration: " + name);
+        if (value < min || value > max) throw new IllegalArgumentException("配置无效：" + name);
         return value;
     }
 

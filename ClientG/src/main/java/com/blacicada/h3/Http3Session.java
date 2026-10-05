@@ -9,15 +9,20 @@ import io.netty.handler.codec.quic.*;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.*;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** All connection/stream allocation state is confined to a single event loop. */
+/** 连接与流的分配状态均限制在同一个事件循环内。 */
 public final class Http3Session implements AutoCloseable {
+    private static final Logger LOGGER = LogManager.getLogger(Http3Session.class);
     private final EventLoop loop;
     private final ProxyConfig config;
     private final Authority server;
@@ -29,6 +34,11 @@ public final class Http3Session implements AutoCloseable {
     private Promise<QuicChannel> connecting;
     private boolean closed;
     private int streams;
+    private final ArrayDeque<StreamRequest> waitingStreams = new ArrayDeque<>();
+    private boolean creatingStream;
+
+    private record StreamRequest(QuicChannel parent, ChannelHandler handler,
+                                 Promise<QuicStreamChannel> promise) { }
 
     public Http3Session(EventLoop loop, ProxyConfig config, DnsAddressResolverGroup resolver) throws Exception {
         this.loop = loop; this.config = config; this.resolver = resolver;
@@ -51,11 +61,11 @@ public final class Http3Session implements AutoCloseable {
         if (!config.get("server.host", "").isEmpty()) {
             return new Authority(config.required("server.host"), config.integer("server.port", 4433, 1, 65535));
         }
-        // Compatibility with the original numbered config.txt server list.
+        // 兼容原有 config.txt 中按编号选择服务器的配置。
         var lines = Files.readAllLines(config.path("serversFile", "config.txt")).stream()
                 .map(String::trim).filter(s -> !s.isEmpty() && !s.startsWith("#")).toList();
         int index = Integer.parseInt(lines.getFirst().replace("[", "").replace("]", ""));
-        if (index < 1 || index >= lines.size()) throw new IllegalArgumentException("Invalid server selection");
+        if (index < 1 || index >= lines.size()) throw new IllegalArgumentException("服务器编号无效");
         return Authority.parse(lines.get(index), -1);
     }
 
@@ -64,7 +74,7 @@ public final class Http3Session implements AutoCloseable {
         loop.execute(() -> {
             if (result.isDone()) return;
             if (closed || streams >= config.maxStreams()) {
-                result.tryFailure(new IOException("Proxy unavailable or stream limit reached")); return;
+                result.tryFailure(new IOException("代理不可用或已达到并发流上限")); return;
             }
             streams++;
             acquire().addListener(f -> {
@@ -72,33 +82,83 @@ public final class Http3Session implements AutoCloseable {
                 if (!f.isSuccess()) { streams--; result.tryFailure(f.cause()); return; }
                 QuicChannel parent = (QuicChannel) f.getNow();
                 var response = new ConnectResponse(result);
-                Http3.newRequestStreamBootstrap(parent, response)
-                        .option(ChannelOption.ALLOW_HALF_CLOSURE, true)
-                        .option(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK)
-                        .create().addListener(created -> {
-                            if (!created.isSuccess()) { streams--; result.tryFailure(created.cause()); return; }
-                            QuicStreamChannel stream = (QuicStreamChannel) created.getNow();
-                            stream.closeFuture().addListener(ignored -> streams--);
-                            result.addListener(done -> { if (!done.isSuccess()) stream.close(); });
-                            var request = new DefaultHttp3HeadersFrame();
-                            request.headers().method("CONNECT").authority(target.toString())
-                                    .set("proxy-authorization", authorization);
-                            stream.writeAndFlush(request).addListener(write -> {
-                                if (!write.isSuccess()) result.tryFailure(write.cause());
-                            });
-                        });
+                Future<QuicStreamChannel> creation = createWhenAllowed(parent, response);
+                result.addListener(done -> { if (!done.isSuccess()) creation.cancel(false); });
+                creation.addListener(created -> {
+                    if (!created.isSuccess()) { streams--; result.tryFailure(created.cause()); return; }
+                    QuicStreamChannel stream = (QuicStreamChannel) created.getNow();
+                    stream.closeFuture().addListener(ignored -> streams--);
+                    result.addListener(done -> { if (!done.isSuccess()) stream.close(); });
+                    var request = new DefaultHttp3HeadersFrame();
+                    request.headers().method("CONNECT").authority(target.toString())
+                            .set("proxy-authorization", authorization);
+                    stream.writeAndFlush(request).addListener(write -> {
+                        if (!write.isSuccess()) result.tryFailure(write.cause());
+                    });
+                });
             });
         });
         return result;
     }
 
+    private Future<QuicStreamChannel> createWhenAllowed(QuicChannel parent, ChannelHandler handler) {
+        Promise<QuicStreamChannel> promise = loop.newPromise();
+        var request = new StreamRequest(parent, handler, promise);
+        waitingStreams.add(request);
+        var timeout = loop.schedule(() -> promise.tryFailure(new IOException("等待 QUIC 流额度超时")),
+                config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
+        promise.addListener(done -> {
+            timeout.cancel(false);
+            waitingStreams.remove(request);
+        });
+        drainWaitingStreams();
+        return promise;
+    }
+
+    private void drainWaitingStreams() {
+        // 本地流关闭后，对端的 MAX_STREAMS 更新可能尚未到达，必须等待真实额度。
+        if (creatingStream) return;
+        while (!waitingStreams.isEmpty()) {
+            StreamRequest request = waitingStreams.peek();
+            if (request.promise().isDone()) { waitingStreams.remove(); continue; }
+            if (closed || !request.parent().isActive()) {
+                waitingStreams.remove();
+                request.promise().tryFailure(new IOException("等待流额度期间 HTTP/3 连接已关闭"));
+                continue;
+            }
+            if (request.parent().peerAllowedStreams(QuicStreamType.BIDIRECTIONAL) <= 0) return;
+            waitingStreams.remove();
+            creatingStream = true;
+            Http3.newRequestStreamBootstrap(request.parent(), request.handler())
+                    .option(ChannelOption.ALLOW_HALF_CLOSURE, true)
+                    .option(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK)
+                    .create().addListener(created -> {
+                        creatingStream = false;
+                        if (created.isSuccess()) {
+                            QuicStreamChannel stream = (QuicStreamChannel) created.getNow();
+                            if (!request.promise().trySuccess(stream)) stream.close();
+                        } else request.promise().tryFailure(created.cause());
+                        // 下一轮调度避免同步完成回调造成递归，并重新读取剩余额度。
+                        loop.execute(this::drainWaitingStreams);
+                    });
+            return;
+        }
+    }
+
+    private void failWaitingStreams(QuicChannel parent) {
+        for (StreamRequest request : new ArrayList<>(waitingStreams)) {
+            if (request.parent() == parent)
+                request.promise().tryFailure(new IOException("等待流额度期间 HTTP/3 连接已断开"));
+        }
+    }
+
     private Future<QuicChannel> acquire() {
-        if (closed) return loop.newFailedFuture(new IOException("Proxy session closed"));
+        if (closed) return loop.newFailedFuture(new IOException("代理会话已关闭"));
         if (connection != null && connection.isActive()) return loop.newSucceededFuture(connection);
         if (connecting != null) return connecting;
         Promise<QuicChannel> attempt = loop.newPromise();
         connecting = attempt;
-        var deadline = loop.schedule(() -> attempt.tryFailure(new IOException("HTTP/3 handshake timed out")),
+        var deadline = loop.schedule(() -> attempt.tryFailure(new IOException("HTTP/3 握手超时")),
                 config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
         attempt.addListener(f -> { deadline.cancel(false); if (connecting == attempt) connecting = null; });
         resolver.getResolver(loop).resolve(server.unresolved()).addListener(resolved -> {
@@ -108,14 +168,32 @@ public final class Http3Session implements AutoCloseable {
             settings.put(Http3SettingsFrame.HTTP3_SETTINGS_MAX_FIELD_SECTION_SIZE, (long) Transport.MAX_HEADER_SIZE);
             QuicChannel.newBootstrap(udp)
                     .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, config.connectTimeoutMillis())
-                    .handler(new Http3ClientConnectionHandler(null, null, null, settings, true))
+                    .handler(new ChannelInitializer<QuicChannel>() {
+                        @Override protected void initChannel(QuicChannel channel) {
+                            channel.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+                                @Override public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
+                                    if (event instanceof QuicStreamLimitChangedEvent) drainWaitingStreams();
+                                    ctx.fireUserEventTriggered(event);
+                                }
+                                @Override public void channelInactive(ChannelHandlerContext ctx) {
+                                    failWaitingStreams(channel);
+                                    ctx.fireChannelInactive();
+                                }
+                            });
+                            channel.pipeline().addLast(new Http3ClientConnectionHandler(null, null, null, settings, true));
+                        }
+                    })
                     .remoteAddress((InetSocketAddress) resolved.getNow()).connect().addListener(connected -> {
                         if (!connected.isSuccess()) { attempt.tryFailure(connected.cause()); return; }
                         QuicChannel channel = (QuicChannel) connected.getNow();
                         if (closed || attempt.isDone()) { channel.close(); return; }
                         connection = channel;
                         connectionCount.incrementAndGet();
-                        channel.closeFuture().addListener(ignored -> { if (connection == channel) connection = null; });
+                        LOGGER.info("与服务端的 HTTP/3 连接成功：服务端={}，连接 ID={}", server, channel.id().asShortText());
+                        channel.closeFuture().addListener(ignored -> {
+                            LOGGER.info("与服务端的 HTTP/3 连接已断开：服务端={}，连接 ID={}", server, channel.id().asShortText());
+                            if (connection == channel) connection = null;
+                        });
                         attempt.trySuccess(channel);
                     });
         });
@@ -128,7 +206,7 @@ public final class Http3Session implements AutoCloseable {
         ConnectResponse(Promise<QuicStreamChannel> result) { this.result = result; }
         @Override public void handlerAdded(ChannelHandlerContext ctx) {
             timeout = ctx.executor().schedule(() -> {
-                result.tryFailure(new IOException("CONNECT response timed out")); ctx.close();
+                result.tryFailure(new IOException("等待 CONNECT 响应超时")); ctx.close();
             }, config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
         }
         @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
@@ -140,13 +218,13 @@ public final class Http3Session implements AutoCloseable {
                     ctx.channel().config().setAutoRead(false);
                     ctx.pipeline().replace(this, "data", new H3DataCodec());
                     if (!result.trySuccess((QuicStreamChannel) ctx.channel())) ctx.close();
-                } else { result.tryFailure(new IOException("Proxy CONNECT failed: " + status)); ctx.close(); }
+                } else { result.tryFailure(new IOException("代理 CONNECT 失败：" + status)); ctx.close(); }
             } else if (msg instanceof Http3UnknownFrame) ReferenceCountUtil.release(msg);
-            else { ReferenceCountUtil.release(msg); result.tryFailure(new IOException("Invalid CONNECT response")); ctx.close(); }
+            else { ReferenceCountUtil.release(msg); result.tryFailure(new IOException("CONNECT 响应无效")); ctx.close(); }
         }
         @Override public void handlerRemoved(ChannelHandlerContext ctx) { if (timeout != null) timeout.cancel(false); }
         @Override public void channelInactive(ChannelHandlerContext ctx) {
-            result.tryFailure(new IOException("CONNECT stream closed")); ctx.fireChannelInactive();
+            result.tryFailure(new IOException("CONNECT 流已关闭")); ctx.fireChannelInactive();
         }
         @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) { result.tryFailure(cause); ctx.close(); }
     }
@@ -155,7 +233,7 @@ public final class Http3Session implements AutoCloseable {
     @Override public void close() {
         loop.submit(() -> {
             closed = true;
-            if (connecting != null) connecting.tryFailure(new IOException("Proxy session closed"));
+            if (connecting != null) connecting.tryFailure(new IOException("代理会话已关闭"));
             if (connection != null) connection.close();
             udp.close();
         }).syncUninterruptibly();
