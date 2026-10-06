@@ -1,6 +1,7 @@
 package com.blacicada.h3;
 
 import com.blacicada.common.h3.*;
+import com.blacicada.config.KernelConfig;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.group.DefaultChannelGroup;
@@ -19,15 +20,26 @@ public final class LocalProxyServer implements AutoCloseable {
     private final EventLoopGroup group = new NioEventLoopGroup(1);
     private final DnsAddressResolverGroup resolver = Transport.resolver();
     private final DefaultChannelGroup clients = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
-    private Http3Session session;
+    private SessionRouter session;
+    private final KernelConfig initial;
     private Channel listener;
 
-    public LocalProxyServer(ProxyConfig config) { this.config = config; }
+    public LocalProxyServer(ProxyConfig config) throws java.io.IOException { this(KernelConfig.legacy(config)); }
+    public LocalProxyServer(KernelConfig config) { this.initial = config; this.config = config.local(); }
+    public void apply(KernelConfig next) throws Exception {
+        if (!config.values().equals(next.local().values()) || !config.base().equals(next.local().base()))
+            throw new IllegalArgumentException("修改本地监听或直连规则需要停止后重新启动");
+        session.apply(next);
+    }
+    public void disconnect() throws Exception { session.disconnect(); }
+    public KernelConfig configuration() { return session.config(); }
+
 
     public LocalProxyServer start() throws Exception {
         try {
-            session = new Http3Session(group.next(), config, resolver);
-            var routes = new DirectRoutes(config.path("routesFile", "pac.txt"));
+            session = new SessionRouter(group.next(), resolver, initial);
+            var routes = config.values().containsKey("routesInline") ? new DirectRoutes(config.get("routesInline", ""))
+                    : new DirectRoutes(config.path("routesFile", "pac.txt"));
             listener = new ServerBootstrap().group(group).channel(NioServerSocketChannel.class)
                     .childOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK)
@@ -46,7 +58,11 @@ public final class LocalProxyServer implements AutoCloseable {
         } catch (Exception e) { close(); throw e; }
     }
     public InetSocketAddress address() { return (InetSocketAddress) listener.localAddress(); }
+    public int activeTunnels() { return session.activeTunnels(); }
+    public int pendingTunnels() { return session.pendingTunnels(); }
     public long connectionCount() { return session.connectionCount(); }
+    public String connectionState() { return session.connectionState(); }
+    public String lastError() { return session.lastError(); }
     public void await() throws InterruptedException { listener.closeFuture().sync(); }
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;

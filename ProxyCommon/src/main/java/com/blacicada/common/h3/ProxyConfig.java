@@ -45,6 +45,9 @@ public final class ProxyConfig {
         return base.resolve(get(name, fallback)).normalize();
     }
 
+    public Properties values() { Properties copy = new Properties(); copy.putAll(values); return copy; }
+    public Path base() { return base; }
+
     public int connectTimeoutMillis() { return integer("connectTimeoutMillis", 10000, 100, 120000); }
     public int maxStreams() { return integer("maxStreams", 256, 1, 10000); }
     public long idleTimeoutSeconds() { return integer("idleTimeoutSeconds", 300, 10, 86400); }

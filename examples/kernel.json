@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "local": {
+    "bind": "127.0.0.1",
+    "port": 8080,
+    "routesInline": "localhost\n127.0.0.0/8\n10.0.0.0/8\n192.168.0.0/16",
+    "connectTimeoutMillis": 10000
+  },
+  "defaultConnectionId": "node-h3",
+  "connections": [
+    {
+      "id": "node-h3",
+      "name": "HTTP/3 节点",
+      "config": {
+        "protocol": "http3",
+        "server.host": "proxy.example.com",
+        "server.port": 4433,
+        "username": "client1",
+        "password": "replace-with-a-long-random-secret",
+        "tls.serverName": "proxy.example.com",
+        "connectTimeoutMillis": 10000,
+        "maxStreams": 256
+      }
+    },
+    {
+      "id": "node-h2",
+      "name": "HTTP/2 节点",
+      "config": {
+        "protocol": "http2",
+        "server.host": "proxy.example.com",
+        "server.port": 4433,
+        "username": "client1",
+        "password": "replace-with-a-long-random-secret",
+        "tls.serverName": "proxy.example.com",
+        "connectTimeoutMillis": 10000,
+        "maxStreams": 256
+      }
+    }
+  ]
+}

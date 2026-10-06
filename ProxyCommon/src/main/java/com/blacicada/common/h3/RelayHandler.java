@@ -19,13 +19,13 @@ public class RelayHandler extends ChannelInboundHandlerAdapter {
     @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
         if (!peer.isActive()) {
             ReferenceCountUtil.release(msg);
-            ctx.close();
+            Transport.abort(ctx.channel());
             return;
         }
         pendingWrites++;
         peer.writeAndFlush(msg).addListener(f -> ctx.executor().execute(() -> {
             pendingWrites--;
-            if (!f.isSuccess()) { peer.close(); ctx.close(); }
+            if (!f.isSuccess()) { Transport.abort(peer); Transport.abort(ctx.channel()); }
             else if (inputClosed) finishOutput();
             else if (pendingWrites == 0 && canRead() && peer.isWritable() && ctx.channel().isActive()) ctx.read();
         }));
@@ -54,10 +54,10 @@ public class RelayHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void finishOutput() {
-        if (!outputShutdown && pendingWrites == 0 && peer instanceof DuplexChannel duplex) {
+        if (!outputShutdown && pendingWrites == 0) {
             outputShutdown = true;
-            duplex.shutdownOutput().addListener(f -> {
-                if (!f.isSuccess() || duplex.isInputShutdown()) peer.close();
+            Transport.shutdownOutput(peer).addListener(f -> {
+                if (!f.isSuccess() || Transport.isInputShutdown(peer)) peer.close();
             });
         }
     }
@@ -68,7 +68,7 @@ public class RelayHandler extends ChannelInboundHandlerAdapter {
     }
 
     @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        peer.close();
-        ctx.close();
+        Transport.abort(peer);
+        Transport.abort(ctx.channel());
     }
 }

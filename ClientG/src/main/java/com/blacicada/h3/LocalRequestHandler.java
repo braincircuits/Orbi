@@ -16,7 +16,7 @@ import org.apache.logging.log4j.LogManager;
 
 final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private final ProxyConfig config;
-    private final Http3Session session;
+    private final SessionRouter session;
     private final DnsAddressResolverGroup resolver;
     private final DirectRoutes routes;
     private final ArrayDeque<HttpContent> pending = new ArrayDeque<>();
@@ -29,7 +29,7 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private boolean failed;
     private ScheduledFuture<?> timeout;
 
-    LocalRequestHandler(ProxyConfig config, Http3Session session, DnsAddressResolverGroup resolver, DirectRoutes routes) {
+    LocalRequestHandler(ProxyConfig config, SessionRouter session, DnsAddressResolverGroup resolver, DirectRoutes routes) {
         this.config = config; this.session = session; this.resolver = resolver; this.routes = routes;
     }
     @Override public void channelActive(ChannelHandlerContext ctx) {
@@ -105,7 +105,7 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void connectProxy(ChannelHandlerContext ctx, Authority target) {
-        opening = session.open(target);
+        opening = session.open(target, ctx.channel());
         opening.addListener(f -> connected(ctx, f.isSuccess() ? (Channel) f.getNow() : null, f.cause()));
     }
 

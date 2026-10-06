@@ -41,6 +41,26 @@ public final class Transport {
                 actual.toString().getBytes(StandardCharsets.UTF_8));
     }
 
+    /** 异常取消时重置双向流，不等待已经无法完成的传输。 */
+    public static void abort(Channel channel) {
+        if (channel instanceof io.netty.handler.codec.quic.QuicStreamChannel stream && stream.isActive()) {
+            stream.shutdown((int) io.netty.handler.codec.http3.Http3ErrorCode.H3_REQUEST_CANCELLED.code())
+                    .addListener(ignored -> stream.close());
+        } else channel.close();
+    }
+
+    public static io.netty.channel.ChannelFuture shutdownOutput(Channel channel) {
+        if (channel instanceof io.netty.channel.socket.DuplexChannel duplex) return duplex.shutdownOutput();
+        if (channel instanceof io.netty.handler.codec.http2.Http2StreamChannel)
+            return channel.writeAndFlush(com.blacicada.common.h2.H2DataCodec.Signal.FIN);
+        return channel.close();
+    }
+
+    public static boolean isInputShutdown(Channel channel) {
+        if (channel instanceof io.netty.channel.socket.DuplexChannel duplex) return duplex.isInputShutdown();
+        return Boolean.TRUE.equals(channel.attr(com.blacicada.common.h2.H2DataCodec.INPUT_CLOSED).get());
+    }
+
     public static void closeAfterWrites(Channel channel) {
         if (channel.isActive()) channel.writeAndFlush(io.netty.buffer.Unpooled.EMPTY_BUFFER)
                 .addListener(ChannelFutureListener.CLOSE);

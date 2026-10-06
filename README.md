@@ -1,10 +1,10 @@
-# HTTP/3 多路复用代理
+# HTTP/2 与 HTTP/3 多路复用代理
 
-Java 25 + Netty 4.2.18.Final。客户端提供本地 HTTP 代理入口，与服务端复用一条经过 TLS 认证的 QUIC/HTTP/3 连接；每个需要远程代理的连接使用独立的 HTTP/3 CONNECT 流。服务端为每个流建立目标 TCP 连接。
+Java 25 + Netty 4.2.18.Final。Flutter UI 称为「代理客户端」，Java ClientG 称为「代理内核」，Java Server 称为「代理服务端」。代理内核提供本地 HTTP 代理入口，支持保存多份连接配置并切换默认连接，每份配置选择 HTTP/2 或 HTTP/3；每个代理隧道使用独立的 CONNECT 流。
 
 ```text
 浏览器/应用 -- 本地 TCP --> ClientG
-                              ║ 一条 QUIC/HTTP/3 连接（UDP + TLS）
+                              ║ HTTP/3（QUIC/UDP）或 HTTP/2（TLS/TCP）
                               ║ 多个独立 CONNECT 流
                             Server -- 多个 TCP 连接 --> 目标网站
 ```
@@ -320,7 +320,7 @@ curl --noproxy "" --proxy http://127.0.0.1:8080 https://example.com/
 - 普通 HTTP：支持各请求方法、Content-Length、chunked 和 `Expect: 100-continue`；请求体分块转发。当前每条本地普通 HTTP 连接只处理一个请求，并向目标发送 `Connection: close`。不支持普通 HTTP 的流水线请求或 WebSocket Upgrade；HTTPS 隧道内的连接复用和 WSS 不受此限制。
 - HTTP/3 流关闭只清理对应目标连接；共享连接中断会使其已有隧道结束，下一次请求按需重新建立共享连接。不会重放请求或假装恢复已中断的 TCP 会话。
 - 每个方向使用手动读取、写完成通知与可写状态传播背压；建立连接期间的应用缓冲有上限。目标 DNS 查询不阻塞网络事件线程。
-- 没有 TCP/HTTP2 回退、SOCKS5、CONNECT-UDP 或 UDP 目标代理。
+- HTTP/2 与 HTTP/3 由连接配置明确选择，不自动降级；没有 SOCKS5、CONNECT-UDP 或 UDP 目标代理。
 - 新旧客户端/服务端的线协议不兼容，必须成对升级。旧的 `key`、序号与字节映射实现已移除。
 
 ## 源码位置
@@ -336,3 +336,86 @@ curl --noproxy "" --proxy http://127.0.0.1:8080 https://example.com/
 CONNECT 超时后会取消对应请求流的双向传输。若整个等待期间 QUIC 有发包却完全没有回包，客户端会记录诊断日志并关闭疑似失效的共享连接，让后续请求重新连接。此时该连接上的已有隧道也会结束，应用需要重新发起请求；代理不会重放已发送的数据。
 
 若 QUIC 仍正常回包，仅目标连接慢或流额度耗尽，不会因此关闭共享连接。超时日志包含目标地址或流额度，以及连接 ID；可结合服务端的 CONNECT 失败日志定位。
+
+## Flutter 桌面控制模式
+
+Flutter 项目位于同级项目目录 `../../flutter/network_ui`。客户端新增 `--ui` 启动模式，保留原有命令行配置文件入口。
+
+```sh
+java --enable-native-access=ALL-UNNAMED -Dlog4j.configurationFile=log4j2-ui.xml -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --ui
+```
+
+该模式面向 UI 子进程通信：标准输入和输出为逐行 JSON，普通日志走标准错误。协议版本为 1；启动后发送 `ready`，状态变化发送 `status`，每个命令返回带相同 `id` 的 `response`。
+
+兼容 `start`、`stop`、`status`、`validate`、`exit`。旧版 `start` 携带配置映射 `config` 和规则文本 `rules`，自动转换为一份默认连接配置。规则可直接保存在内存中。新增多配置命令见下文；仅显式执行 `config.save` 才写入配置文件（其中含密码）。标准输入关闭会自动停止代理进程。
+
+控制协议测试位于 `UiControlTest`；执行 `python3 scripts/ui-smoke-test.py` 可验证真实 JAR 与本地服务端的 HTTP、CONNECT、认证错误、直连和退出清理。运行前先构建 JAR。
+
+
+## 多连接配置与 HTTP/2
+
+完整示例见 [examples/kernel.json](examples/kernel.json)。JSON 配置的相对路径以文件所在目录为基准，控制接口直接提交的配置以代理内核工作目录为基准。可以继续使用原有 `client.properties`，增加 `protocol=http2` 即可选择 HTTP/2，省略时仍为 HTTP/3。
+
+```sh
+java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar examples/kernel.json
+```
+
+运行前替换示例中的服务器地址、账号和密码。示例默认使用系统信任证书；私有 CA 或自签名证书需要在每份连接的 `config` 中设置 `tls.ca`，且 `tls.serverName` 必须匹配证书。
+
+- `version`：目前固定为 `1`。
+- `local`：本地监听、直连规则与本地请求建立超时；`routesInline` 优先于 `routesFile`。
+- `connections`：1 至 128 份配置，每份包含稳定的 `id`、显示名称 `name`、连接参数 `config`。
+- `defaultConnectionId`：未命中直连规则时使用的连接 ID。
+- 唯一性按协议、规范化地址和端口判断；相同端点不能重复保存不同账号。域名不通过 DNS 解析后的 IP 去重。带作用域标识的 IPv6 地址暂不支持。
+- `protocol` 只接受 `http2`、`http3`，端口默认 `4433`。两种协议都复用单条连接承载多个 CONNECT 流，使用相同的认证机制。
+- 本期只支持直连与默认代理选择；`SessionRouter` 是后续按域名选择不同配置的扩展入口，尚未实现域名到指定配置的规则。
+
+切换默认配置会立即关闭旧协议会话、旧代理隧道及其浏览器连接，并取消排队请求。直连与本地监听不受影响，新请求按新配置连接。修改当前配置中的连接参数也会重建会话；仅修改名称不会中断。重复选择同一配置不会断开，若需强制重连使用 `connection.disconnect`。新配置连接失败不会回退或自动直连，也不会重放业务数据。无业务心跳。
+
+代理服务端需升级 JAR 并在 `server.properties` 中启用对应协议：
+
+```properties
+protocols=http3,http2
+port=4433
+# 可选：HTTP/2 使用不同 TCP 端口；省略时沿用 port。
+# http2.port=4434
+```
+
+HTTP/3 使用 UDP，HTTP/2 使用 TCP + TLS + ALPN `h2`，不支持明文 h2c。两者可以同时监听同一个数字端口，需分别放行防火墙中的 TCP/UDP。省略 `protocols` 时仍只启动 HTTP/3。两种协议共用服务端认证、证书及每会话流上限配置。
+
+### 多配置控制接口
+
+`ready` 保留协议版本 1，并通过 `capabilities` 声明 `multiConnection`、`http2`、`http3`、`immediateSwitch`。标准输入每行一条 JSON，命令包含 `id` 与 `command`。响应带相同 `id`、`ok`、`status` 和可选 `data`；失败返回中文提示及 `errorType`。下表各参数均与 `command` 同级。
+
+| 命令 | 参数与行为 |
+| --- | --- |
+| `configure` | `configuration`：完整 JSON 配置；运行时只能改连接配置及默认选择，改变本地设置需停止后重启 |
+| `start` | 可传 `configuration`；不传时启动已加载配置；兼容旧版 `config`、`rules` |
+| `config.get` | `data` 返回完整配置结构，去掉密码 |
+| `config.load` | `path`：加载 JSON 或旧 properties，要求代理内核已停止 |
+| `config.save` | `path`：显式保存完整 JSON（包含密码）；同目录临时文件原子替换，POSIX 权限 600；父目录须存在 |
+| `connection.upsert` | `connection`：含 `id`、`name`、`config` 的完整配置项；修改时省略密码会保留旧密码，其他字段按提交值替换 |
+| `connection.remove` | `connectionId`：删除配置；默认配置必须先切换后才能删除 |
+| `connection.select` | `connectionId`：立即切换默认配置，断开旧代理隧道 |
+| `connection.disconnect` | `connectionId`：立即断开对应会话，下次请求重新建立；未连接配置无操作 |
+| `connection.test` | `connectionId`、`target`（如自有测试服务的 `host:port`）：建立独立临时会话并验证 CONNECT 及认证，完成后释放；不改变当前代理连接 |
+| `status` | 返回运行状态、默认配置 ID、各配置的状态、活跃及等待隧道数 |
+| `stop` / `exit` | 停止保留内存配置，或停止并退出控制进程 |
+
+```json
+{"id":"switch-1","command":"connection.select","connectionId":"node-h2"}
+```
+
+当前连通性测试在控制命令线程有界等待，期间其他控制命令等待测试结束；实际代理转发不阻塞。`connected` 表示传输连接已建立，不代表所有目标可达或认证已验证；使用 `connection.test` 验证指定目标与账号。配置变更仅在内存生效，重启前需显式保存，代理客户端应区分“已应用”和“已保存”。保存结果中的文件路径转为绝对路径，跨机器迁移需重新调整证书及规则文件路径。
+
+### 新增验证
+
+`Http2IntegrationTest` 覆盖并发复用、认证、证书、半关闭、反复取消上传/下载、额度排队、重连和 GOAWAY；`MultiConnectionIntegrationTest` 验证 HTTP/3 与 HTTP/2 双向切换时旧隧道和排队请求终止、直连与监听保持。`KernelConfigTest` 和 `UiControlTest` 验证唯一性、脱敏、保存及控制命令。
+
+```sh
+mvn test
+python3 scripts/smoke-test.py --protocol http2
+python3 scripts/smoke-test.py --protocol http3
+```
+
+两个冒烟命令需先构建 JAR，均只访问本机测试服务。

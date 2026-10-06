@@ -17,11 +17,17 @@ public final class DirectRoutes {
     private final List<Network> networks;
 
     public DirectRoutes(Path file) throws IOException {
+        this(Files.exists(file) ? Files.readAllLines(file) : List.of(), file.toString());
+    }
+
+    public DirectRoutes(String text) throws IOException { this(text.lines().toList(), "控制接口"); }
+
+    private DirectRoutes(List<String> lines, String source) throws IOException {
         var domainRules = new HashSet<String>();
         var networkRules = new ArrayList<Network>();
-        if (Files.exists(file)) {
+        {
             int lineNumber = 0;
-            for (String line : Files.readAllLines(file)) {
+            for (String line : lines) {
                 lineNumber++;
                 String rule = line.split("#", 2)[0].trim();
                 if (rule.isEmpty()) continue;
@@ -37,10 +43,16 @@ public final class DirectRoutes {
                     } else {
                         InetAddress address = literal(rule);
                         if (address != null) networkRules.add(new Network(address.getAddress(), address.getAddress().length * 8));
-                        else domainRules.add(normalize(rule));
+                        else {
+                            String domain = java.net.IDN.toASCII(normalize(rule));
+                            if (domain.length() > 253 || domain.matches("[0-9.]+")
+                                    || !domain.matches("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"))
+                                throw new IllegalArgumentException("应填写域名、IP 或 CIDR，不支持 URL 和通配符");
+                            domainRules.add(domain);
+                        }
                     }
                 } catch (IllegalArgumentException e) {
-                    throw new IOException("直连规则无效，位置：" + file + ":" + lineNumber + ": " + rule, e);
+                    throw new IOException("直连规则无效，位置：" + source + ":" + lineNumber + ": " + rule, e);
                 }
             }
         }

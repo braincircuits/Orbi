@@ -63,6 +63,7 @@ public final class Http3ProxyServer implements AutoCloseable {
                         ch.pipeline().addLast(new Http3ServerConnectionHandler(
                                 new ChannelInitializer<QuicStreamChannel>() {
                                     @Override protected void initChannel(QuicStreamChannel stream) {
+                                        stream.pipeline().addFirst("streamCleanup", new QuicStreamCleanupHandler());
                                         stream.config().setAllowHalfClosure(true);
                                         stream.config().setWriteBufferWaterMark(Transport.WATERMARK);
                                         stream.pipeline().addLast(new ServerConnectHandler(config, credentials, resolver));

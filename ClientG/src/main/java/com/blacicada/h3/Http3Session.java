@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** 连接与流的分配状态均限制在同一个事件循环内。 */
-public final class Http3Session implements AutoCloseable {
+public final class Http3Session implements ProxySession {
     private static final Logger LOGGER = LogManager.getLogger(Http3Session.class);
     private final EventLoop loop;
     private final ProxyConfig config;
@@ -36,6 +36,11 @@ public final class Http3Session implements AutoCloseable {
     private int streams;
     private final ArrayDeque<StreamRequest> waitingStreams = new ArrayDeque<>();
     private boolean creatingStream;
+    private volatile String connectionState = "idle";
+    private volatile String lastError = "";
+
+    public String connectionState() { return connectionState; }
+    public String lastError() { return lastError; }
 
     private record StreamRequest(QuicChannel parent, ChannelHandler handler,
                                  Promise<QuicStreamChannel> promise) { }
@@ -57,7 +62,7 @@ public final class Http3Session implements AutoCloseable {
                 .bind(0).sync().channel();
     }
 
-    private static Authority serverAddress(ProxyConfig config) throws IOException {
+    public static Authority serverAddress(ProxyConfig config) throws IOException {
         if (!config.get("server.host", "").isEmpty()) {
             return new Authority(config.required("server.host"), config.integer("server.port", 4433, 1, 65535));
         }
@@ -160,9 +165,18 @@ public final class Http3Session implements AutoCloseable {
         if (connecting != null) return connecting;
         Promise<QuicChannel> attempt = loop.newPromise();
         connecting = attempt;
+        connectionState = "connecting";
+        lastError = "";
         var deadline = loop.schedule(() -> attempt.tryFailure(new IOException("HTTP/3 握手超时")),
                 config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
-        attempt.addListener(f -> { deadline.cancel(false); if (connecting == attempt) connecting = null; });
+        attempt.addListener(f -> {
+            deadline.cancel(false);
+            if (connecting == attempt) connecting = null;
+            if (!f.isSuccess() && !closed) {
+                connectionState = "failed";
+                lastError = "服务端连接失败，请检查地址、网络及证书：" + f.cause().getClass().getSimpleName();
+            }
+        });
         resolver.getResolver(loop).resolve(server.unresolved()).addListener(resolved -> {
             if (attempt.isDone()) return;
             if (!resolved.isSuccess()) { attempt.tryFailure(resolved.cause()); return; }
@@ -190,11 +204,16 @@ public final class Http3Session implements AutoCloseable {
                         QuicChannel channel = (QuicChannel) connected.getNow();
                         if (closed || attempt.isDone()) { channel.close(); return; }
                         connection = channel;
+                        connectionState = "connected";
+                        lastError = "";
                         connectionCount.incrementAndGet();
                         LOGGER.info("与服务端的 HTTP/3 连接成功：服务端={}，连接 ID={}", server, channel.id().asShortText());
                         channel.closeFuture().addListener(ignored -> {
                             LOGGER.info("与服务端的 HTTP/3 连接已断开：服务端={}，连接 ID={}", server, channel.id().asShortText());
-                            if (connection == channel) connection = null;
+                            if (connection == channel) {
+                                connection = null;
+                                connectionState = "idle";
+                            }
                         });
                         attempt.trySuccess(channel);
                     });
@@ -220,6 +239,8 @@ public final class Http3Session implements AutoCloseable {
                 LOGGER.warn("CONNECT 等待期间 QUIC 连接无回包，关闭连接供后续请求重连：服务端={}，连接 ID={}，发送包增量={}",
                         server, parent.id().asShortText(), stats.sent() - sentBefore);
                 connection = null;
+                connectionState = "failed";
+                lastError = "服务端连接无响应，后续请求将重新连接";
                 parent.close();
             }
         });
@@ -235,6 +256,7 @@ public final class Http3Session implements AutoCloseable {
             this.result = result; this.target = target;
         }
         @Override public void handlerAdded(ChannelHandlerContext ctx) {
+            ctx.pipeline().addFirst("streamCleanup", new QuicStreamCleanupHandler());
             QuicStreamChannel stream = (QuicStreamChannel) ctx.channel();
             QuicChannel parent = stream.parent();
             parent.collectStats().addListener(done -> {
@@ -255,11 +277,15 @@ public final class Http3Session implements AutoCloseable {
                 String status = String.valueOf(headers.headers().status());
                 if (status.startsWith("1")) return;
                 if (status.length() == 3 && status.charAt(0) == '2') {
+                    lastError = "";
                     timeout.cancel(false);
                     ctx.channel().config().setAutoRead(false);
                     ctx.pipeline().replace(this, "data", new H3DataCodec());
                     if (!result.trySuccess((QuicStreamChannel) ctx.channel())) ctx.close();
-                } else { result.tryFailure(new IOException("代理 CONNECT 失败：" + status)); ctx.close(); }
+                } else {
+                    lastError = status.equals("407") ? "代理账号或密码验证失败" : "代理 CONNECT 失败：" + status;
+                    result.tryFailure(new IOException("代理 CONNECT 失败：" + status)); ctx.close();
+                }
             } else if (msg instanceof Http3UnknownFrame) ReferenceCountUtil.release(msg);
             else { ReferenceCountUtil.release(msg); result.tryFailure(new IOException("CONNECT 响应无效")); ctx.close(); }
         }
@@ -272,11 +298,12 @@ public final class Http3Session implements AutoCloseable {
 
     public long connectionCount() { return connectionCount.get(); }
     @Override public void close() {
-        loop.submit(() -> {
+        Runnable shutdown = () -> {
             closed = true;
             if (connecting != null) connecting.tryFailure(new IOException("代理会话已关闭"));
             if (connection != null) connection.close();
             udp.close();
-        }).syncUninterruptibly();
+        };
+        if (loop.inEventLoop()) shutdown.run(); else loop.submit(shutdown).syncUninterruptibly();
     }
 }

@@ -354,6 +354,60 @@ class Http3IntegrationTest {
         assertEquals(2, client.connectionCount(), "断开后新请求应能重新建立连接");
     }
 
+    @Test @Timeout(90) void abortedUploadsDoNotExhaustConnectionWindow() throws Exception {
+        try (var upload = new Origin(socket -> {
+            assertTrue(socket.getInputStream().read() >= 0);
+            Thread.sleep(20);
+            socket.setSoLinger(true, 0);
+            // 目标在上传期间主动复位连接，服务端必须释放对应 QUIC 输入。
+        })) {
+            byte[] payload = new byte[1024 * 1024];
+            for (int i = 0; i < 160; i++) {
+                try (Socket browser = tunnel(client, upload.port())) {
+                    try {
+                        browser.getOutputStream().write(payload);
+                        browser.getOutputStream().flush();
+                        browser.getInputStream().read();
+                    } catch (IOException expected) {
+                        // 目标主动中断，允许浏览器端读写失败。
+                    }
+                }
+                // 等待异步关闭传播，避免把本地并发保护误当成累计额度泄漏。
+                Thread.sleep(30);
+            }
+            try (Socket healthy = tunnel(client, echo.port())) {
+                send(healthy, "ok");
+                assertEquals("ok", new String(healthy.getInputStream().readNBytes(2), StandardCharsets.US_ASCII));
+            }
+            assertEquals(1, client.connectionCount(), "目标取消上传后仍应复用同一条连接");
+        }
+    }
+
+    @Test @Timeout(90) void abortedDownloadsDoNotExhaustConnectionWindow() throws Exception {
+        try (var download = new Origin(socket -> {
+            byte[] chunk = new byte[64 * 1024];
+            try {
+                for (int i = 0; i < 512; i++) socket.getOutputStream().write(chunk);
+            } catch (IOException expected) {
+                // 浏览器故意中断下载，允许目标写入失败。
+            }
+        })) {
+            for (int i = 0; i < 160; i++) {
+                try (Socket browser = tunnel(client, download.port())) {
+                    assertEquals(0, browser.getInputStream().read());
+                    // 留出少量时间制造积压，然后用 RST 模拟浏览器取消下载。
+                    Thread.sleep(20);
+                    browser.setSoLinger(true, 0);
+                }
+            }
+            try (Socket healthy = tunnel(client, echo.port())) {
+                send(healthy, "ok");
+                assertEquals("ok", new String(healthy.getInputStream().readNBytes(2), StandardCharsets.US_ASCII));
+            }
+            assertEquals(1, client.connectionCount(), "取消下载后仍应复用同一条连接");
+        }
+    }
+
     @Test void closedTunnelsReplenishStreamCredit() throws Exception {
         // 请求总数超过服务端默认额度，且每次只保留少量活跃流。
         for (int i = 0; i < 600; i++) {
