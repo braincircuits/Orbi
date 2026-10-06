@@ -365,6 +365,124 @@ class Http3IntegrationTest {
         assertEquals(1, client.connectionCount(), "连续请求应复用同一条 QUIC 连接");
     }
 
+    @Test void responsiveTransportSurvivesConnectTimeoutAndReclaimsStreams() throws Exception {
+        var group = new io.netty.channel.nio.NioEventLoopGroup(1);
+        io.netty.channel.Channel listener = null;
+        var connections = new io.netty.channel.group.DefaultChannelGroup(io.netty.util.concurrent.GlobalEventExecutor.INSTANCE);
+        var respond = new java.util.concurrent.atomic.AtomicBoolean();
+        try {
+            var ssl = io.netty.handler.codec.quic.QuicSslContextBuilder.forServer(
+                    new File(resource("localhost.key")), null, new File(resource("localhost.crt")))
+                    .applicationProtocols(io.netty.handler.codec.http3.Http3.supportedApplicationProtocols()).build();
+            var options = new Properties(); options.setProperty("maxStreams", "1");
+            var codec = com.blacicada.common.h3.Transport.limits(
+                    io.netty.handler.codec.http3.Http3.newQuicServerCodecBuilder(), new ProxyConfig(options, directory))
+                    .sslContext(ssl).tokenHandler(io.netty.handler.codec.quic.InsecureQuicTokenHandler.INSTANCE)
+                    .handler(new io.netty.channel.ChannelInitializer<io.netty.handler.codec.quic.QuicChannel>() {
+                        @Override protected void initChannel(io.netty.handler.codec.quic.QuicChannel channel) {
+                            connections.add(channel);
+                            channel.pipeline().addLast(new io.netty.handler.codec.http3.Http3ServerConnectionHandler(
+                                    new io.netty.channel.ChannelInitializer<io.netty.handler.codec.quic.QuicStreamChannel>() {
+                                        @Override protected void initChannel(io.netty.handler.codec.quic.QuicStreamChannel stream) {
+                                            stream.pipeline().addLast(new io.netty.channel.ChannelInboundHandlerAdapter() {
+                                                @Override public void channelRead(io.netty.channel.ChannelHandlerContext ctx, Object msg) {
+                                                    // 仍正常确认 QUIC 数据包，但故意不返回 CONNECT 响应。
+                                                    if (respond.get() && msg instanceof io.netty.handler.codec.http3.Http3HeadersFrame) {
+                                                        var reply = new io.netty.handler.codec.http3.DefaultHttp3HeadersFrame();
+                                                        reply.headers().status("200"); ctx.writeAndFlush(reply);
+                                                    }
+                                                    io.netty.util.ReferenceCountUtil.release(msg);
+                                                }
+                                            });
+                                        }
+                                    }));
+                        }
+                    }).build();
+            listener = new io.netty.bootstrap.Bootstrap().group(group)
+                    .channel(io.netty.channel.socket.nio.NioDatagramChannel.class).handler(codec)
+                    .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+            var config = new Properties();
+            config.setProperty("password", "test-secret"); config.setProperty("port", "0");
+            config.setProperty("server.host", "127.0.0.1");
+            config.setProperty("server.port", Integer.toString(((InetSocketAddress) listener.localAddress()).getPort()));
+            config.setProperty("tls.ca", resource("localhost.crt")); config.setProperty("tls.serverName", "localhost");
+            config.setProperty("connectTimeoutMillis", "1000");
+            try (var proxy = new LocalProxyServer(new ProxyConfig(config, directory)).start()) {
+                // 对端只允许一个流；连续超时后仍应释放额度，而不是耗尽额度或重连。
+                for (int i = 0; i < 3; i++) {
+                    try (Socket stalled = socket(proxy)) {
+                        send(stalled, "CONNECT localhost:80 HTTP/1.1\r\nHost: localhost\r\n\r\n");
+                        assertTrue(headers(stalled.getInputStream()).startsWith("HTTP/1.1 502"));
+                    }
+                }
+                respond.set(true);
+                try (Socket recovered = tunnel(proxy, 80)) { assertTrue(recovered.isConnected()); }
+                assertEquals(1, proxy.connectionCount(), "有正常 QUIC 回包时不能因 CONNECT 超时关闭共享连接");
+            }
+        } finally {
+            connections.close().awaitUninterruptibly();
+            if (listener != null) listener.close().awaitUninterruptibly();
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS).awaitUninterruptibly();
+        }
+    }
+
+    @Test void reconnectsAfterSilentPacketLoss() throws Exception {
+        try (var relay = new DatagramRelay(server.address())) {
+            var options = new Properties();
+            options.setProperty("password", "integration-test-secret");
+            options.setProperty("port", "0"); options.setProperty("server.host", "127.0.0.1");
+            options.setProperty("server.port", Integer.toString(relay.port()));
+            options.setProperty("tls.ca", resource("localhost.crt")); options.setProperty("tls.serverName", "localhost");
+            options.setProperty("connectTimeoutMillis", "1000");
+            try (var proxy = new LocalProxyServer(new ProxyConfig(options, directory)).start()) {
+                try (Socket first = tunnel(proxy, echo.port())) {
+                    send(first, "a"); assertEquals('a', first.getInputStream().read());
+                }
+                // 让前一个流的关闭与确认先完成，再模拟没有关闭通知的网络黑洞。
+                Thread.sleep(300);
+                relay.drop = true;
+                try (Socket stalled = socket(proxy)) {
+                    send(stalled, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+                    assertTrue(headers(stalled.getInputStream()).startsWith("HTTP/1.1 502"));
+                }
+                relay.drop = false;
+                try (Socket next = tunnel(proxy, echo.port())) {
+                    send(next, "b"); assertEquals('b', next.getInputStream().read());
+                }
+                assertEquals(2, proxy.connectionCount(), "无回包超时后应淘汰失效连接，让新请求重新连接");
+            }
+        }
+    }
+
+    /** 转发本机 UDP 数据；可模拟双向丢包，不依赖公网或系统防火墙。 */
+    private static final class DatagramRelay implements AutoCloseable {
+        private final DatagramSocket socket;
+        private final Thread thread;
+        volatile boolean drop;
+        private SocketAddress clientAddress;
+        DatagramRelay(InetSocketAddress serverAddress) throws IOException {
+            socket = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0));
+            thread = Thread.ofVirtual().start(() -> {
+                byte[] bytes = new byte[65535];
+                while (!socket.isClosed()) {
+                    try {
+                        var packet = new DatagramPacket(bytes, bytes.length);
+                        socket.receive(packet);
+                        boolean fromServer = packet.getSocketAddress().equals(serverAddress);
+                        if (!fromServer) clientAddress = packet.getSocketAddress();
+                        if (drop) continue;
+                        SocketAddress destination = fromServer ? clientAddress : serverAddress;
+                        if (destination != null) socket.send(new DatagramPacket(bytes, packet.getLength(), destination));
+                    } catch (IOException e) {
+                        if (!socket.isClosed()) throw new UncheckedIOException(e);
+                    }
+                }
+            });
+        }
+        int port() { return socket.getLocalPort(); }
+        @Override public void close() throws InterruptedException { socket.close(); thread.join(2000); }
+    }
+
     @Test void reconnectsAfterConnectionLoss() throws Exception {
         try (Socket first = tunnel(client, echo.port())) {
             send(first, "a"); assertEquals('a', first.getInputStream().read());

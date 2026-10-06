@@ -14,6 +14,9 @@ import java.util.ArrayDeque;
 import java.util.concurrent.TimeUnit;
 
 final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
+    private static final org.apache.logging.log4j.Logger LOGGER =
+            org.apache.logging.log4j.LogManager.getLogger(ServerConnectHandler.class);
+    private Authority requestedTarget;
     private final ProxyConfig config;
     private final ProxyCredentials credentials;
     private final DnsAddressResolverGroup resolver;
@@ -44,6 +47,7 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
             final Authority authority;
             try { authority = Authority.parse(frame.headers().authority().toString(), -1); }
             catch (RuntimeException e) { fail(ctx, "400"); return; }
+            requestedTarget = authority;
             ctx.channel().config().setAutoRead(false);
             var connecting = new Bootstrap().group(ctx.channel().eventLoop()).channel(NioSocketChannel.class)
                     .resolver(resolver).option(ChannelOption.CONNECT_TIMEOUT_MILLIS, config.connectTimeoutMillis())
@@ -80,6 +84,9 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
     private void fail(ChannelHandlerContext ctx, String status) {
         if (finished) return;
         finished = true;
+        QuicStreamChannel stream = (QuicStreamChannel) ctx.channel();
+        LOGGER.warn("CONNECT 请求失败：状态={}，目标={}，连接 ID={}，流 ID={}",
+                status, requestedTarget, stream.parent().id().asShortText(), stream.streamId());
         if (timeout != null) timeout.cancel(false);
         releasePending();
         if (target != null) target.close();

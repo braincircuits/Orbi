@@ -81,14 +81,14 @@ public final class Http3Session implements AutoCloseable {
                 if (result.isDone()) { streams--; return; }
                 if (!f.isSuccess()) { streams--; result.tryFailure(f.cause()); return; }
                 QuicChannel parent = (QuicChannel) f.getNow();
-                var response = new ConnectResponse(result);
+                var response = new ConnectResponse(result, target);
                 Future<QuicStreamChannel> creation = createWhenAllowed(parent, response);
                 result.addListener(done -> { if (!done.isSuccess()) creation.cancel(false); });
                 creation.addListener(created -> {
                     if (!created.isSuccess()) { streams--; result.tryFailure(created.cause()); return; }
                     QuicStreamChannel stream = (QuicStreamChannel) created.getNow();
                     stream.closeFuture().addListener(ignored -> streams--);
-                    result.addListener(done -> { if (!done.isSuccess()) stream.close(); });
+                    result.addListener(done -> { if (!done.isSuccess()) abortRequest(stream); });
                     var request = new DefaultHttp3HeadersFrame();
                     request.headers().method("CONNECT").authority(target.toString())
                             .set("proxy-authorization", authorization);
@@ -105,7 +105,9 @@ public final class Http3Session implements AutoCloseable {
         Promise<QuicStreamChannel> promise = loop.newPromise();
         var request = new StreamRequest(parent, handler, promise);
         waitingStreams.add(request);
-        var timeout = loop.schedule(() -> promise.tryFailure(new IOException("等待 QUIC 流额度超时")),
+        var timeout = loop.schedule(() -> promise.tryFailure(new IOException("等待 QUIC 流额度超时：连接 ID=" + parent.id().asShortText()
+                + "，对端剩余额度=" + parent.peerAllowedStreams(QuicStreamType.BIDIRECTIONAL)
+                + "，本地占用=" + streams + "，排队=" + waitingStreams.size())),
                 config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
         promise.addListener(done -> {
             timeout.cancel(false);
@@ -136,7 +138,7 @@ public final class Http3Session implements AutoCloseable {
                         creatingStream = false;
                         if (created.isSuccess()) {
                             QuicStreamChannel stream = (QuicStreamChannel) created.getNow();
-                            if (!request.promise().trySuccess(stream)) stream.close();
+                            if (!request.promise().trySuccess(stream)) abortRequest(stream);
                         } else request.promise().tryFailure(created.cause());
                         // 下一轮调度避免同步完成回调造成递归，并重新读取剩余额度。
                         loop.execute(this::drainWaitingStreams);
@@ -200,13 +202,52 @@ public final class Http3Session implements AutoCloseable {
         return attempt;
     }
 
+    private void abortRequest(QuicStreamChannel stream) {
+        // CONNECT 尚未成功，取消两端方向，避免只发送 FIN 后仍等待服务端结束响应。
+        if (stream.isActive()) stream.shutdown((int) Http3ErrorCode.H3_REQUEST_CANCELLED.code())
+                .addListener(ignored -> stream.close());
+        else stream.close();
+    }
+
+    private void checkUnresponsiveConnection(QuicChannel parent, long receivedBefore, long sentBefore) {
+        if (receivedBefore < 0 || sentBefore < 0 || connection != parent || !parent.isActive()) return;
+        parent.collectStats().addListener(done -> {
+            if (!done.isSuccess() || connection != parent || !parent.isActive()) return;
+            QuicConnectionStats stats = (QuicConnectionStats) done.getNow();
+            // 单个目标慢、或流额度已用完都不能作为关闭共享连接的依据。
+            // 仅在整个 CONNECT 等待期间有发包却完全无回包时淘汰疑似失效连接。
+            if (stats.recv() == receivedBefore && stats.sent() > sentBefore) {
+                LOGGER.warn("CONNECT 等待期间 QUIC 连接无回包，关闭连接供后续请求重连：服务端={}，连接 ID={}，发送包增量={}",
+                        server, parent.id().asShortText(), stats.sent() - sentBefore);
+                connection = null;
+                parent.close();
+            }
+        });
+    }
+
     private final class ConnectResponse extends ChannelInboundHandlerAdapter {
         private final Promise<QuicStreamChannel> result;
         private ScheduledFuture<?> timeout;
-        ConnectResponse(Promise<QuicStreamChannel> result) { this.result = result; }
+        private final Authority target;
+        private long receivedBefore = -1;
+        private long sentBefore = -1;
+        ConnectResponse(Promise<QuicStreamChannel> result, Authority target) {
+            this.result = result; this.target = target;
+        }
         @Override public void handlerAdded(ChannelHandlerContext ctx) {
+            QuicStreamChannel stream = (QuicStreamChannel) ctx.channel();
+            QuicChannel parent = stream.parent();
+            parent.collectStats().addListener(done -> {
+                if (done.isSuccess()) {
+                    QuicConnectionStats stats = (QuicConnectionStats) done.getNow();
+                    receivedBefore = stats.recv(); sentBefore = stats.sent();
+                }
+            });
             timeout = ctx.executor().schedule(() -> {
-                result.tryFailure(new IOException("等待 CONNECT 响应超时")); ctx.close();
+                checkUnresponsiveConnection(parent, receivedBefore, sentBefore);
+                result.tryFailure(new IOException("等待 CONNECT 响应超时：目标=" + target
+                        + "，连接 ID=" + parent.id().asShortText() + "，流 ID=" + stream.streamId()));
+                abortRequest(stream);
             }, config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
         }
         @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
