@@ -13,3 +13,6 @@ dependency-reduced-pom.xml
 .local-h3/
 certs/
 /release/
+
+# 本项目的 Codex 本机配置
+/.codex/
