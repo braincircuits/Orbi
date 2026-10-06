@@ -13,7 +13,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.concurrent.ForkJoinPool;
@@ -48,7 +47,7 @@ public final class Http3Session implements ProxySession {
     public Http3Session(EventLoop loop, ProxyConfig config, DnsAddressResolverGroup resolver) throws Exception {
         this.loop = loop; this.config = config; this.resolver = resolver;
         authorization = ProxyCredentials.clientAuthorization(config);
-        server = serverAddress(config);
+        server = new Authority(config.required("server.host"), config.integer("server.port", 4433, 1, 65535));
         Quic.ensureAvailability();
         var sslBuilder = QuicSslContextBuilder.forClient().earlyData(false)
                 .applicationProtocols(Http3.supportedApplicationProtocols()).endpointIdentificationAlgorithm("HTTPS");
@@ -60,18 +59,6 @@ public final class Http3Session implements ProxySession {
                 .sslTaskExecutor(ForkJoinPool.commonPool()).build();
         udp = new Bootstrap().group(loop).channel(NioDatagramChannel.class).handler(codec)
                 .bind(0).sync().channel();
-    }
-
-    public static Authority serverAddress(ProxyConfig config) throws IOException {
-        if (!config.get("server.host", "").isEmpty()) {
-            return new Authority(config.required("server.host"), config.integer("server.port", 4433, 1, 65535));
-        }
-        // 兼容原有 config.txt 中按编号选择服务器的配置。
-        var lines = Files.readAllLines(config.path("serversFile", "config.txt")).stream()
-                .map(String::trim).filter(s -> !s.isEmpty() && !s.startsWith("#")).toList();
-        int index = Integer.parseInt(lines.getFirst().replace("[", "").replace("]", ""));
-        if (index < 1 || index >= lines.size()) throw new IllegalArgumentException("服务器编号无效");
-        return Authority.parse(lines.get(index), -1);
     }
 
     public Future<QuicStreamChannel> open(Authority target) {

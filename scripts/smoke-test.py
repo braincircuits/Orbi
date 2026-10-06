@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """使用本地 HTTP 目标服务验证客户端和服务端 JAR，无需访问公网。"""
+import json
 import argparse
 import http.client
 import http.server
@@ -82,11 +83,11 @@ def main():
             )
             udp_port = launch(ROOT / "Server/target/Server-1.0-SNAPSHOT.jar", server_config,
                               f"{label} 代理服务端已监听", processes, server_logs)
-            client_config = base / "client.properties"
-            client_config.write_text(
-                f"protocol={protocol}\nport=0\npassword=smoke-only\nserver.host=127.0.0.1\nserver.port={udp_port}\n"
-                f"tls.ca={cert}\ntls.serverName=localhost\nidleTimeoutSeconds=10\n"
-            )
+            client_config = base / "kernel.json"
+            client_config.write_text(json.dumps({"version": 1, "local": {"port": 0}, "defaultConnectionId": "test",
+                "connections": [{"id": "test", "name": "测试", "config": {"protocol": protocol,
+                "password": "smoke-only", "server.host": "127.0.0.1", "server.port": udp_port,
+                "tls.ca": str(cert), "tls.serverName": "localhost", "idleTimeoutSeconds": 10}}]}))
             proxy_port = launch(ROOT / "ClientG/target/clientG-1.0-SNAPSHOT.jar", client_config,
                                 "本地 HTTP 代理已监听", processes, client_logs)
             origin_port = origin.server_port

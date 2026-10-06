@@ -40,4 +40,13 @@ class KernelConfigTest {
         JsonObject edit = config.json(false).getAsJsonArray("connections").get(0).getAsJsonObject();
         assertEquals("secret-test", KernelConfig.parseProfile(edit, directory, config.profile("a")).config().required("password"));
     }
+
+    @Test void rejectsOldFileAndServerFieldsInLocalConfiguration() throws Exception {
+        Path old = directory.resolve("client.properties");
+        Files.writeString(old, "server.host=localhost\npassword=test\n");
+        assertThrows(IllegalArgumentException.class, () -> KernelConfig.load(old));
+        Properties misplaced = new Properties(); misplaced.setProperty("server.host", "localhost");
+        assertThrows(IllegalArgumentException.class, () -> new KernelConfig(new ProxyConfig(misplaced, directory),
+                List.of(profile("a", "localhost", "http3")), "a"));
+    }
 }

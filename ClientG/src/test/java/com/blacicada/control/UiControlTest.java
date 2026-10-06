@@ -17,8 +17,11 @@ class UiControlTest {
     }
 
     private String start(int port) {
-        return "{\"id\":\"start\",\"command\":\"start\",\"config\":{\"server.host\":\"127.0.0.1\",\"server.port\":\"4433\",\"port\":\""
-                + port + "\",\"password\":\"test-secret\"},\"rules\":\"\"}";
+        JsonObject root = new JsonObject(); root.addProperty("id", "start"); root.addProperty("command", "start");
+        JsonObject configuration = JsonParser.parseString("{\"version\":1,\"local\":{\"routesInline\":\"\"},\"defaultConnectionId\":\"test\",\"connections\":[{\"id\":\"test\",\"name\":\"测试\",\"config\":{\"server.host\":\"127.0.0.1\",\"server.port\":4433,\"password\":\"test-secret\"}}]}").getAsJsonObject();
+        configuration.getAsJsonObject("local").addProperty("port", port);
+        root.add("configuration", configuration);
+        return root.toString();
     }
 
     private JsonObject response(List<JsonObject> events, String id) {
@@ -78,5 +81,10 @@ class UiControlTest {
             assertEquals("h2", loaded.defaultConnectionId()); assertEquals(1, loaded.connections().size());
             assertEquals("10.0.0.0/8", loaded.local().get("routesInline", ""));
         } finally { java.nio.file.Files.deleteIfExists(file); }
+    }
+
+    @Test void rejectsOldStartParameters() throws Exception {
+        var events = exchange("{\"id\":\"old\",\"command\":\"start\",\"config\":{\"server.host\":\"localhost\",\"password\":\"test\"}}");
+        assertFalse(response(events, "old").get("ok").getAsBoolean());
     }
 }

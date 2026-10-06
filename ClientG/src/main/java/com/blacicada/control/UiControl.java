@@ -97,13 +97,10 @@ public final class UiControl implements AutoCloseable {
     }
     private void start(JsonObject command) throws Exception {
         if (proxy != null) throw new IllegalStateException("代理已经运行，请先停止");
+        if (command.has("config") || command.has("rules"))
+            throw new IllegalArgumentException("请使用 configuration 提交完整 JSON 配置");
         KernelConfig next = config;
         if (command.has("configuration")) next = KernelConfig.parse(command.getAsJsonObject("configuration"), Path.of("."));
-        else if (command.has("config")) {
-            Properties values = KernelConfig.properties(command.getAsJsonObject("config"));
-            values.setProperty("routesInline", command.has("rules") ? command.get("rules").getAsString() : "");
-            next = KernelConfig.legacy(new ProxyConfig(values, Path.of(".")));
-        }
         if (next == null) throw new IllegalStateException("尚未设置连接配置");
         proxy = new LocalProxyServer(next).start(); config = next;
     }

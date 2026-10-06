@@ -1,7 +1,6 @@
 package com.blacicada.config;
 
 import com.blacicada.common.h3.*;
-import com.blacicada.h3.Http3Session;
 import com.google.gson.*;
 import io.netty.util.NetUtil;
 import java.net.IDN;
@@ -43,6 +42,9 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
             if (!keys.add(p.key())) throw new IllegalArgumentException("协议、服务器地址和端口重复");
         }
         if (!ids.contains(defaultConnectionId)) throw new IllegalArgumentException("默认连接不存在");
+        for (String key : local.values().stringPropertyNames())
+            if (!Set.of("bind", "port", "routesInline", "routesFile", "connectTimeoutMillis").contains(key))
+                throw new IllegalArgumentException("未知内核公共配置字段：" + key);
         local.integer("port", 8080, 0, 65535); local.connectTimeoutMillis();
         try {
             if (local.values().containsKey("routesInline")) new com.blacicada.h3.DirectRoutes(local.get("routesInline", ""));
@@ -63,15 +65,8 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
         if (id.equals(defaultConnectionId)) throw new IllegalArgumentException("请先切换默认连接，再删除此配置");
         return new KernelConfig(local, connections.stream().filter(p -> !p.id().equals(id)).toList(), defaultConnectionId);
     }
-    public static KernelConfig legacy(ProxyConfig config) throws IOException {
-        Properties p = new Properties();
-        for (String key : CONNECTION_KEYS) if (config.values().containsKey(key)) p.setProperty(key, config.values().getProperty(key));
-        Authority address = Http3Session.serverAddress(config);
-        p.setProperty("server.host", address.host()); p.setProperty("server.port", Integer.toString(address.port()));
-        return new KernelConfig(config, List.of(new Profile("default", "默认连接", new ProxyConfig(p, config.base()))), "default");
-    }
     public static KernelConfig load(Path file) throws IOException {
-        if (!file.toString().endsWith(".json")) return legacy(ProxyConfig.load(file));
+        if (!file.toString().endsWith(".json")) throw new IllegalArgumentException("代理内核只接受 kernel.json 格式的 JSON 配置");
         return parse(JsonParser.parseString(Files.readString(file)).getAsJsonObject(), file.toAbsolutePath().getParent());
     }
     public static KernelConfig parse(JsonObject root, Path base) {
@@ -94,8 +89,6 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
     public JsonObject json(boolean secrets) {
         JsonObject root = new JsonObject(); root.addProperty("version", 1);
         Properties localValues = local.values();
-        CONNECTION_KEYS.forEach(localValues::remove);
-        localValues.remove("serversFile");
         if (localValues.containsKey("routesFile")) localValues.setProperty("routesFile", local.path("routesFile", "").toString());
         root.add("local", JSON.toJsonTree(localValues)); root.addProperty("defaultConnectionId", defaultConnectionId);
         JsonArray all = new JsonArray();

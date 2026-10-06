@@ -60,9 +60,12 @@ def main():
             with socket.socket() as reserved:
                 reserved.bind(("127.0.0.1", 0))
                 port = reserved.getsockname()[1]
-            values = {"server.host": "127.0.0.1", "server.port": str(server_port), "port": str(port),
+            values = {"server.host": "127.0.0.1", "server.port": str(server_port),
                       "password": "ui-test-secret", "tls.ca": str(cert), "tls.serverName": "localhost"}
-            state = command("start", config=values, rules="")
+            def start(rules=""):
+                return command("start", configuration={"version": 1, "local": {"port": port, "routesInline": rules},
+                    "defaultConnectionId": "test", "connections": [{"id": "test", "name": "测试", "config": values}]})
+            state = start()
             assert state["running"] and state["connection"] == "idle"
 
             def request(tunnel=False, expected=200):
@@ -84,12 +87,12 @@ def main():
             assert command("status")["connection"] == "connected"
             command("stop")
             values["password"] = "incorrect-test-password"
-            command("start", config=values, rules="")
+            start()
             request(expected=502)
             assert "验证失败" in command("status")["error"]
             command("stop")
             # 错误密码下仍能访问命中直连规则的本地目标。
-            command("start", config=values, rules="127.0.0.1")
+            start("127.0.0.1")
             request()
             assert command("status")["connection"] == "idle"
             client.stdin.close()

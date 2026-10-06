@@ -36,7 +36,10 @@ class Http3IntegrationTest {
         options.setProperty("tls.key", resource("localhost.key"));
         options.setProperty("connectTimeoutMillis", "3000");
         server = new Http3ProxyServer(new ProxyConfig(options, directory)).start();
-        client = new LocalProxyServer(clientConfig("integration-test-secret", "localhost", false, 32)).start();
+        client = proxy(clientConfig("integration-test-secret", "localhost", false, 32)).start();
+    }
+    private LocalProxyServer proxy(ProxyConfig options) {
+        return new LocalProxyServer(TestKernelConfig.from(options));
     }
     private String resource(String name) throws Exception {
         return Path.of(getClass().getResource("/tls/" + name).toURI()).toString();
@@ -133,14 +136,14 @@ class Http3IntegrationTest {
         assertEquals(1, client.connectionCount());
     }
     @Test void wrongPasswordCannotReachTarget() throws Exception {
-        try (var bad = new LocalProxyServer(clientConfig("wrong", "localhost", false, 8)).start(); Socket s = socket(bad)) {
+        try (var bad = proxy(clientConfig("wrong", "localhost", false, 8)).start(); Socket s = socket(bad)) {
             send(s, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assertTrue(headers(s.getInputStream()).startsWith("HTTP/1.1 502"));
             assertEquals(0, echo.accepted.get());
         }
     }
     @Test void verifiesCertificateHostname() throws Exception {
-        try (var bad = new LocalProxyServer(clientConfig("integration-test-secret", "wrong.invalid", false, 8)).start(); Socket s = socket(bad)) {
+        try (var bad = proxy(clientConfig("integration-test-secret", "wrong.invalid", false, 8)).start(); Socket s = socket(bad)) {
             send(s, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assertTrue(headers(s.getInputStream()).startsWith("HTTP/1.1 502"));
             assertEquals(0, echo.accepted.get());
@@ -174,7 +177,7 @@ class Http3IntegrationTest {
         }
     }
     @Test void routesDirectDomainsWithoutOpeningQuic() throws Exception {
-        try (var direct = new LocalProxyServer(clientConfig("integration-test-secret", "localhost", true, 8)).start(); Socket s = socket(direct)) {
+        try (var direct = proxy(clientConfig("integration-test-secret", "localhost", true, 8)).start(); Socket s = socket(direct)) {
             send(s, "CONNECT 127.0.0.1:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assertTrue(headers(s.getInputStream()).startsWith("HTTP/1.1 200"));
             send(s, "direct"); assertEquals("direct", new String(s.getInputStream().readNBytes(6)));
@@ -184,7 +187,7 @@ class Http3IntegrationTest {
     @Test void cidrBypassesProxyForLiteralAndResolvedDomainEvenWhenServerIsDown() throws Exception {
         Files.writeString(directory.resolve("pac.txt"), "127.0.0.0/8\n");
         server.close();
-        try (var direct = new LocalProxyServer(clientConfig("wrong", "localhost", false, 8)).start()) {
+        try (var direct = proxy(clientConfig("wrong", "localhost", false, 8)).start()) {
             for (String host : List.of("127.0.0.1", "localhost")) {
                 try (Socket s = socket(direct)) {
                     send(s, "CONNECT " + host + ":" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
@@ -200,7 +203,7 @@ class Http3IntegrationTest {
 
     @Test void nonMatchingCidrStillUsesHttp3() throws Exception {
         Files.writeString(directory.resolve("pac.txt"), "10.0.0.0/8\n");
-        try (var routed = new LocalProxyServer(clientConfig("integration-test-secret", "localhost", false, 8)).start();
+        try (var routed = proxy(clientConfig("integration-test-secret", "localhost", false, 8)).start();
              Socket s = tunnel(routed, echo.port())) {
             send(s, "proxy");
             assertEquals("proxy", new String(s.getInputStream().readNBytes(5), StandardCharsets.US_ASCII));
@@ -214,7 +217,7 @@ class Http3IntegrationTest {
         try (Origin http = new Origin(s -> {
             assertTrue(headers(s.getInputStream()).startsWith("GET /cidr HTTP/1.1"));
             send(s, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
-        }); var direct = new LocalProxyServer(clientConfig("wrong", "localhost", false, 8)).start();
+        }); var direct = proxy(clientConfig("wrong", "localhost", false, 8)).start();
              Socket s = socket(direct)) {
             send(s, "GET http://localhost:" + http.port() + "/cidr HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assertTrue(headers(s.getInputStream()).startsWith("HTTP/1.1 200"));
@@ -244,9 +247,9 @@ class Http3IntegrationTest {
         options.setProperty("tls.cert", resource("localhost.crt"));
         options.setProperty("tls.key", resource("localhost.key"));
         server = new Http3ProxyServer(new ProxyConfig(options, directory)).start();
-        try (var alice = new LocalProxyServer(accountClientConfig("alice", "alice-secret")).start();
-             var bob = new LocalProxyServer(accountClientConfig("bob", "bob-secret")).start();
-             var bad = new LocalProxyServer(accountClientConfig("alice", "bob-secret")).start();
+        try (var alice = proxy(accountClientConfig("alice", "alice-secret")).start();
+             var bob = proxy(accountClientConfig("bob", "bob-secret")).start();
+             var bad = proxy(accountClientConfig("alice", "bob-secret")).start();
              Socket first = tunnel(alice, echo.port()); Socket second = tunnel(bob, echo.port());
              Socket rejected = socket(bad)) {
             send(rejected, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
@@ -261,8 +264,8 @@ class Http3IntegrationTest {
 
     @Test void multipleClientsHaveIndependentConnectionsAndStreamLimits() throws Exception {
         useSinglePeerStream();
-        try (var second = new LocalProxyServer(clientConfig("integration-test-secret", "localhost", false, 1)).start();
-             var third = new LocalProxyServer(clientConfig("integration-test-secret", "localhost", false, 1)).start();
+        try (var second = proxy(clientConfig("integration-test-secret", "localhost", false, 1)).start();
+             var third = proxy(clientConfig("integration-test-secret", "localhost", false, 1)).start();
              Socket firstTunnel = tunnel(client, echo.port());
              Socket secondTunnel = tunnel(second, echo.port());
              Socket thirdTunnel = tunnel(third, echo.port());
@@ -304,7 +307,7 @@ class Http3IntegrationTest {
         options.setProperty("tls.key", resource("localhost.key"));
         options.setProperty("maxStreams", "1");
         server = new Http3ProxyServer(new ProxyConfig(options, directory)).start();
-        client = new LocalProxyServer(clientConfig("integration-test-secret", "localhost", false, 32)).start();
+        client = proxy(clientConfig("integration-test-secret", "localhost", false, 32)).start();
     }
 
     @Test void waitsForPeerStreamCreditWithoutReconnecting() throws Exception {
@@ -461,7 +464,7 @@ class Http3IntegrationTest {
             config.setProperty("server.port", Integer.toString(((InetSocketAddress) listener.localAddress()).getPort()));
             config.setProperty("tls.ca", resource("localhost.crt")); config.setProperty("tls.serverName", "localhost");
             config.setProperty("connectTimeoutMillis", "1000");
-            try (var proxy = new LocalProxyServer(new ProxyConfig(config, directory)).start()) {
+            try (var proxy = proxy(new ProxyConfig(config, directory)).start()) {
                 // 对端只允许一个流；连续超时后仍应释放额度，而不是耗尽额度或重连。
                 for (int i = 0; i < 3; i++) {
                     try (Socket stalled = socket(proxy)) {
@@ -488,7 +491,7 @@ class Http3IntegrationTest {
             options.setProperty("server.port", Integer.toString(relay.port()));
             options.setProperty("tls.ca", resource("localhost.crt")); options.setProperty("tls.serverName", "localhost");
             options.setProperty("connectTimeoutMillis", "1000");
-            try (var proxy = new LocalProxyServer(new ProxyConfig(options, directory)).start()) {
+            try (var proxy = proxy(new ProxyConfig(options, directory)).start()) {
                 try (Socket first = tunnel(proxy, echo.port())) {
                     send(first, "a"); assertEquals('a', first.getInputStream().read());
                 }
@@ -547,7 +550,7 @@ class Http3IntegrationTest {
         assertEquals(2, client.connectionCount());
     }
     @Test void streamLimitDoesNotCloseExistingTunnels() throws Exception {
-        try (var limited = new LocalProxyServer(clientConfig("integration-test-secret", "localhost", false, 1)).start();
+        try (var limited = proxy(clientConfig("integration-test-secret", "localhost", false, 1)).start();
              Socket active = tunnel(limited, echo.port()); Socket extra = socket(limited)) {
             send(extra, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assertTrue(headers(extra.getInputStream()).startsWith("HTTP/1.1 502"));

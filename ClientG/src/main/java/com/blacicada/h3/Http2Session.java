@@ -53,7 +53,7 @@ public final class Http2Session implements ProxySession {
     public Http2Session(EventLoop loop, ProxyConfig config, DnsAddressResolverGroup resolver) throws Exception {
         this.loop = loop; this.config = config; this.resolver = resolver;
         parents = new DefaultChannelGroup(loop);
-        server = Http3Session.serverAddress(config);
+        server = new Authority(config.required("server.host"), config.integer("server.port", 4433, 1, 65535));
         authorization = ProxyCredentials.clientAuthorization(config);
         var builder = SslContextBuilder.forClient().sslProvider(SslProvider.JDK)
                     .ciphers(Http2SecurityUtil.CIPHERS, SupportedCipherSuiteFilter.INSTANCE)

@@ -14,8 +14,10 @@ mkdir -p "$release_dir"
 release_dir=$(CDPATH= cd -- "$release_dir" && pwd)
 for app in server client; do
     mkdir -p "$release_dir/$app/config" "$release_dir/$app/certs"
-    sed "s/@APP@/$app/g" "$project_dir/scripts/release/start.sh.template" > "$release_dir/$app/start.sh"
-    sed "s/@APP@/$app/g" "$project_dir/scripts/release/start.cmd.template" > "$release_dir/$app/start.cmd"
+    config_name=server.properties
+    [ "$app" != client ] || config_name=kernel.json
+    sed "s/@APP@/$app/g; s/@CONFIG@/$config_name/g" "$project_dir/scripts/release/start.sh.template" > "$release_dir/$app/start.sh"
+    sed "s/@APP@/$app/g; s/@CONFIG@/$config_name/g" "$project_dir/scripts/release/start.cmd.template" > "$release_dir/$app/start.cmd"
     cp "$project_dir/scripts/release/background.sh.template" "$release_dir/$app/background.sh"
     chmod 700 "$release_dir/$app/start.sh" "$release_dir/$app/background.sh"
 done
@@ -40,19 +42,34 @@ connectTimeoutMillis=10000
 idleTimeoutSeconds=300
 maxStreams=256
 CONFIG
-cat > "$release_dir/client/config/client.properties" <<CONFIG
-bind=127.0.0.1
-port=8080
-server.host=127.0.0.1
-server.port=4433
-username=client1
-password=$secret
-tls.ca=../certs/server.crt
-tls.serverName=localhost
-routesFile=pac.txt
-connectTimeoutMillis=10000
-idleTimeoutSeconds=300
-maxStreams=256
+cat > "$release_dir/client/config/kernel.json" <<CONFIG
+{
+  "version": 1,
+  "local": {
+    "bind": "127.0.0.1",
+    "port": 8080,
+    "routesFile": "pac.txt"
+  },
+  "defaultConnectionId": "default",
+  "connections": [
+    {
+      "id": "default",
+      "name": "默认连接",
+      "config": {
+        "protocol": "http3",
+        "server.host": "127.0.0.1",
+        "server.port": 4433,
+        "password": "$secret",
+        "tls.ca": "../certs/server.crt",
+        "tls.serverName": "localhost",
+        "connectTimeoutMillis": 10000,
+        "idleTimeoutSeconds": 300,
+        "maxStreams": 256,
+        "username": "client1"
+      }
+    }
+  ]
+}
 CONFIG
 printf '# 每行一个账号及其独立密码。修改后重启服务端。\nclient1=%s\n' "$secret" > "$release_dir/server/config/users.properties"
 printf '# 每行填写一个直连域名、IP 或 CIDR 网段；为空时全部走代理。\n' > "$release_dir/client/config/pac.txt"

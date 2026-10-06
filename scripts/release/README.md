@@ -12,7 +12,7 @@ release/
 └── client/
     ├── client.jar
     ├── start.sh / start.cmd / background.sh
-    ├── config/client.properties、pac.txt
+    ├── config/kernel.json、pac.txt
     └── certs/server.crt
 ```
 
@@ -36,7 +36,7 @@ macOS / Linux，在此发布目录下运行：
 
 ```sh
 java --enable-native-access=ALL-UNNAMED -jar server/server.jar server/config/server.properties
-java --enable-native-access=ALL-UNNAMED -jar client/client.jar client/config/client.properties
+java --enable-native-access=ALL-UNNAMED -jar client/client.jar client/config/kernel.json
 ```
 
 ## Linux / macOS 后台运行
@@ -67,7 +67,7 @@ macOS 使用目录锁防止管理命令并发执行；若命令被强制终止�
 ## 配置
 
 - 默认服务端监听 UDP `4433`，客户端提供 `127.0.0.1:8080` HTTP 代理。
-- 默认客户端连接本机服务端，可以直接进行本机测试。远程部署时，在 `client/config/client.properties` 中将 `server.host` 改为服务端 IP 或域名，并开放服务端 UDP `4433`。
+- 默认客户端连接本机服务端，可以直接进行本机测试。远程部署时，在 `client/config/kernel.json` 中将对应连接 `config` 下的 `server.host` 改为服务端 IP 或域名，并开放服务端 UDP `4433`。
 - 每次打包生成默认账号 `client1` 的随机密码和有效期 365 天的自签名证书。客户端仅包含公开证书，服务端私钥仅位于 `server/certs/server.key`。
 - 默认 `tls.serverName=localhost` 与此次生成证书的身份匹配，即使修改连接地址，也应保留该值；若换用域名证书，需同步修改 `tls.serverName` 和客户端信任证书。证书和主机名校验始终启用。
 - 更改密码时，修改服务端 `config/users.properties` 中该账号的密码，并同步对应客户端的 `password`。
@@ -96,11 +96,10 @@ client2=替换为客户端2的随机长密码
 
 账号名为 1 至 64 位字母、数字、下划线、点或连字符，且以字母或数字开头。文件采用 Java properties 格式，反斜杠需按该格式转义；推荐用 `openssl rand -hex 32` 生成密码。空文件、空密码、重复或非法账号会阻止服务端启动。
 
-客户端 1 的 `config/client.properties`：
+代理内核 1 的 `config/kernel.json` 中，在所选连接的 `config` 对象内填写：
 
-```properties
-username=client1
-password=替换为客户端1的随机长密码
+```json
+{"username":"client1","password":"替换为客户端1的随机长密码"}
 ```
 
 客户端 2 填写 `username=client2` 及对应密码。两者连接相同的 `server.host` 和 `server.port`，使用同一份服务端公开证书。不要分发服务端私钥或完整账号文件。不同机器都可使用本地端口 `8080`；同机运行多个客户端时，每个实例使用独立目录及不同本地 `port`。
@@ -137,7 +136,7 @@ fc00::/7
 
 空行和 `#` 注释会被忽略，也可写行尾注释。不支持 `*.example.com`、URL、端口、`192.168.*.*` 或起止 IP 范围。域名不区分大小写。所有条目均为直连规则，没有反向规则。文件为空或不存在时全部走远程代理，不会自动添加内网规则。
 
-**修改后重启客户端**，无需重启服务端。非法 CIDR 会提示文件、行号并阻止启动。规则路径由客户端 `routesFile=pac.txt` 决定，相对于 `client/config/client.properties` 所在目录。
+**修改后重启客户端**，无需重启服务端。非法 CIDR 会提示文件、行号并阻止启动。规则路径由代理内核配置 `local.routesFile` 决定（默认 `pac.txt`），相对于 `client/config/kernel.json` 所在目录。
 
 域名先匹配域名规则；未命中且存在 IP/CIDR 规则时，客户端异步解析 DNS，选取第一个命中的 IP 直连。没有命中或本地 DNS 失败时转交服务端解析原域名。添加网段规则会增加客户端 DNS 查询；命中规则但直连失败时不会自动回退代理。直连的回环地址指客户端自身，代理的回环地址指服务端自身。
 

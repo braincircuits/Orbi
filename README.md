@@ -52,7 +52,7 @@ release/
 └── client/
     ├── client.jar
     ├── start.sh / start.cmd / background.sh
-    ├── config/client.properties、pac.txt
+    ├── config/kernel.json、pac.txt
     └── certs/server.crt
 ```
 
@@ -73,7 +73,7 @@ release/
 远程部署步骤：
 
 1. 将整个 `release/server/` 复制到服务端机器，将整个 `release/client/` 复制到客户端机器，保留各自内部目录结构。
-2. 编辑客户端 `config/client.properties`，把 `server.host` 改为服务端可访问的 IP 或域名。`server.port` 必须与服务端 `port` 一致。
+2. 编辑客户端 `config/kernel.json`，在各连接的 `config` 中把 `server.host` 改为服务端可访问的 IP 或域名。`server.port` 必须与服务端 `port` 一致。
 3. 在服务端防火墙、安全组及必要的路由器端口转发中放行对应 **UDP** 端口，默认 `4433`。
 4. 保持客户端 `username`、`password` 与服务端账号文件对应。使用脚本生成的证书时，保留 `tls.serverName=localhost` 和 `tls.ca=../certs/server.crt`；连接地址与证书验证名称是两个独立配置。
 5. 先启动服务端，再启动客户端，然后将浏览器/应用的 HTTP 和 HTTPS 代理地址均设为 `127.0.0.1:8080`。本地代理入口使用 HTTP，HTTPS 网站通过 CONNECT 隧道访问。
@@ -121,7 +121,7 @@ java --enable-native-access=ALL-UNNAMED -jar Server/target/Server-1.0-SNAPSHOT.j
 另开终端：
 
 ```sh
-java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar .local-h3/client.properties
+java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar .local-h3/kernel.json
 ```
 
 浏览器设置 HTTP/HTTPS 代理为 `127.0.0.1:8080`，或使用：
@@ -142,7 +142,7 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 ```
 
 1. 运行 `Server/src/test/java/com/blacicada/manual/ProxyHelloReceiver.java`，默认监听 `127.0.0.1:18080`。
-2. 运行代理服务端 `NettyServer` 和代理客户端 `ClientApplication`。使用上面的本机配置时，工作目录设置为项目根目录，Program arguments 分别填写 `.local-h3/server.properties` 和 `.local-h3/client.properties`；VM options 填写 `--enable-native-access=ALL-UNNAMED`。
+2. 运行代理服务端 `NettyServer` 和代理客户端 `ClientApplication`。使用上面的本机配置时，工作目录设置为项目根目录，Program arguments 分别填写 `.local-h3/server.properties` 和 `.local-h3/kernel.json`；VM options 填写 `--enable-native-access=ALL-UNNAMED`。
 3. 运行 `ClientG/src/test/java/com/blacicada/manual/ProxyHelloSender.java`。默认连接 `127.0.0.1:8080`，发送 `CONNECT 127.0.0.1:18080`，收到成功响应后发送 `hello world`。
 4. 接收端控制台打印收到的数据并原样回显，发送端打印 `代理通信测试成功`。接收端保持监听，可重复运行发送端；测试结束后点击 Stop 停止接收端及代理进程。
 
@@ -150,7 +150,7 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 
 ## 部署配置
 
-参考 `examples/server.properties` 和 `examples/client.properties`。所有相对文件路径均相对于所传入的 properties 文件目录。默认读取当前目录的 `server.properties` / `client.properties`，原来的这两个文件未被覆盖。
+参考 `examples/server.properties` 和 `examples/kernel.json`。相对路径以各自配置文件所在目录为基准。代理服务端默认读取 `server.properties`，代理内核默认读取 `kernel.json`；内核不再接受 properties 或编号服务器列表。
 
 服务端：
 
@@ -162,18 +162,17 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 | `tls.cert` | PEM 证书链，默认 `certs/server.crt` |
 | `tls.key` | PEM 私钥，默认 `certs/server.key` |
 
-客户端：
+代理内核：本地字段放在 `local` 中，其余连接字段放在 `connections[].config` 中。
 
 | 配置 | 含义 |
 | --- | --- |
-| `bind` / `port` | 本地 HTTP 代理入口；默认 `127.0.0.1:8080` |
-| `server.host` / `server.port` | 代理服务端地址与 UDP 端口 |
+| `local.bind` / `local.port` | 本地 HTTP 代理入口；默认 `127.0.0.1:8080` |
+| `server.host` / `server.port` | 代理服务端地址与所选协议的端口 |
 | `username` | 独立账号模式下必填；省略时使用旧的共享密码模式 |
 | `password` | 必填，账号密码或旧模式的共享密码；每个 CONNECT 请求均认证 |
 | `tls.serverName` | TLS 验证的服务端名称，默认等于 `server.host`，必须匹配证书 SAN |
 | `tls.ca` | 可选的 PEM 信任证书；省略则使用系统/JDK 默认信任链 |
-| `routesFile` | 直连域名/IP/CIDR 规则列表，默认 `pac.txt`；不存在或为空则全部走远程代理 |
-| `serversFile` | 未设置 `server.host` 时，兼容读取旧的编号服务器列表 `config.txt` |
+| `local.routesFile` | 直连域名/IP/CIDR 规则列表，默认 `pac.txt`；不存在或为空则全部走远程代理 |
 
 两端均支持：
 
@@ -202,11 +201,10 @@ client2=替换为客户端2的随机长密码
 
 账号名为 1 至 64 位字母、数字、下划线、点或连字符，且以字母或数字开头。文件采用 Java properties 格式，反斜杠需按该格式转义；推荐用 `openssl rand -hex 32` 生成密码。空文件、空密码、重复或非法账号会阻止服务端启动。
 
-客户端 1 的 `config/client.properties`：
+代理内核 1 的 `config/kernel.json` 中，在所选连接的 `config` 对象内填写：
 
-```properties
-username=client1
-password=替换为客户端1的随机长密码
+```json
+{"username":"client1","password":"替换为客户端1的随机长密码"}
 ```
 
 客户端 2 填写 `username=client2` 及对应密码。两者连接相同的 `server.host` 和 `server.port`，使用同一份服务端公开证书。不要分发服务端私钥或完整账号文件。不同机器都可使用本地端口 `8080`；同机运行多个客户端时，每个实例使用独立目录及不同本地 `port`。
@@ -227,12 +225,12 @@ password=替换为客户端1的随机长密码
 | --- | --- |
 | 发布目录启动脚本 | `release/client/config/pac.txt`（部署后为客户端目录下的 `config/pac.txt`） |
 | `.local-h3` 本机配置 / IDEA 保存的运行配置 | `.local-h3/pac.txt` |
-| 自定义配置文件 | `routesFile` 指向的文件；相对路径以该 properties 文件所在目录为基准 |
+| 自定义配置文件 | `routesFile` 指向的文件；相对路径以该 JSON 文件所在目录为基准 |
 
-例如发布配置 `release/client/config/client.properties` 中：
+例如发布配置 `release/client/config/kernel.json` 的 `local` 对象中设置：
 
-```properties
-routesFile=pac.txt
+```json
+{"routesFile":"pac.txt"}
 ```
 
 此时读取同目录的 `pac.txt`，不会读取项目根目录同名文件。文件不存在、为空或只有注释时，全部目标走远程代理。程序不会自动添加内网直连规则。
@@ -347,14 +345,14 @@ java --enable-native-access=ALL-UNNAMED -Dlog4j.configurationFile=log4j2-ui.xml 
 
 该模式面向 UI 子进程通信：标准输入和输出为逐行 JSON，普通日志走标准错误。协议版本为 1；启动后发送 `ready`，状态变化发送 `status`，每个命令返回带相同 `id` 的 `response`。
 
-兼容 `start`、`stop`、`status`、`validate`、`exit`。旧版 `start` 携带配置映射 `config` 和规则文本 `rules`，自动转换为一份默认连接配置。规则可直接保存在内存中。新增多配置命令见下文；仅显式执行 `config.save` 才写入配置文件（其中含密码）。标准输入关闭会自动停止代理进程。
+支持 `start`、`stop`、`status`、`validate`、`exit`。`start` 使用完整的 `configuration`，直连规则填写在 `local.routesInline`；旧的 `config`、`rules` 启动参数会被拒绝。新增多配置命令见下文；仅显式执行 `config.save` 才写入配置文件（其中含密码）。标准输入关闭会自动停止代理进程。
 
 控制协议测试位于 `UiControlTest`；执行 `python3 scripts/ui-smoke-test.py` 可验证真实 JAR 与本地服务端的 HTTP、CONNECT、认证错误、直连和退出清理。运行前先构建 JAR。
 
 
 ## 多连接配置与 HTTP/2
 
-完整示例见 [examples/kernel.json](examples/kernel.json)。JSON 配置的相对路径以文件所在目录为基准，控制接口直接提交的配置以代理内核工作目录为基准。可以继续使用原有 `client.properties`，增加 `protocol=http2` 即可选择 HTTP/2，省略时仍为 HTTP/3。
+完整示例见 [examples/kernel.json](examples/kernel.json)。JSON 配置的相对路径以文件所在目录为基准，控制接口直接提交的配置以代理内核工作目录为基准。代理内核只读取 JSON 格式；在每份连接的 `config` 中设置 `"protocol":"http2"` 或 `"protocol":"http3"`。
 
 ```sh
 java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar examples/kernel.json
@@ -390,9 +388,9 @@ HTTP/3 使用 UDP，HTTP/2 使用 TCP + TLS + ALPN `h2`，不支持明文 h2c。
 | 命令 | 参数与行为 |
 | --- | --- |
 | `configure` | `configuration`：完整 JSON 配置；运行时只能改连接配置及默认选择，改变本地设置需停止后重启 |
-| `start` | 可传 `configuration`；不传时启动已加载配置；兼容旧版 `config`、`rules` |
+| `start` | 可传 `configuration`；不传时启动已加载配置；不接受旧版 `config`、`rules` |
 | `config.get` | `data` 返回完整配置结构，去掉密码 |
-| `config.load` | `path`：加载 JSON 或旧 properties，要求代理内核已停止 |
+| `config.load` | `path`：仅加载 JSON，要求代理内核已停止 |
 | `config.save` | `path`：显式保存完整 JSON（包含密码）；同目录临时文件原子替换，POSIX 权限 600；父目录须存在 |
 | `connection.upsert` | `connection`：含 `id`、`name`、`config` 的完整配置项；修改时省略密码会保留旧密码，其他字段按提交值替换 |
 | `connection.remove` | `connectionId`：删除配置；默认配置必须先切换后才能删除 |

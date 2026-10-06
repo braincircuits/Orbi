@@ -19,15 +19,33 @@ password=$secret
 tls.cert=server.crt
 tls.key=server.key
 CONFIG
-cat > "$config_dir/client.properties" <<CONFIG
-bind=127.0.0.1
-port=8080
-server.host=127.0.0.1
-server.port=4433
-password=$secret
-tls.ca=server.crt
-tls.serverName=localhost
-routesFile=pac.txt
+cat > "$config_dir/kernel.json" <<CONFIG
+{
+  "version": 1,
+  "local": {
+    "bind": "127.0.0.1",
+    "port": 8080,
+    "routesFile": "pac.txt"
+  },
+  "defaultConnectionId": "default",
+  "connections": [
+    {
+      "id": "default",
+      "name": "默认连接",
+      "config": {
+        "protocol": "http3",
+        "server.host": "127.0.0.1",
+        "server.port": 4433,
+        "password": "$secret",
+        "tls.ca": "server.crt",
+        "tls.serverName": "localhost",
+        "connectTimeoutMillis": 10000,
+        "idleTimeoutSeconds": 300,
+        "maxStreams": 256
+      }
+    }
+  ]
+}
 CONFIG
 printf '# 为空时，所有目标均通过 HTTP/3 代理访问。\n' > "$config_dir/pac.txt"
 printf '本机开发配置已生成：%s\n' "$config_dir"

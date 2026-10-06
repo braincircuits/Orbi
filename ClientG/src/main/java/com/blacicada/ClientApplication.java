@@ -13,7 +13,7 @@ public class ClientApplication {
             com.blacicada.control.UiControl.run(System.in, protocol);
             return;
         }
-        var config = com.blacicada.config.KernelConfig.load(Path.of(args.length == 0 ? "client.properties" : args[0]));
+        var config = com.blacicada.config.KernelConfig.load(Path.of(args.length == 0 ? "kernel.json" : args[0]));
         try (var proxy = new LocalProxyServer(config).start()) {
             Runtime.getRuntime().addShutdownHook(new Thread(proxy::close, "proxy-client-shutdown"));
             System.out.println("本地 HTTP 代理已监听 " + proxy.address());

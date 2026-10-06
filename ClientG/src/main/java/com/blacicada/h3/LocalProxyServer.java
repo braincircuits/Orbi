@@ -24,7 +24,6 @@ public final class LocalProxyServer implements AutoCloseable {
     private final KernelConfig initial;
     private Channel listener;
 
-    public LocalProxyServer(ProxyConfig config) throws java.io.IOException { this(KernelConfig.legacy(config)); }
     public LocalProxyServer(KernelConfig config) { this.initial = config; this.config = config.local(); }
     public void apply(KernelConfig next) throws Exception {
         if (!config.values().equals(next.local().values()) || !config.base().equals(next.local().base()))

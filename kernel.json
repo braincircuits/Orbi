@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "local": {
+    "port": "1081"
+  },
+  "defaultConnectionId": "default",
+  "connections": [
+    {
+      "id": "default",
+      "name": "默认连接",
+      "config": {
+        "password": "ajYUEO3rzfjwaop%^(qafd",
+        "protocol": "http3",
+        "server.host": "2001:19f0:7001:08e2:5400:04ff:fed8:17c1",
+        "server.port": 27017
+      }
+    }
+  ]
+}
