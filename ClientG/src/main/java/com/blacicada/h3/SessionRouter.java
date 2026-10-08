@@ -50,7 +50,8 @@ public final class SessionRouter implements AutoCloseable {
         return result;
     }
     /** 在控制线程准备新会话，事件循环内原子切换；旧隧道立即中断。 */
-    public synchronized void apply(KernelConfig next) throws Exception {
+    public void apply(KernelConfig next) throws Exception { apply(next, () -> { }); }
+    public synchronized void apply(KernelConfig next, Runnable applied) throws Exception {
         KernelConfig.Profile old = config.profile(config.defaultConnectionId());
         KernelConfig.Profile selected = next.profile(next.defaultConnectionId());
         boolean changed = !old.id().equals(selected.id()) || !old.config().values().equals(selected.config().values())
@@ -65,6 +66,7 @@ public final class SessionRouter implements AutoCloseable {
                             "代理内核已切换连接，旧隧道已关闭：连接 ID={}，协议={}", selected.id(), selected.config().get("protocol", "http3"));
                 }
                 config = next;
+                applied.run();
             }).syncUninterruptibly();
         } catch (Exception e) { if (replacement != null) replacement.close(); throw e; }
     }

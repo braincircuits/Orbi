@@ -37,6 +37,8 @@ public final class Http3Session implements ProxySession {
     private boolean creatingStream;
     private volatile String connectionState = "idle";
     private volatile String lastError = "";
+    private volatile String stage = "idle";
+    public String stage() { return stage; }
 
     public String connectionState() { return connectionState; }
     public String lastError() { return lastError; }
@@ -153,6 +155,7 @@ public final class Http3Session implements ProxySession {
         Promise<QuicChannel> attempt = loop.newPromise();
         connecting = attempt;
         connectionState = "connecting";
+        stage = "dns";
         lastError = "";
         var deadline = loop.schedule(() -> attempt.tryFailure(new IOException("HTTP/3 握手超时")),
                 config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
@@ -167,6 +170,7 @@ public final class Http3Session implements ProxySession {
         resolver.getResolver(loop).resolve(server.unresolved()).addListener(resolved -> {
             if (attempt.isDone()) return;
             if (!resolved.isSuccess()) { attempt.tryFailure(resolved.cause()); return; }
+            stage = "quic_tls";
             var settings = new DefaultHttp3SettingsFrame();
             settings.put(Http3SettingsFrame.HTTP3_SETTINGS_MAX_FIELD_SECTION_SIZE, (long) Transport.MAX_HEADER_SIZE);
             QuicChannel.newBootstrap(udp)
@@ -192,6 +196,7 @@ public final class Http3Session implements ProxySession {
                         if (closed || attempt.isDone()) { channel.close(); return; }
                         connection = channel;
                         connectionState = "connected";
+                        stage = "connect";
                         lastError = "";
                         connectionCount.incrementAndGet();
                         LOGGER.info("与服务端的 HTTP/3 连接成功：服务端={}，连接 ID={}", server, channel.id().asShortText());

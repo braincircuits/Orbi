@@ -16,3 +16,5 @@ certs/
 
 # 本项目的 Codex 本机配置
 /.codex/
+
+/run/

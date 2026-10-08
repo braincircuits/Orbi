@@ -76,7 +76,7 @@ release/
 2. 编辑客户端 `config/kernel.json`，在各连接的 `config` 中把 `server.host` 改为服务端可访问的 IP 或域名。`server.port` 必须与服务端 `port` 一致。
 3. 在服务端防火墙、安全组及必要的路由器端口转发中放行对应 **UDP** 端口，默认 `4433`。
 4. 保持客户端 `username`、`password` 与服务端账号文件对应。使用脚本生成的证书时，保留 `tls.serverName=localhost` 和 `tls.ca=../certs/server.crt`；连接地址与证书验证名称是两个独立配置。
-5. 先启动服务端，再启动客户端，然后将浏览器/应用的 HTTP 和 HTTPS 代理地址均设为 `127.0.0.1:8080`。本地代理入口使用 HTTP，HTTPS 网站通过 CONNECT 隧道访问。
+5. 先启动服务端，再启动代理内核；通过管理接口调用 `/api/v1/proxy/start` 开启转发，然后将浏览器/应用的 HTTP 和 HTTPS 代理地址均设为 `127.0.0.1:8080`。本地代理入口使用 HTTP，HTTPS 网站通过 CONNECT 隧道访问。
 
 每次打包生成默认账号 `client1` 的随机密码及有效期 365 天的自签名证书。客户端只需要公开证书，私钥保留在服务端。更换证书时需同步客户端信任证书及 `tls.serverName`，名称必须匹配新证书的 SAN；证书到期需要手动更新。客户端目录含访问凭证，只分发给获准使用代理的用户。
 
@@ -121,7 +121,7 @@ java --enable-native-access=ALL-UNNAMED -jar Server/target/Server-1.0-SNAPSHOT.j
 另开终端：
 
 ```sh
-java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar .local-h3/kernel.json
+java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --web --config .local-h3/kernel.json
 ```
 
 浏览器设置 HTTP/HTTPS 代理为 `127.0.0.1:8080`，或使用：
@@ -142,7 +142,7 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 ```
 
 1. 运行 `Server/src/test/java/com/blacicada/manual/ProxyHelloReceiver.java`，默认监听 `127.0.0.1:18080`。
-2. 运行代理服务端 `NettyServer` 和代理客户端 `ClientApplication`。使用上面的本机配置时，工作目录设置为项目根目录，Program arguments 分别填写 `.local-h3/server.properties` 和 `.local-h3/kernel.json`；VM options 填写 `--enable-native-access=ALL-UNNAMED`。
+2. 运行代理服务端 `NettyServer` 和代理内核 `ClientApplication`，通过管理接口调用 `/api/v1/proxy/start` 开始转发后，再运行发送端。使用上面的本机配置时，工作目录设置为项目根目录，Program arguments 分别填写 `.local-h3/server.properties` 和 `--web --config .local-h3/kernel.json`；VM options 填写 `--enable-native-access=ALL-UNNAMED`。
 3. 运行 `ClientG/src/test/java/com/blacicada/manual/ProxyHelloSender.java`。默认连接 `127.0.0.1:8080`，发送 `CONNECT 127.0.0.1:18080`，收到成功响应后发送 `hello world`。
 4. 接收端控制台打印收到的数据并原样回显，发送端打印 `代理通信测试成功`。接收端保持监听，可重复运行发送端；测试结束后点击 Stop 停止接收端及代理进程。
 
@@ -211,7 +211,7 @@ client2=替换为客户端2的随机长密码
 
 每个 CONNECT 流都会验证账号和密码，认证信息由 TLS 加密传输，不记录到日志。启用 `usersFile` 后，即使仍配置服务端 `password`，也不再接受旧的共享密码认证；未配置 `usersFile` 时保持旧模式，客户端省略 `username`，两端 `password` 相同即可。
 
-新增、删除账号或修改密码后重启服务端；客户端修改账号配置后重启自身。重启服务端会断开所有现有客户端连接，后续请求按需重连。当前不提供账号热更新、每账号带宽限制或每账号连接总数限制。
+新增、删除账号或修改密码后重启服务端；代理内核在 Web 模式下修改连接账号配置后立即重建当前会话，通过接口修改后立即生效。重启服务端会断开所有现有客户端连接，后续请求按需重连。当前不提供账号热更新、每账号带宽限制或每账号连接总数限制。
 
 新生成的发布目录默认启用账号模式，创建随机密码的 `client1` 并写入配套客户端配置。既有发布目录的凭证不会因更新 JAR 自动切换认证模式。
 
@@ -277,7 +277,7 @@ fc00::/7
 - 忽略空行和 `#` 注释，也支持行尾注释，例如 `192.168.1.0/24 # 办公网`。
 - 不支持 `*.example.com`、URL、端口、`192.168.*.*`、起止 IP 范围或 `255.255.255.0` 子网掩码写法。
 - 所有规则都是直连规则，没有反向规则或按顺序覆盖机制。CIDR 中的主机位不影响匹配，建议填写规范网络地址。
-- 非法 CIDR 会报告文件、行号和规则并阻止启动。修改规则后必须**重启客户端**，无需重启服务端。
+- 非法 CIDR 会报告文件、行号和规则并阻止启动。调用直连规则更新/重载接口立即应用，新规则只影响新请求。无需重启服务端。
 
 更多注释示例见 [examples/pac.txt](examples/pac.txt)。
 
@@ -294,13 +294,13 @@ fc00::/7
 
 | 现象 | 检查方式 |
 | --- | --- |
-| 启动提示找不到配置、证书或私钥 | 使用启动脚本，或显式传入 properties 路径；检查路径是否相对于配置文件目录，复制部署时是否保留 `certs/` |
+| 启动提示找不到配置、证书或私钥 | 使用启动脚本；服务端指定 properties 路径，代理内核使用 `--web --config kernel.json`；检查路径是否相对于配置文件目录，复制部署时是否保留 `certs/` |
 | 启动提示端口占用 | 停止旧进程或修改 `port`；服务端修改端口后同步客户端 `server.port`，客户端修改端口后同步浏览器代理设置 |
 | 客户端启动成功，但无法访问网站 | 共享 QUIC 连接按需建立，启动成功不代表已连接服务端；检查 `server.host`、端口以及 UDP 防火墙规则 |
 | TLS 握手或证书校验失败 | 检查证书有效期、`tls.ca` 是否信任当前服务端证书，以及 `tls.serverName` 是否匹配证书 SAN |
 | 返回 502 | 查看客户端和服务端终端日志；检查账号和密码、目标 DNS 和目标 TCP 可达性。直连目标由客户端访问，代理目标由服务端访问 |
 | 返回 504 | 初始请求建立超时；检查网络和服务端可达性，再按需调整 `connectTimeoutMillis` |
-| PAC 修改没有生效 | 确认 `routesFile` 实际指向的文件，重启客户端，再建立新连接测试 |
+| PAC 修改没有生效 | 确认 `routesFile` 实际指向的文件；Web 模式调用规则重载接口，其余模式重启代理内核，再建立新连接测试 |
 | hello world 测试未经过服务端 | 清空测试配置的直连规则；回环地址或网段命中时会直接连接本机接收端 |
 
 验证 HTTP 和 HTTPS 代理时可显式排除环境中 `NO_PROXY` 的影响：
@@ -335,27 +335,25 @@ CONNECT 超时后会取消对应请求流的双向传输。若整个等待期间
 
 若 QUIC 仍正常回包，仅目标连接慢或流额度耗尽，不会因此关闭共享连接。超时日志包含目标地址或流额度，以及连接 ID；可结合服务端的 CONNECT 失败日志定位。
 
-## Flutter 桌面控制模式
+## Web 管理接口（唯一内核入口）
 
-Flutter 项目位于同级项目目录 `../../flutter/network_ui`。客户端新增 `--ui` 启动模式，保留原有命令行配置文件入口。
+代理客户端通过本机 HTTP + JSON 操作代理内核，通过 SSE 订阅状态、日志与诊断结果。支持连接配置增删改、切换连接、启动/停止转发和热更新；UI 关闭后内核继续运行。
 
 ```sh
-java --enable-native-access=ALL-UNNAMED -Dlog4j.configurationFile=log4j2-ui.xml -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --ui
+java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --web --config kernel.json --port 9090
 ```
 
-该模式面向 UI 子进程通信：标准输入和输出为逐行 JSON，普通日志走标准错误。协议版本为 1；启动后发送 `ready`，状态变化发送 `status`，每个命令返回带相同 `id` 的 `response`。
+代理内核只接受 `--web` 入口，不再接受无参数启动或直接传入配置文件。启动脚本和 IDEA 配置也使用 Web 模式。启动后代理转发处于停止状态，UI 调用 `/api/v1/proxy/start` 开始转发。管理接口固定监听 `127.0.0.1`，默认发现文件为配置目录下的 `run/control.json`，包含管理地址和随机令牌；仅当前用户可读写。用 `--port 0` 自动分配管理端口。所有接口要求 `Authorization: Bearer <token>`，令牌不要放入 URL。
 
-支持 `start`、`stop`、`status`、`validate`、`exit`。`start` 使用完整的 `configuration`，直连规则填写在 `local.routesInline`；旧的 `config`、`rules` 启动参数会被拒绝。新增多配置命令见下文；仅显式执行 `config.save` 才写入配置文件（其中含密码）。标准输入关闭会自动停止代理进程。
-
-控制协议测试位于 `UiControlTest`；执行 `python3 scripts/ui-smoke-test.py` 可验证真实 JAR 与本地服务端的 HTTP、CONNECT、认证错误、直连和退出清理。运行前先构建 JAR。
+详细接口、请求示例、错误码、热更新规则和 Flutter 接入流程见 [Web 管理接口文档](docs/web-api.md)。修改本地代理监听地址/端口会立即重启转发并断开全部旧连接；管理接口保持运行。修改配置只应用到内存，调用保存接口后才会在进程重启后保留。
 
 
 ## 多连接配置与 HTTP/2
 
-完整示例见 [examples/kernel.json](examples/kernel.json)。JSON 配置的相对路径以文件所在目录为基准，控制接口直接提交的配置以代理内核工作目录为基准。代理内核只读取 JSON 格式；在每份连接的 `config` 中设置 `"protocol":"http2"` 或 `"protocol":"http3"`。
+完整示例见 [examples/kernel.json](examples/kernel.json)。JSON 配置的相对路径以文件所在目录为基准，Web 接口直接提交的配置以 `--config` 文件所在目录为基准。代理内核只读取 JSON 格式；在每份连接的 `config` 中设置 `"protocol":"http2"` 或 `"protocol":"http3"`。
 
 ```sh
-java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar examples/kernel.json
+java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --web --config examples/kernel.json
 ```
 
 运行前替换示例中的服务器地址、账号和密码。示例默认使用系统信任证书；私有 CA 或自签名证书需要在每份连接的 `config` 中设置 `tls.ca`，且 `tls.serverName` 必须匹配证书。
@@ -383,32 +381,11 @@ HTTP/3 使用 UDP，HTTP/2 使用 TCP + TLS + ALPN `h2`，不支持明文 h2c。
 
 ### 多配置控制接口
 
-`ready` 保留协议版本 1，并通过 `capabilities` 声明 `multiConnection`、`http2`、`http3`、`immediateSwitch`。标准输入每行一条 JSON，命令包含 `id` 与 `command`。响应带相同 `id`、`ok`、`status` 和可选 `data`；失败返回中文提示及 `errorType`。下表各参数均与 `command` 同级。
-
-| 命令 | 参数与行为 |
-| --- | --- |
-| `configure` | `configuration`：完整 JSON 配置；运行时只能改连接配置及默认选择，改变本地设置需停止后重启 |
-| `start` | 可传 `configuration`；不传时启动已加载配置；不接受旧版 `config`、`rules` |
-| `config.get` | `data` 返回完整配置结构，去掉密码 |
-| `config.load` | `path`：仅加载 JSON，要求代理内核已停止 |
-| `config.save` | `path`：显式保存完整 JSON（包含密码）；同目录临时文件原子替换，POSIX 权限 600；父目录须存在 |
-| `connection.upsert` | `connection`：含 `id`、`name`、`config` 的完整配置项；修改时省略密码会保留旧密码，其他字段按提交值替换 |
-| `connection.remove` | `connectionId`：删除配置；默认配置必须先切换后才能删除 |
-| `connection.select` | `connectionId`：立即切换默认配置，断开旧代理隧道 |
-| `connection.disconnect` | `connectionId`：立即断开对应会话，下次请求重新建立；未连接配置无操作 |
-| `connection.test` | `connectionId`、`target`（如自有测试服务的 `host:port`）：建立独立临时会话并验证 CONNECT 及认证，完成后释放；不改变当前代理连接 |
-| `status` | 返回运行状态、默认配置 ID、各配置的状态、活跃及等待隧道数 |
-| `stop` / `exit` | 停止保留内存配置，或停止并退出控制进程 |
-
-```json
-{"id":"switch-1","command":"connection.select","connectionId":"node-h2"}
-```
-
-当前连通性测试在控制命令线程有界等待，期间其他控制命令等待测试结束；实际代理转发不阻塞。`connected` 表示传输连接已建立，不代表所有目标可达或认证已验证；使用 `connection.test` 验证指定目标与账号。配置变更仅在内存生效，重启前需显式保存，代理客户端应区分“已应用”和“已保存”。保存结果中的文件路径转为绝对路径，跨机器迁移需重新调整证书及规则文件路径。
+UI 统一使用 [Web 管理接口](docs/web-api.md)。连接配置管理使用 `/api/v1/profiles`，切换默认连接使用 `/api/v1/routing/default`，日志查询使用 `/api/v1/logs`，可通过 `levels=WARN,ERROR` 按级别筛选。
 
 ### 新增验证
 
-`Http2IntegrationTest` 覆盖并发复用、认证、证书、半关闭、反复取消上传/下载、额度排队、重连和 GOAWAY；`MultiConnectionIntegrationTest` 验证 HTTP/3 与 HTTP/2 双向切换时旧隧道和排队请求终止、直连与监听保持。`KernelConfigTest` 和 `UiControlTest` 验证唯一性、脱敏、保存及控制命令。
+`Http2IntegrationTest` 覆盖并发复用、认证、证书、半关闭、反复取消上传/下载、额度排队、重连和 GOAWAY；`MultiConnectionIntegrationTest` 验证 HTTP/3 与 HTTP/2 双向切换时旧隧道和排队请求终止、直连与监听保持。`KernelConfigTest` 和 `ControlHttpServerTest` 验证唯一性、脱敏、保存及控制命令。
 
 ```sh
 mvn test
@@ -417,3 +394,11 @@ python3 scripts/smoke-test.py --protocol http3
 ```
 
 两个冒烟命令需先构建 JAR，均只访问本机测试服务。
+
+### HTTP/2 隧道建立超时诊断
+
+HTTP/2 超时日志按实际阶段分别显示“等待 HTTP/2 流额度”“创建 HTTP/2 流”“发送 HTTP/2 CONNECT”或“等待 HTTP/2 CONNECT 响应”。日志包含目标、连接 ID、流 ID、本地与服务端地址、对端并发上限、本连接占用、排队数量、当前阶段耗时和总等待时间。未创建流时，流 ID 显示“未分配”。
+
+额度占用包含已预留但尚未完成创建的流；排队数量包含当前仍等待额度的请求。额度等待、流创建、请求发送和响应等待共用原有的 `connectTimeoutMillis` 预算，切换阶段不会重新计时。进入响应等待只表示本地写入完成，不证明服务端已收到或处理 CONNECT。
+
+两端日志里的连接 ID 是各自本地的 Channel ID，不能直接按相同值匹配。应结合连接地址、端口、时间及 HTTP/2 流 ID 对照。该诊断改进不会仅因某个请求超时就重建共享连接，也不代表已经确定超时根因。

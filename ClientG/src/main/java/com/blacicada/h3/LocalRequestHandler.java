@@ -18,7 +18,7 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private final ProxyConfig config;
     private final SessionRouter session;
     private final DnsAddressResolverGroup resolver;
-    private final DirectRoutes routes;
+    private final java.util.function.Supplier<DirectRoutes> routeSource;
     private final ArrayDeque<HttpContent> pending = new ArrayDeque<>();
     private int pendingBytes;
     private HttpRequest request;
@@ -29,8 +29,8 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private boolean failed;
     private ScheduledFuture<?> timeout;
 
-    LocalRequestHandler(ProxyConfig config, SessionRouter session, DnsAddressResolverGroup resolver, DirectRoutes routes) {
-        this.config = config; this.session = session; this.resolver = resolver; this.routes = routes;
+    LocalRequestHandler(ProxyConfig config, SessionRouter session, DnsAddressResolverGroup resolver, java.util.function.Supplier<DirectRoutes> routes) {
+        this.config = config; this.session = session; this.resolver = resolver; this.routeSource = routes;
     }
     @Override public void channelActive(ChannelHandlerContext ctx) {
         timeout = ctx.executor().schedule(() -> fail(ctx, HttpResponseStatus.GATEWAY_TIMEOUT),
@@ -69,6 +69,8 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void route(ChannelHandlerContext ctx, Authority target) {
+        // 每个请求固定一份规则快照，异步 DNS 回调不混用新旧规则。
+        DirectRoutes routes = routeSource.get();
         if (routes.matches(target.host())) {
             connectDirect(ctx, target.unresolved());
         } else if (routes.needsResolution(target.host())) {

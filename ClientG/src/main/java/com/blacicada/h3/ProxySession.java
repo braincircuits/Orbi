@@ -10,5 +10,6 @@ public interface ProxySession extends AutoCloseable {
     long connectionCount();
     String connectionState();
     String lastError();
+    default String stage() { return connectionState(); }
     @Override void close();
 }

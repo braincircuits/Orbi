@@ -16,7 +16,8 @@ import java.util.concurrent.TimeUnit;
 
 public final class LocalProxyServer implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
-    private final ProxyConfig config;
+    private volatile ProxyConfig config;
+    private volatile DirectRoutes routes;
     private final EventLoopGroup group = new NioEventLoopGroup(1);
     private final DnsAddressResolverGroup resolver = Transport.resolver();
     private final DefaultChannelGroup clients = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
@@ -26,9 +27,15 @@ public final class LocalProxyServer implements AutoCloseable {
 
     public LocalProxyServer(KernelConfig config) { this.initial = config; this.config = config.local(); }
     public void apply(KernelConfig next) throws Exception {
-        if (!config.values().equals(next.local().values()) || !config.base().equals(next.local().base()))
-            throw new IllegalArgumentException("修改本地监听或直连规则需要停止后重新启动");
-        session.apply(next);
+        if (!config.get("bind", "127.0.0.1").equals(next.local().get("bind", "127.0.0.1"))
+                || config.integer("port", 8080, 0, 65535) != next.local().integer("port", 8080, 0, 65535))
+            throw new IllegalArgumentException("修改本地监听需要重启代理");
+        DirectRoutes updated = loadRoutes(next.local());
+        session.apply(next, () -> { config = next.local(); routes = updated; });
+    }
+    private static DirectRoutes loadRoutes(ProxyConfig config) throws java.io.IOException {
+        return config.values().containsKey("routesInline") ? new DirectRoutes(config.get("routesInline", ""))
+                : new DirectRoutes(config.path("routesFile", "pac.txt"));
     }
     public void disconnect() throws Exception { session.disconnect(); }
     public KernelConfig configuration() { return session.config(); }
@@ -37,8 +44,7 @@ public final class LocalProxyServer implements AutoCloseable {
     public LocalProxyServer start() throws Exception {
         try {
             session = new SessionRouter(group.next(), resolver, initial);
-            var routes = config.values().containsKey("routesInline") ? new DirectRoutes(config.get("routesInline", ""))
-                    : new DirectRoutes(config.path("routesFile", "pac.txt"));
+            routes = loadRoutes(config);
             listener = new ServerBootstrap().group(group).channel(NioServerSocketChannel.class)
                     .childOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK)
@@ -49,7 +55,7 @@ public final class LocalProxyServer implements AutoCloseable {
                             decoder.setSingleDecode(true);
                             ch.pipeline().addLast("responseEncoder", new HttpResponseEncoder());
                             ch.pipeline().addLast("requestDecoder", decoder);
-                            ch.pipeline().addLast("proxy", new LocalRequestHandler(config, session, resolver, routes));
+                            ch.pipeline().addLast("proxy", new LocalRequestHandler(config, session, resolver, () -> routes));
                         }
                     }).bind(new InetSocketAddress(config.get("bind", "127.0.0.1"),
                             config.integer("port", 8080, 0, 65535))).sync().channel();

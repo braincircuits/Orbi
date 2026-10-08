@@ -88,8 +88,28 @@ def main():
                 "connections": [{"id": "test", "name": "测试", "config": {"protocol": protocol,
                 "password": "smoke-only", "server.host": "127.0.0.1", "server.port": udp_port,
                 "tls.ca": str(cert), "tls.serverName": "localhost", "idleTimeoutSeconds": 10}}]}))
-            proxy_port = launch(ROOT / "ClientG/target/clientG-1.0-SNAPSHOT.jar", client_config,
-                                "本地 HTTP 代理已监听", processes, client_logs)
+            endpoint = base / "control.json"
+            client = subprocess.Popen(["java", "--enable-native-access=ALL-UNNAMED", "-jar",
+                str(ROOT / "ClientG/target/clientG-1.0-SNAPSHOT.jar"), "--web", "--config", str(client_config),
+                "--port", "0", "--endpoint-file", str(endpoint)], cwd=base,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            processes.append(client)
+            threading.Thread(target=lambda: client_logs.extend(client.stdout), daemon=True).start()
+            deadline = time.monotonic() + 15
+            while not endpoint.exists():
+                assert client.poll() is None, "代理内核在管理接口就绪前退出"
+                assert time.monotonic() < deadline, "管理接口启动超时"
+                time.sleep(0.05)
+            access = json.loads(endpoint.read_text())
+            management = http.client.HTTPConnection(access["url"].removeprefix("http://"), timeout=10)
+            try:
+                management.request("POST", "/api/v1/proxy/start", headers={"Authorization": "Bearer " + access["token"]})
+                response = management.getresponse()
+                assert response.status == 200
+                state = json.loads(response.read())["data"]
+                proxy_port = int(state["address"].rsplit(":", 1)[1])
+            finally:
+                management.close()
             origin_port = origin.server_port
             for tunnel in (False, True):
                 connection = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=10)

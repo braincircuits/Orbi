@@ -74,4 +74,6 @@ CONFIG
 printf '# 每行一个账号及其独立密码。修改后重启服务端。\nclient1=%s\n' "$secret" > "$release_dir/server/config/users.properties"
 printf '# 每行填写一个直连域名、IP 或 CIDR 网段；为空时全部走代理。\n' > "$release_dir/client/config/pac.txt"
 cp "$project_dir/scripts/release/README.md" "$release_dir/README.md"
+cp "$project_dir/examples/kernel.json" "$release_dir/client/config/kernel.example.json"
+sed 's|../examples/kernel.json|config/kernel.example.json|g' "$project_dir/docs/web-api.md" > "$release_dir/client/WEB-API.md"
 printf '\n未压缩的发布目录已生成：%s\n' "$release_dir"

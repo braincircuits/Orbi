@@ -35,13 +35,13 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
     }
     public KernelConfig {
         connections = List.copyOf(connections);
-        if (connections.isEmpty() || connections.size() > 128) throw new IllegalArgumentException("连接配置数量必须为 1 至 128");
+        if (connections.size() > 128) throw new IllegalArgumentException("连接配置数量不能超过 128");
         Set<String> ids = new HashSet<>(), keys = new HashSet<>();
         for (Profile p : connections) {
             if (!ids.add(p.id())) throw new IllegalArgumentException("连接 ID 重复");
             if (!keys.add(p.key())) throw new IllegalArgumentException("协议、服务器地址和端口重复");
         }
-        if (!ids.contains(defaultConnectionId)) throw new IllegalArgumentException("默认连接不存在");
+        if (defaultConnectionId == null || (connections.isEmpty() ? !defaultConnectionId.isEmpty() : !ids.contains(defaultConnectionId))) throw new IllegalArgumentException("默认连接不存在");
         for (String key : local.values().stringPropertyNames())
             if (!Set.of("bind", "port", "routesInline", "routesFile", "connectTimeoutMillis").contains(key))
                 throw new IllegalArgumentException("未知内核公共配置字段：" + key);
