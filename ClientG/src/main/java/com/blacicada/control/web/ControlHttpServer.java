@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.*;
 /** 独立的本机管理监听，不与代理数据端口共用。 */
 public final class ControlHttpServer implements AutoCloseable {
     private final KernelControl control;
+    private final ControlApi api;
     private final HttpServer server;
     private final String token;
     private final Set<String> origins;
@@ -28,7 +29,7 @@ public final class ControlHttpServer implements AutoCloseable {
 
     public ControlHttpServer(KernelControl control, int port, String token, Set<String> origins) throws IOException {
         if (token == null || token.length() < 32) throw new IllegalArgumentException("管理令牌至少需要 32 个字符");
-        this.control = control; this.token = token; this.origins = Set.copyOf(origins);
+        this.control = control; this.api = new ControlApi(control); this.token = token; this.origins = Set.copyOf(origins);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 32);
         server.setExecutor(workers); server.createContext("/", this::handle);
     }
@@ -63,65 +64,13 @@ public final class ControlHttpServer implements AutoCloseable {
             String path = exchange.getRequestURI().getPath(), method = exchange.getRequestMethod();
             if (path.equals("/api/v1/events") && method.equals("GET")) { events(exchange); return; }
             if (!(acquired = requests.tryAcquire())) throw new ControlException(429, "CONTROL_BUSY", "管理请求过多，请稍后重试");
-            Object data; int status = 200;
             JsonObject body = Set.of("POST", "PUT", "PATCH").contains(method) ? body(exchange) : new JsonObject();
-            String action = method + " " + path;
-            Map<String, Object> response;
-            synchronized (control) {
-            switch (action) {
-                case "GET /api/v1/info" -> data = control.info();
-                case "GET /api/v1/health" -> data = Map.of("ready", true);
-                case "GET /api/v1/status" -> data = control.status();
-                case "POST /api/v1/proxy/start" -> { control.start(); data = control.status(); }
-                case "POST /api/v1/proxy/stop" -> { control.stop(); data = control.status(); }
-                case "POST /api/v1/proxy/restart" -> { control.restart(); data = control.status(); }
-                case "POST /api/v1/kernel/shutdown" -> {
-                    send(exchange, 200, Map.of("requestId", requestId, "data", Map.of("stopping", true)));
-                    Thread.ofPlatform().daemon().start(this::close); return;
-                }
-                case "GET /api/v1/config" -> data = control.configuration();
-                case "POST /api/v1/config/validate" -> data = control.validate(body);
-                case "PUT /api/v1/config" -> { control.configure(body, revision(exchange)); data = control.configuration(); }
-                case "POST /api/v1/config/save" -> { control.save(revision(exchange)); data = control.metadata(); }
-                case "GET /api/v1/settings" -> data = control.settings();
-                case "PATCH /api/v1/settings" -> { control.patchSettings(body, revision(exchange)); data = control.settings(); }
-                case "GET /api/v1/profiles" -> data = control.configuration().getAsJsonArray("connections");
-                case "POST /api/v1/profiles" -> { String id = control.createProfile(body, revision(exchange)); data = control.profile(id); status = 201; }
-                case "GET /api/v1/routing" -> data = control.routing();
-                case "PUT /api/v1/routing/default" -> { control.select(string(body, "profileId"), revision(exchange)); data = control.routing(); }
-                case "PUT /api/v1/routing/direct-rules" -> { control.updateRules(string(body, "rules"), revision(exchange)); data = control.routing(); }
-                case "POST /api/v1/routing/validate" -> { KernelControl.validateRules(string(body, "rules")); data = Map.of("valid", true); }
-                case "POST /api/v1/routing/reload" -> { control.reloadRules(revision(exchange)); data = control.routing(); }
-                case "POST /api/v1/routing/resolve" -> { data = control.resolve(string(body, "target")); status = 202; }
-                case "GET /api/v1/logs" -> {
-                    Map<String, String> query = query(exchange.getRequestURI());
-                    long after = Long.parseLong(query.getOrDefault("after", "0"));
-                    int limit = Integer.parseInt(query.getOrDefault("limit", "100"));
-                    if (after < 0 || limit < 1 || limit > 500) throw new ControlException(400, "INVALID_QUERY", "日志查询范围无效");
-                    data = control.logs().read(after, limit, ControlLogs.parseLevels(query.get("levels")));
-                }
-                default -> {
-                    String[] parts = path.split("/");
-                    if (parts.length >= 5 && parts[1].equals("api") && parts[2].equals("v1") && parts[3].equals("profiles")) {
-                        String id = parts[4];
-                        if (parts.length == 5 && method.equals("GET")) data = control.profile(id);
-                        else if (parts.length == 5 && method.equals("PATCH")) { control.patchProfile(id, body, revision(exchange)); data = control.profile(id); }
-                        else if (parts.length == 5 && method.equals("DELETE")) { control.removeProfile(id, revision(exchange)); data = Map.of("removed", id); }
-                        else if (parts.length == 6 && parts[5].equals("disconnect") && method.equals("POST")) { control.disconnect(id); data = control.status(); }
-                        else if (parts.length == 6 && parts[5].equals("tests") && method.equals("POST")) { data = control.test(id, string(body, "target")); status = 202; }
-                        else throw notFound();
-                    } else if (parts.length == 5 && parts[1].equals("api") && parts[2].equals("v1") && parts[3].equals("operations")) {
-                        if (method.equals("DELETE")) control.tasks().cancel(parts[4]);
-                        else if (!method.equals("GET")) throw notFound();
-                        data = control.tasks().get(parts[4]);
-                    } else throw notFound();
-                }
-            }
-            response = new LinkedHashMap<>(control.metadata());
-            response.put("requestId", requestId); response.put("data", data);
-            }
-            exchange.getResponseHeaders().set("ETag", "\"" + response.get("revision") + "\"");
-            send(exchange, status, response);
+            var response = api.dispatch(method, exchange.getRequestURI(), body,
+                    exchange.getRequestHeaders().getFirst("If-Match"), requestId);
+            if (response.body().containsKey("revision"))
+                exchange.getResponseHeaders().set("ETag", "\"" + response.body().get("revision") + "\"");
+            send(exchange, response.status(), response.body());
+            if (response.shutdown()) Thread.ofPlatform().daemon().start(this::close);
         } catch (ControlException e) {
             error(exchange, e.status, requestId, e.code, control.redact(e.getMessage()), e.field);
         } catch (JsonParseException | IllegalArgumentException | IllegalStateException | NullPointerException e) {
@@ -129,12 +78,6 @@ public final class ControlHttpServer implements AutoCloseable {
         } catch (Exception e) {
             error(exchange, 500, requestId, "CONTROL_FAILED", "操作未完成，请检查网络、文件权限或证书", "");
         } finally { if (acquired) requests.release(); exchange.close(); }
-    }
-    private static ControlException notFound() { return new ControlException(404, "NOT_FOUND", "接口不存在或请求方法不支持"); }
-    private static String string(JsonObject body, String name) {
-        if (!body.has(name) || !body.get(name).isJsonPrimitive() || !body.get(name).getAsJsonPrimitive().isString())
-            throw new ControlException(400, "MISSING_FIELD", "缺少有效的字符串字段", name);
-        return body.get(name).getAsString();
     }
     private static JsonObject body(HttpExchange exchange) throws IOException {
         byte[] bytes = exchange.getRequestBody().readNBytes(MAX_BODY + 1);
@@ -144,21 +87,6 @@ public final class ControlHttpServer implements AutoCloseable {
         if (type == null || !type.split(";", 2)[0].trim().equalsIgnoreCase("application/json"))
             throw new ControlException(415, "JSON_REQUIRED", "请求内容必须为 JSON");
         return JsonParser.parseString(new String(bytes, StandardCharsets.UTF_8)).getAsJsonObject();
-    }
-    private static long revision(HttpExchange exchange) {
-        String value = exchange.getRequestHeaders().getFirst("If-Match");
-        if (value == null) throw new ControlException(428, "REVISION_REQUIRED", "修改配置需要通过 If-Match 提交当前版本号");
-        long revision = Long.parseLong(value.replace("\"", ""));
-        if (revision < 0) throw new ControlException(400, "INVALID_REVISION", "配置版本号无效");
-        return revision;
-    }
-    private static Map<String, String> query(URI uri) {
-        Map<String, String> result = new HashMap<>();
-        if (uri.getRawQuery() != null) for (String part : uri.getRawQuery().split("&")) {
-            String[] pair = part.split("=", 2);
-            result.put(URLDecoder.decode(pair[0], StandardCharsets.UTF_8), pair.length == 2 ? URLDecoder.decode(pair[1], StandardCharsets.UTF_8) : "");
-        }
-        return result;
     }
     private static void send(HttpExchange exchange, int status, Object body) throws IOException {
         byte[] bytes = JSON.toJson(body).getBytes(StandardCharsets.UTF_8);

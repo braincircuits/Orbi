@@ -131,6 +131,15 @@ class ControlHttpServerTest {
                 int port = Integer.parseInt(address.substring(address.lastIndexOf(':') + 1));
                 try (Socket active = tunnel(port, origin.getLocalPort())) {
                     echo(active); ok("PATCH", "/profiles/a", "{\"name\":\"新名字\"}", 200); echo(active);
+                    // 候选配置合法但 TLS 初始化失败时，不应提交版本或中断旧会话。
+                    Path brokenCa = directory.resolve("broken-ca.pem"); Files.writeString(brokenCa, "无效的证书内容");
+                    JsonObject invalidPatch = new JsonObject(), invalidValues = new JsonObject();
+                    invalidValues.addProperty("tls.ca", brokenCa.toString()); invalidPatch.add("config", invalidValues);
+                    long previousRevision = revision;
+                    ok("PATCH", "/profiles/a", invalidPatch.toString(), 400);
+                    var unchanged = ok("GET", "/config", null, 200);
+                    assertFalse(unchanged.toString().contains("broken-ca.pem"));
+                    assertEquals(previousRevision, revision); echo(active);
                     ok("PUT", "/routing/direct-rules", "{\"rules\":\"127.0.0.0/8\"}", 200); echo(active);
                     try (Socket direct = tunnel(port, origin.getLocalPort())) {
                         echo(direct);

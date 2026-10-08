@@ -77,8 +77,7 @@ public final class ControlTasks implements AutoCloseable {
             var group = new NioEventLoopGroup(1);
             var resolver = Transport.resolver();
             stage(job, "configuration");
-            try (ProxySession session = profile.config().get("protocol", "http3").equals("http2")
-                    ? new Http2Session(group.next(), profile.config(), resolver) : new Http3Session(group.next(), profile.config(), resolver)) {
+            try (ProxySession session = ProxySessionFactory.create(group.next(), profile.config(), resolver)) {
                 var opening = session.open(target);
                 long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(profile.config().connectTimeoutMillis() * 3L);
                 try {

@@ -12,12 +12,13 @@ import java.util.concurrent.*;
 /** Web 控制的业务入口；配置变更串行处理，网络测试独立执行。 */
 public final class KernelControl implements AutoCloseable {
     private final Path configFile;
+    private final ConfigurationEditor editor;
     private final ControlEvents events = new ControlEvents();
     private final ControlLogs logs;
     private final ControlTasks tasks;
     private final ScheduledExecutorService publisher = Executors.newSingleThreadScheduledExecutor();
     private KernelConfig config;
-    private LocalProxyServer proxy;
+    private final ProxyRuntime runtime = new ProxyRuntime();
     private long revision, savedRevision;
     private String previousState = "";
     private volatile List<String> secrets = List.of();
@@ -26,6 +27,7 @@ public final class KernelControl implements AutoCloseable {
 
     public KernelControl(Path file) throws IOException {
         configFile = file.toAbsolutePath().normalize();
+        editor = new ConfigurationEditor(configFile.getParent());
         config = Files.exists(configFile) ? KernelConfig.load(configFile)
                 : new KernelConfig(new ProxyConfig(new Properties(), configFile.getParent()), List.of(), "");
         revision = savedRevision = Files.exists(configFile) ? 1 : 0;
@@ -52,29 +54,23 @@ public final class KernelControl implements AutoCloseable {
     }
     public synchronized Map<String, Object> metadata() {
         return Map.of("revision", revision, "savedRevision", savedRevision, "dirty", revision != savedRevision,
-                "requiresProxyRestart", requiresRestart());
-    }
-    private boolean requiresRestart() {
-        if (proxy == null) return false;
-        ProxyConfig active = proxy.configuration().local();
-        return !active.get("bind", "127.0.0.1").equals(config.local().get("bind", "127.0.0.1"))
-                || active.integer("port", 8080, 0, 65535) != config.local().integer("port", 8080, 0, 65535);
+                "requiresProxyRestart", runtime.requiresRestart(config));
     }
     public synchronized Map<String, Object> status() {
         Map<String, Object> result = new LinkedHashMap<>(metadata());
-        result.put("running", proxy != null);
-        result.put("connection", proxy == null ? "idle" : proxy.connectionState());
-        result.put("error", proxy == null ? "" : redact(proxy.lastError()));
-        result.put("address", proxy == null ? "" : proxy.address().getHostString() + ":" + proxy.address().getPort());
+        result.put("running", runtime.isRunning());
+        result.put("connection", runtime.state());
+        result.put("error", redact(runtime.lastError()));
+        result.put("address", runtime.address());
         result.put("defaultConnectionId", config.defaultConnectionId());
         result.put("connections", config.connections().stream().map(p -> Map.of("id", p.id(), "name", p.name(),
                 "protocol", p.config().get("protocol", "http3"),
-                "state", active(p.id()) ? proxy.connectionState() : "idle",
-                "activeTunnels", active(p.id()) ? proxy.activeTunnels() : 0,
-                "pendingTunnels", active(p.id()) ? proxy.pendingTunnels() : 0)).toList());
+                "state", active(p.id()) ? runtime.state() : "idle",
+                "activeTunnels", active(p.id()) ? runtime.activeTunnels() : 0,
+                "pendingTunnels", active(p.id()) ? runtime.pendingTunnels() : 0)).toList());
         return result;
     }
-    private boolean active(String id) { return proxy != null && id.equals(config.defaultConnectionId()); }
+    private boolean active(String id) { return runtime.isRunning() && id.equals(config.defaultConnectionId()); }
     public synchronized JsonObject configuration() {
         JsonObject result = config.json(false);
         for (JsonElement item : result.getAsJsonArray("connections")) item.getAsJsonObject().addProperty("hasPassword", true);
@@ -91,79 +87,31 @@ public final class KernelControl implements AutoCloseable {
         if (closed) throw new ControlException(503, "KERNEL_STOPPING", "代理内核正在退出");
         if (expected >= 0 && expected != revision) throw new ControlException(409, "REVISION_CONFLICT", "配置已变化，请重新读取后再提交");
     }
-    private KernelConfig.Profile find(String id) {
-        return config.connections().stream().filter(p -> p.id().equals(id)).findFirst()
-                .orElseThrow(() -> new ControlException(404, "PROFILE_NOT_FOUND", "连接配置不存在", "profileId"));
-    }
-    private KernelConfig parse(JsonObject input) {
-        JsonObject copy = input.deepCopy();
-        if (copy.has("connections")) for (JsonElement element : copy.getAsJsonArray("connections")) {
-            JsonObject item = element.getAsJsonObject(), values = item.getAsJsonObject("config");
-            String id = item.has("id") ? item.get("id").getAsString() : "";
-            if (values != null && !values.has("password")) config.connections().stream().filter(p -> p.id().equals(id)).findFirst()
-                    .ifPresent(old -> values.addProperty("password", old.config().required("password")));
-        }
-        try { return KernelConfig.parse(copy, configFile.getParent()); }
-        catch (IllegalArgumentException | IllegalStateException | NullPointerException e) {
-            String message = e.getMessage() == null ? "" : e.getMessage();
-            if (message.contains("协议、服务器地址和端口重复")) throw new ControlException(409, "PROFILE_DUPLICATE", "协议、服务器地址和端口重复", "connections");
-            throw new ControlException(400, "INVALID_CONFIGURATION", "配置结构、字段或规则无效，请检查连接参数与证书", "configuration");
-        }
-    }
+    private KernelConfig.Profile find(String id) { return ConfigurationEditor.find(config, id); }
     public synchronized Map<String, Object> validate(JsonObject input) {
-        KernelConfig next = parse(input);
+        KernelConfig next = editor.parse(input, config);
         return Map.of("valid", true, "profileCount", next.connections().size());
     }
     public synchronized void configure(JsonObject input, long expected) throws Exception {
-        checkRevision(expected); apply(parse(input));
+        checkRevision(expected); apply(editor.parse(input, config));
     }
     private void apply(KernelConfig next) throws Exception {
-        if (proxy != null) {
-            if (next.connections().isEmpty()) throw new ControlException(409, "PROXY_RUNNING", "请先停止代理，再删除最后一份连接配置");
-            ProxyConfig previous = proxy.configuration().local();
-            boolean listenerChanged = !previous.get("bind", "127.0.0.1").equals(next.local().get("bind", "127.0.0.1"))
-                    || previous.integer("port", 8080, 0, 65535) != next.local().integer("port", 8080, 0, 65535);
-            if (listenerChanged) {
-                // 修改监听立即断开旧连接；新监听失败时恢复旧配置，已经断开的隧道不能恢复。
-                proxy.close(); proxy = null;
-                try { proxy = new LocalProxyServer(next).start(); }
-                catch (Exception failure) {
-                    try { proxy = new LocalProxyServer(config).start(); }
-                    catch (Exception rollback) {
-                        publishStatus();
-                        throw new ControlException(503, "LISTENER_ROLLBACK_FAILED", "新监听启动失败，旧监听也未能恢复；配置未修改，请检查端口后重新启动代理");
-                    }
-                    publishStatus();
-                    throw new ControlException(409, "LISTENER_RESTART_FAILED", "新监听启动失败，已恢复旧监听；原有连接已断开，配置未修改");
-                }
-            } else proxy.apply(next);
-        }
+        try { runtime.apply(next); }
+        catch (Exception failure) { publishStatus(); throw failure; }
         config = next; updateSecrets(next); revision++;
         events.emit("configuration", metadata()); publishStatus();
     }
     public synchronized String createProfile(JsonObject item, long expected) throws Exception {
         checkRevision(expected);
-        JsonObject copy = item.deepCopy();
-        String id = copy.has("id") ? copy.get("id").getAsString() : UUID.randomUUID().toString();
-        if (config.connections().stream().anyMatch(p -> p.id().equals(id))) throw new ControlException(409, "PROFILE_ID_EXISTS", "连接 ID 已存在", "id");
-        copy.addProperty("id", id);
-        JsonObject root = config.json(true); root.getAsJsonArray("connections").add(copy);
-        if (config.connections().isEmpty()) root.addProperty("defaultConnectionId", id);
-        apply(parse(root)); return id;
+        var created = editor.create(config, item);
+        apply(created.configuration()); return created.id();
     }
     public synchronized void patchProfile(String id, JsonObject patch, long expected) throws Exception {
-        checkRevision(expected); find(id);
-        if (patch.has("id") && !id.equals(patch.get("id").getAsString())) throw new ControlException(400, "IMMUTABLE_ID", "连接 ID 不能修改", "id");
-        JsonObject root = config.json(true);
-        for (JsonElement element : root.getAsJsonArray("connections")) {
-            JsonObject item = element.getAsJsonObject();
-            if (item.get("id").getAsString().equals(id)) merge(item, patch);
-        }
-        apply(parse(root));
+        checkRevision(expected); apply(editor.patchProfile(config, id, patch));
     }
     public synchronized void removeProfile(String id, long expected) throws Exception {
         checkRevision(expected); find(id);
-        if (config.connections().size() == 1 && proxy == null) {
+        if (config.connections().size() == 1 && !runtime.isRunning()) {
             apply(new KernelConfig(config.local(), List.of(), "")); return;
         }
         if (id.equals(config.defaultConnectionId())) throw new ControlException(409, "DEFAULT_PROFILE_IN_USE", "请先切换默认连接", "profileId");
@@ -173,18 +121,9 @@ public final class KernelControl implements AutoCloseable {
         checkRevision(expected); find(id);
         if (!id.equals(config.defaultConnectionId())) apply(config.select(id));
     }
-    public synchronized void disconnect(String id) throws Exception { find(id); if (active(id)) proxy.disconnect(); publishStatus(); }
+    public synchronized void disconnect(String id) throws Exception { find(id); if (active(id)) runtime.disconnect(); publishStatus(); }
     public synchronized void patchSettings(JsonObject patch, long expected) throws Exception {
-        checkRevision(expected);
-        JsonObject root = config.json(true); merge(root.getAsJsonObject("local"), patch); apply(parse(root));
-    }
-    private static void merge(JsonObject target, JsonObject patch) {
-        for (var entry : patch.entrySet()) {
-            if (entry.getValue().isJsonNull()) target.remove(entry.getKey());
-            else if (entry.getValue().isJsonObject() && target.has(entry.getKey()) && target.get(entry.getKey()).isJsonObject())
-                merge(target.getAsJsonObject(entry.getKey()), entry.getValue().getAsJsonObject());
-            else target.add(entry.getKey(), entry.getValue().deepCopy());
-        }
+        checkRevision(expected); apply(editor.patchSettings(config, patch));
     }
     public synchronized Map<String, Object> routing() throws IOException {
         return Map.of("defaultConnectionId", config.defaultConnectionId(), "directRules", rulesText());
@@ -214,14 +153,9 @@ public final class KernelControl implements AutoCloseable {
     }
     public synchronized void start() throws Exception {
         checkRevision(-1);
-        if (proxy != null) return;
-        if (config.connections().isEmpty()) throw new ControlException(409, "NO_DEFAULT_PROFILE", "请先添加连接配置");
-        proxy = new LocalProxyServer(config).start(); publishStatus();
+        runtime.start(config); publishStatus();
     }
-    public synchronized void stop() {
-        if (proxy != null) { proxy.close(); proxy = null; }
-        publishStatus();
-    }
+    public synchronized void stop() { runtime.stop(); publishStatus(); }
     public synchronized void restart() throws Exception { stop(); start(); }
     public synchronized void save(long expected) throws IOException {
         checkRevision(expected);
@@ -236,7 +170,7 @@ public final class KernelControl implements AutoCloseable {
     @Override public synchronized void close() {
         if (closed) return;
         closed = true; publisher.shutdownNow(); tasks.close();
-        if (proxy != null) { proxy.close(); proxy = null; }
+        runtime.close();
         logs.close(); events.close();
     }
 }

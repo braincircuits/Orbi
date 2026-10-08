@@ -24,8 +24,7 @@ public final class SessionRouter implements AutoCloseable {
         session = create(config.profile(config.defaultConnectionId()));
     }
     private ProxySession create(KernelConfig.Profile profile) throws Exception {
-        return profile.config().get("protocol", "http3").equals("http2")
-                ? new Http2Session(loop, profile.config(), resolver) : new Http3Session(loop, profile.config(), resolver);
+        return ProxySessionFactory.create(loop, profile.config(), resolver);
     }
     public Future<Channel> open(Authority target, Channel browser) {
         Promise<Channel> result = loop.newPromise();
