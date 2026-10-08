@@ -1,6 +1,8 @@
-package com.blacicada.h3;
+package com.blacicada.proxy;
 
-import com.blacicada.common.h3.ProxyConfig;
+import com.blacicada.h3.Http3ProxyServer;
+
+import com.blacicada.common.ProxyConfig;
 import com.blacicada.config.KernelConfig;
 import com.blacicada.h2.Http2ProxyServer;
 import org.junit.jupiter.api.*;

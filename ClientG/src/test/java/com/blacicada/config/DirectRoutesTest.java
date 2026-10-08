@@ -1,10 +1,12 @@
-package com.blacicada.h3;
+package com.blacicada.config;
 
+import com.blacicada.common.ProxyConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Properties;
 import static org.junit.jupiter.api.Assertions.*;
 
 class DirectRoutesTest {
@@ -16,7 +18,7 @@ class DirectRoutesTest {
     }
 
     @Test void preservesDomainRulesAndIgnoresComments() throws Exception {
-        var routes = routes("# 注释\n\n Example.COM. # direct domain\n");
+        var routes = routes("# 注释\n\n Example.COM. # 直连域名\n");
         assertTrue(routes.matches("example.com"));
         assertTrue(routes.matches("WWW.Example.com."));
         assertFalse(routes.matches("notexample.com"));
@@ -63,7 +65,7 @@ class DirectRoutesTest {
 
     @Test void invalidCidrFailsWithFileAndLine() {
         for (String rule : new String[]{"192.168.0.0/33", "::/129", "10.0.0.0/-1", "10.0.0.0/", "10.0.0.0/x", "example.com/24", "999.0.0.0/8", "::/64/2"}) {
-            var error = assertThrows(IOException.class, () -> routes("# heading\n" + rule));
+            var error = assertThrows(IOException.class, () -> routes("# 规则说明\n" + rule));
             assertTrue(error.getMessage().contains("pac.txt:2:"), error.getMessage());
         }
     }
@@ -73,5 +75,42 @@ class DirectRoutesTest {
         assertFalse(routes.matches("127.0.0.1"));
         assertFalse(routes.matches("localhost"));
         assertFalse(routes.needsResolution("localhost"));
+        assertEquals("", routes.text());
+    }
+
+    @Test void loadsConfiguredFileAndPreservesOriginalText() throws Exception {
+        String text = "# 保留注释与换行\r\n example.com # 直连\r\n\r\n";
+        Files.writeString(directory.resolve("custom.txt"), text);
+        Properties settings = new Properties(); settings.setProperty("routesFile", "custom.txt");
+        var rules = DirectRoutes.load(new ProxyConfig(settings, directory));
+        assertTrue(rules.matches("www.example.com"));
+        assertEquals(text, rules.text());
+        Files.writeString(directory.resolve("custom.txt"), "other.example");
+        assertEquals(text, rules.text());
+        assertFalse(rules.matches("other.example"));
+    }
+
+    @Test void inlineRulesTakePrecedenceIncludingEmptyText() throws Exception {
+        Files.writeString(directory.resolve("pac.txt"), "file.example");
+        Properties settings = new Properties(); settings.setProperty("routesInline", "inline.example\n");
+        var rules = DirectRoutes.load(new ProxyConfig(settings, directory));
+        assertTrue(rules.matches("inline.example"));
+        assertFalse(rules.matches("file.example"));
+        assertEquals("inline.example", rules.text());
+
+        settings.setProperty("routesInline", "");
+        rules = DirectRoutes.load(new ProxyConfig(settings, directory));
+        assertFalse(rules.matches("file.example"));
+        assertEquals("", rules.text());
+
+        settings.remove("routesInline");
+        assertTrue(DirectRoutes.load(new ProxyConfig(settings, directory)).matches("file.example"));
+    }
+
+    @Test void configuredFileValidationKeepsSourceAndLine() throws Exception {
+        Files.writeString(directory.resolve("custom.txt"), "# 第一行\n10.0.0.0/33\n");
+        Properties settings = new Properties(); settings.setProperty("routesFile", "custom.txt");
+        var error = assertThrows(IOException.class, () -> DirectRoutes.load(new ProxyConfig(settings, directory)));
+        assertTrue(error.getMessage().contains("custom.txt:2:"), error.getMessage());
     }
 }

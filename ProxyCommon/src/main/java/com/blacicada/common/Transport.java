@@ -1,4 +1,4 @@
-package com.blacicada.common.h3;
+package com.blacicada.common;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
@@ -7,9 +7,6 @@ import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.quic.QuicCodecBuilder;
 import io.netty.resolver.dns.*;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 
 public final class Transport {
@@ -30,15 +27,6 @@ public final class Transport {
         return new DnsAddressResolverGroup(new DnsNameResolverBuilder()
                 .channelType(NioDatagramChannel.class).socketChannelType(NioSocketChannel.class)
                 .nameServerProvider(DnsServerAddressStreamProviders.platformDefault()).queryTimeoutMillis(3000));
-    }
-
-    public static String authorization(String password) {
-        return "Bearer " + Base64.getEncoder().encodeToString(password.getBytes(StandardCharsets.UTF_8));
-    }
-
-    public static boolean authorized(String expected, CharSequence actual) {
-        return actual != null && MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8),
-                actual.toString().getBytes(StandardCharsets.UTF_8));
     }
 
     /** 异常取消时重置双向流，不等待已经无法完成的传输。 */

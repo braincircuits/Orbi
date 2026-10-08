@@ -1,13 +1,19 @@
 package com.blacicada.control;
 
-import com.blacicada.common.h3.ProxyConfig;
+import com.blacicada.common.ProxyConfig;
 import com.blacicada.config.KernelConfig;
-import com.blacicada.h3.LocalProxyServer;
+import com.blacicada.proxy.LocalProxyServer;
+import com.blacicada.config.DirectRoutes;
+import java.io.IOException;
 
 /** 只管理本地代理生命周期；调用方通过 KernelControl 的锁串行访问。 */
 final class ProxyRuntime implements AutoCloseable {
     private LocalProxyServer proxy;
 
+    /** 运行时诊断与转发共用生效快照；停止时读取待启动的配置。 */
+    DirectRoutes routes(KernelConfig config) throws IOException {
+        return proxy == null ? DirectRoutes.load(config.local()) : proxy.routes();
+    }
     boolean isRunning() { return proxy != null; }
     String state() { return proxy == null ? "idle" : proxy.connectionState(); }
     String lastError() { return proxy == null ? "" : proxy.lastError(); }

@@ -143,6 +143,8 @@ UI 通过 `error.code` 判断行为，通过中文 `message` 展示原因，不�
 
 连接诊断阶段可能包括 configuration、dns、tcp、tls、http2_settings、quic_tls、connect。阶段按观察到的状态变化记录，快速阶段可能省略，时间为从任务开始累计的毫秒数。诊断成功仅说明指定目标 TCP 隧道和代理认证成功，不代表目标网站 TLS 或 HTTP 请求成功。失败结果提供阶段和错误码，例如 TCP_CONNECT_FAILED、TLS_TIMEOUT、AUTHENTICATION_FAILED。目标由代理服务端连接，不会借用现有代理会话。
 
+代理运行时，规则查询和路由解释使用实际生效的规则快照。外部修改规则文件不会立即生效，可调用规则重载接口应用；其他重新应用配置的操作也会加载规则文件。代理停止时读取配置指定的规则。
+
 路由解释返回 direct/proxy/unavailable，以及 direct_rule/ip_rule/default 命中类别。含 IP/CIDR 规则时可能进行 DNS 查询；解析失败时与实际路由行为一致，使用默认代理。
 
 SSE 初次订阅发送 `snapshot`，之后发送 `status`、`configuration`、`log`、`operation`。每条包含 id/event/data。重新订阅可通过 `Last-Event-ID` 请求补发，最近保留 512 条，游标过期时发送新快照，UI 应重新读取配置、日志或任务。最多 16 个 SSE 订阅。每 10 秒的注释帧只维持管理事件流，不是代理内核与代理服务端之间的业务心跳。

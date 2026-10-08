@@ -1,6 +1,6 @@
 package com.blacicada.h2;
 
-import com.blacicada.common.h3.*;
+import com.blacicada.common.*;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.group.DefaultChannelGroup;

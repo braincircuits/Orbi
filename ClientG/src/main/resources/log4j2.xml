@@ -14,9 +14,6 @@
             <ThresholdFilter level="INFO" onMatch="ACCEPT" onMismatch="DENY"/>
             <PatternLayout pattern="[%d{HH:mm:ss:SSS}] [%p] - %l - %m%n"/>
             <!-- Policies :日志滚动策略-->
-            <!--
-
-            -->
             <Policies>
                 <!-- TimeBasedTriggeringPolicy :时间滚动策略,默认0点小时产生新的文件,interval="6" : 自定义文件滚动时间间隔,每隔6小时产生新文件, modulate="true" : 产生文件是否以0点偏移时间,即6点,12点,18点,0点-->
                 <TimeBasedTriggeringPolicy interval="6" modulate="true"/>
@@ -33,8 +30,5 @@
             <appender-ref ref="infoLog"/>
             <appender-ref ref="abc"/>
         </root>
-<!--        <root level="info">-->
-<!--            <appender-ref ref="abc"/>-->
-<!--        </root>-->
     </Loggers>
 </Configuration>

@@ -1,6 +1,6 @@
 package com.blacicada.control.web;
 
-import com.blacicada.common.h3.ProxyConfig;
+import com.blacicada.common.ProxyConfig;
 import com.blacicada.config.KernelConfig;
 import com.blacicada.control.*;
 import com.blacicada.h2.Http2ProxyServer;
@@ -161,6 +161,21 @@ class ControlHttpServerTest {
             }
             assertFalse(ok("GET", "/status", null, 200).getAsJsonObject("data").get("running").getAsBoolean());
         }
+    }
+    @Test void routingDiagnosticsUseActiveRulesUntilExplicitReload() throws Exception {
+        Path rules = directory.resolve("active-rules.txt"); Files.writeString(rules, "127.0.0.0/8\n");
+        addProfile("a", "http2", 4433, false);
+        JsonObject settings = new JsonObject(); settings.addProperty("port", 0); settings.addProperty("routesFile", rules.toString());
+        ok("PATCH", "/settings", settings.toString(), 200); ok("POST", "/proxy/start", null, 200);
+        // 外部文件变更尚未重载时，诊断必须与正在转发的规则快照一致。
+        Files.writeString(rules, "");
+        assertEquals("127.0.0.0/8\n", ok("GET", "/routing", null, 200).getAsJsonObject("data").get("directRules").getAsString());
+        String job = ok("POST", "/routing/resolve", "{\"target\":\"127.0.0.1:80\"}", 202).getAsJsonObject("data").get("id").getAsString();
+        assertEquals("direct", awaitJob(job).getAsJsonObject("result").get("action").getAsString());
+        ok("POST", "/routing/reload", null, 200);
+        assertEquals("", ok("GET", "/routing", null, 200).getAsJsonObject("data").get("directRules").getAsString());
+        job = ok("POST", "/routing/resolve", "{\"target\":\"127.0.0.1:80\"}", 202).getAsJsonObject("data").get("id").getAsString();
+        assertEquals("proxy", awaitJob(job).getAsJsonObject("result").get("action").getAsString());
     }
     @Test void diagnosticTcpFailureAndRoutingResultAreObservable() throws Exception {
         int closedPort; try (var port = new ServerSocket(0)) { closedPort = port.getLocalPort(); }

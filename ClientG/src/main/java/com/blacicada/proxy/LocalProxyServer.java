@@ -1,6 +1,8 @@
-package com.blacicada.h3;
+package com.blacicada.proxy;
 
-import com.blacicada.common.h3.*;
+import com.blacicada.config.DirectRoutes;
+
+import com.blacicada.common.*;
 import com.blacicada.config.KernelConfig;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
@@ -30,21 +32,18 @@ public final class LocalProxyServer implements AutoCloseable {
         if (!config.get("bind", "127.0.0.1").equals(next.local().get("bind", "127.0.0.1"))
                 || config.integer("port", 8080, 0, 65535) != next.local().integer("port", 8080, 0, 65535))
             throw new IllegalArgumentException("修改本地监听需要重启代理");
-        DirectRoutes updated = loadRoutes(next.local());
+        DirectRoutes updated = DirectRoutes.load(next.local());
         session.apply(next, () -> { config = next.local(); routes = updated; });
-    }
-    private static DirectRoutes loadRoutes(ProxyConfig config) throws java.io.IOException {
-        return config.values().containsKey("routesInline") ? new DirectRoutes(config.get("routesInline", ""))
-                : new DirectRoutes(config.path("routesFile", "pac.txt"));
     }
     public void disconnect() throws Exception { session.disconnect(); }
     public KernelConfig configuration() { return session.config(); }
+    public DirectRoutes routes() { return routes; }
 
 
     public LocalProxyServer start() throws Exception {
         try {
             session = new SessionRouter(group.next(), resolver, initial);
-            routes = loadRoutes(config);
+            routes = DirectRoutes.load(config);
             listener = new ServerBootstrap().group(group).channel(NioServerSocketChannel.class)
                     .childOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK)
@@ -68,7 +67,6 @@ public final class LocalProxyServer implements AutoCloseable {
     public long connectionCount() { return session.connectionCount(); }
     public String connectionState() { return session.connectionState(); }
     public String lastError() { return session.lastError(); }
-    public void await() throws InterruptedException { listener.closeFuture().sync(); }
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
         if (listener != null) listener.close().awaitUninterruptibly();

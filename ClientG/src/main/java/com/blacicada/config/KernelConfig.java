@@ -1,11 +1,11 @@
 package com.blacicada.config;
 
-import com.blacicada.common.h3.*;
+import com.blacicada.common.*;
+import com.blacicada.io.PrivateFiles;
 import com.google.gson.*;
 import io.netty.util.NetUtil;
 import java.net.IDN;
 import java.nio.file.*;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.util.*;
 import java.io.IOException;
 
@@ -29,8 +29,8 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
             if (!config.get("tls.ca", "").isEmpty() && !Files.isRegularFile(config.path("tls.ca", "")))
                 throw new IllegalArgumentException("CA 证书文件不存在");
         }
-        public String key() {
-            return config.get("protocol", "http3") + ":" + normalizedHost(config.required("server.host")) + ":" + config.integer("server.port", 4433, 1, 65535);
+        private String key() {
+            return config.get("protocol", "http3") + ":" + config.required("server.host") + ":" + config.integer("server.port", 4433, 1, 65535);
         }
     }
     public KernelConfig {
@@ -46,20 +46,13 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
             if (!Set.of("bind", "port", "routesInline", "routesFile", "connectTimeoutMillis").contains(key))
                 throw new IllegalArgumentException("未知内核公共配置字段：" + key);
         local.integer("port", 8080, 0, 65535); local.connectTimeoutMillis();
-        try {
-            if (local.values().containsKey("routesInline")) new com.blacicada.h3.DirectRoutes(local.get("routesInline", ""));
-            else new com.blacicada.h3.DirectRoutes(local.path("routesFile", "pac.txt"));
-        } catch (IOException e) { throw new IllegalArgumentException("直连规则无效", e); }
+        try { DirectRoutes.load(local); }
+        catch (IOException e) { throw new IllegalArgumentException("直连规则无效", e); }
     }
     public Profile profile(String id) {
         return connections.stream().filter(p -> p.id().equals(id)).findFirst().orElseThrow(() -> new IllegalArgumentException("连接不存在"));
     }
     public KernelConfig select(String id) { return new KernelConfig(local, connections, id); }
-    public KernelConfig upsert(Profile profile) {
-        List<Profile> all = new ArrayList<>(connections);
-        all.removeIf(p -> p.id().equals(profile.id())); all.add(profile);
-        return new KernelConfig(local, all, defaultConnectionId);
-    }
     public KernelConfig remove(String id) {
         profile(id);
         if (id.equals(defaultConnectionId)) throw new IllegalArgumentException("请先切换默认连接，再删除此配置");
@@ -72,16 +65,15 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
     public static KernelConfig parse(JsonObject root, Path base) {
         if (root.get("version").getAsInt() != 1) throw new IllegalArgumentException("不支持的配置版本");
         List<Profile> profiles = new ArrayList<>();
-        for (JsonElement e : root.getAsJsonArray("connections")) profiles.add(parseProfile(e.getAsJsonObject(), base, null));
+        for (JsonElement e : root.getAsJsonArray("connections")) profiles.add(parseProfile(e.getAsJsonObject(), base));
         return new KernelConfig(new ProxyConfig(properties(root.getAsJsonObject("local")), base), profiles, root.get("defaultConnectionId").getAsString());
     }
-    public static Profile parseProfile(JsonObject object, Path base, Profile previous) {
+    private static Profile parseProfile(JsonObject object, Path base) {
         Properties p = properties(object.getAsJsonObject("config"));
         for (String key : p.stringPropertyNames()) if (!CONNECTION_KEYS.contains(key)) throw new IllegalArgumentException("未知连接配置字段：" + key);
-        if (!p.containsKey("password") && previous != null) p.setProperty("password", previous.config().required("password"));
         return new Profile(object.get("id").getAsString(), object.get("name").getAsString(), new ProxyConfig(p, base));
     }
-    public static Properties properties(JsonObject object) {
+    private static Properties properties(JsonObject object) {
         Properties p = new Properties();
         if (object != null) object.entrySet().forEach(e -> p.setProperty(e.getKey(), e.getValue().getAsString()));
         return p;
@@ -103,14 +95,7 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
     }
     /** 写入同目录临时文件后原子替换，避免崩溃产生半份配置。 */
     public void save(Path file) throws IOException {
-        Path absolute = file.toAbsolutePath();
-        Path temp = Files.createTempFile(absolute.getParent(), ".network-", ".json");
-        try {
-            if (temp.getFileSystem().supportedFileAttributeViews().contains("posix"))
-                Files.setPosixFilePermissions(temp, PosixFilePermissions.fromString("rw-------"));
-            Files.writeString(temp, JSON.toJson(json(true)) + "\n");
-            Files.move(temp, absolute, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } finally { Files.deleteIfExists(temp); }
+        PrivateFiles.writeAtomic(file, JSON.toJson(json(true)) + "\n");
     }
     private static String normalizedHost(String input) {
         String host = input.trim();

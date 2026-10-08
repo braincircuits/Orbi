@@ -1,4 +1,4 @@
-package com.blacicada.common.h3;
+package com.blacicada.common;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -25,7 +25,7 @@ class ProxyCredentialsTest {
         assertEquals("bob", server.authenticate(ProxyCredentials.clientAuthorization(config("bob", "密码乙:123", false))));
         assertNull(server.authenticate(ProxyCredentials.clientAuthorization(config("alice", "密码乙:123", false))));
         assertNull(server.authenticate(ProxyCredentials.clientAuthorization(config("unknown", "密码甲", false))));
-        assertNull(server.authenticate(Transport.authorization("旧密码")));
+        assertNull(server.authenticate(ProxyCredentials.clientAuthorization(config(null, "旧密码", false))));
         assertNull(server.authenticate("Basic 非法编码"));
         assertNull(server.authenticate(null));
         assertTrue(server.challenge().startsWith("Basic "));
@@ -34,8 +34,19 @@ class ProxyCredentialsTest {
     @Test void sharedPasswordRemainsCompatible() throws Exception {
         var server = ProxyCredentials.loadServer(config(null, "兼容密码", false));
         assertNotNull(server.authenticate(ProxyCredentials.clientAuthorization(config(null, "兼容密码", false))));
-        assertNull(server.authenticate(Transport.authorization("错误密码")));
+        assertNull(server.authenticate(ProxyCredentials.clientAuthorization(config(null, "错误密码", false))));
         assertEquals("Bearer", server.challenge());
+    }
+
+    @Test void sharedPasswordRejectsMissingAndInvalidTokens() throws Exception {
+        var configuration = config(null, "test-secret", false);
+        var server = ProxyCredentials.loadServer(configuration);
+        String token = ProxyCredentials.clientAuthorization(configuration);
+        assertEquals("Bearer dGVzdC1zZWNyZXQ=", token);
+        assertEquals("共享密码", server.authenticate(token));
+        assertNull(server.authenticate(null));
+        assertNull(server.authenticate("Bearer wrong"));
+        assertNull(server.authenticate(ProxyCredentials.clientAuthorization(config("alice", "test-secret", false))));
     }
 
     @Test void invalidAccountFilesFailClosed() throws Exception {

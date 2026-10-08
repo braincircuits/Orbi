@@ -1,6 +1,6 @@
 package com.blacicada;
 
-import com.blacicada.common.h3.ProxyConfig;
+import com.blacicada.common.ProxyConfig;
 import com.blacicada.h3.Http3ProxyServer;
 import com.blacicada.h2.Http2ProxyServer;
 import java.nio.file.Path;

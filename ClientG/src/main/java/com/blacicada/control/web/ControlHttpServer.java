@@ -7,7 +7,7 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
-import java.nio.file.attribute.PosixFilePermissions;
+import com.blacicada.io.PrivateFiles;
 import java.security.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -127,12 +127,8 @@ public final class ControlHttpServer implements AutoCloseable {
     }
     public void writeEndpoint(Path file) throws IOException {
         Path path = file.toAbsolutePath(); Files.createDirectories(path.getParent());
-        Path temp = Files.createTempFile(path.getParent(), ".control-", ".json");
-        try {
-            if (Files.getFileStore(temp).supportsFileAttributeView("posix")) Files.setPosixFilePermissions(temp, PosixFilePermissions.fromString("rw-------"));
-            Files.writeString(temp, JSON.toJson(Map.of("url", url(), "token", token, "pid", ProcessHandle.current().pid(), "apiVersion", 1)) + "\n");
-            Files.move(temp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } finally { Files.deleteIfExists(temp); }
+        PrivateFiles.writeAtomic(path, JSON.toJson(Map.of("url", url(), "token", token,
+                "pid", ProcessHandle.current().pid(), "apiVersion", 1)) + "\n");
     }
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;

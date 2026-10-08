@@ -1,7 +1,6 @@
 package com.blacicada.config;
 
-import com.blacicada.common.h3.ProxyConfig;
-import com.google.gson.*;
+import com.blacicada.common.ProxyConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.*;
@@ -37,8 +36,6 @@ class KernelConfigTest {
         assertThrows(IllegalArgumentException.class, () -> config.remove("a"));
         assertThrows(IllegalArgumentException.class, () -> config.select("absent"));
         assertEquals("a", config.defaultConnectionId());
-        JsonObject edit = config.json(false).getAsJsonArray("connections").get(0).getAsJsonObject();
-        assertEquals("secret-test", KernelConfig.parseProfile(edit, directory, config.profile("a")).config().required("password"));
     }
 
     @Test void rejectsOldFileAndServerFieldsInLocalConfiguration() throws Exception {

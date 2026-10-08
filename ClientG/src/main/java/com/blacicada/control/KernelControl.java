@@ -1,8 +1,8 @@
 package com.blacicada.control;
 
-import com.blacicada.common.h3.*;
+import com.blacicada.common.*;
 import com.blacicada.config.KernelConfig;
-import com.blacicada.h3.*;
+import com.blacicada.config.DirectRoutes;
 import com.google.gson.*;
 import java.io.IOException;
 import java.nio.file.*;
@@ -83,9 +83,12 @@ public final class KernelControl implements AutoCloseable {
             if (item.getAsJsonObject().get("id").getAsString().equals(id)) return item.getAsJsonObject();
         throw new IllegalStateException();
     }
-    public synchronized void checkRevision(long expected) {
+    private void checkRevision(long expected) {
+        ensureOpen();
+        if (expected != revision) throw new ControlException(409, "REVISION_CONFLICT", "配置已变化，请重新读取后再提交");
+    }
+    private void ensureOpen() {
         if (closed) throw new ControlException(503, "KERNEL_STOPPING", "代理内核正在退出");
-        if (expected >= 0 && expected != revision) throw new ControlException(409, "REVISION_CONFLICT", "配置已变化，请重新读取后再提交");
     }
     private KernelConfig.Profile find(String id) { return ConfigurationEditor.find(config, id); }
     public synchronized Map<String, Object> validate(JsonObject input) {
@@ -128,11 +131,7 @@ public final class KernelControl implements AutoCloseable {
     public synchronized Map<String, Object> routing() throws IOException {
         return Map.of("defaultConnectionId", config.defaultConnectionId(), "directRules", rulesText());
     }
-    private String rulesText() throws IOException {
-        if (config.local().values().containsKey("routesInline")) return config.local().get("routesInline", "");
-        Path file = config.local().path("routesFile", "pac.txt");
-        return Files.exists(file) ? Files.readString(file) : "";
-    }
+    private String rulesText() throws IOException { return runtime.routes(config).text(); }
     public static void validateRules(String rules) {
         try { new DirectRoutes(rules); }
         catch (IOException e) { throw new ControlException(400, "INVALID_RULE", e.getMessage(), "rules"); }
@@ -146,13 +145,13 @@ public final class KernelControl implements AutoCloseable {
     }
     public synchronized Map<String, Object> resolve(String target) throws Exception {
         Authority address = Authority.parse(target, -1);
-        return tasks.resolve(address, new DirectRoutes(rulesText()), config.defaultConnectionId());
+        return tasks.resolve(address, runtime.routes(config), config.defaultConnectionId());
     }
     public synchronized Map<String, Object> test(String id, String target) {
         return tasks.start(find(id), Authority.parse(target, -1));
     }
     public synchronized void start() throws Exception {
-        checkRevision(-1);
+        ensureOpen();
         runtime.start(config); publishStatus();
     }
     public synchronized void stop() { runtime.stop(); publishStatus(); }

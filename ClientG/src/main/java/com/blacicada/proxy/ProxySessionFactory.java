@@ -1,6 +1,6 @@
-package com.blacicada.h3;
+package com.blacicada.proxy;
 
-import com.blacicada.common.h3.ProxyConfig;
+import com.blacicada.common.ProxyConfig;
 import io.netty.channel.EventLoop;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
 

@@ -1,6 +1,6 @@
-package com.blacicada.h3;
+package com.blacicada.proxy;
 
-import com.blacicada.common.h3.*;
+import com.blacicada.common.*;
 import com.blacicada.common.h2.H2DataCodec;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;

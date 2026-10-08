@@ -1,5 +1,6 @@
-package com.blacicada.h3;
+package com.blacicada.config;
 
+import com.blacicada.common.ProxyConfig;
 import io.netty.util.NetUtil;
 import java.io.IOException;
 import java.net.InetAddress;
@@ -13,21 +14,31 @@ import java.util.Set;
 
 /** 不可变的直连规则：域名后缀、IP 地址和 CIDR 网段。 */
 public final class DirectRoutes {
+    private final String text;
     private final Set<String> domains;
     private final List<Network> networks;
 
     public DirectRoutes(Path file) throws IOException {
-        this(Files.exists(file) ? Files.readAllLines(file) : List.of(), file.toString());
+        this(Files.exists(file) ? Files.readString(file) : "", file.toString());
     }
 
-    public DirectRoutes(String text) throws IOException { this(text.lines().toList(), "控制接口"); }
+    public DirectRoutes(String text) throws IOException { this(text, "控制接口"); }
 
-    private DirectRoutes(List<String> lines, String source) throws IOException {
+    /** 内联规则即使为空也优先于文件规则。 */
+    public static DirectRoutes load(ProxyConfig config) throws IOException {
+        return config.values().containsKey("routesInline") ? new DirectRoutes(config.get("routesInline", ""))
+                : new DirectRoutes(config.path("routesFile", "pac.txt"));
+    }
+
+    public String text() { return text; }
+
+    private DirectRoutes(String text, String source) throws IOException {
+        this.text = text;
         var domainRules = new HashSet<String>();
         var networkRules = new ArrayList<Network>();
         {
             int lineNumber = 0;
-            for (String line : lines) {
+            for (String line : text.lines().toList()) {
                 lineNumber++;
                 String rule = line.split("#", 2)[0].trim();
                 if (rule.isEmpty()) continue;

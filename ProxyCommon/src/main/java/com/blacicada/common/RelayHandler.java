@@ -1,4 +1,4 @@
-package com.blacicada.common.h3;
+package com.blacicada.common;
 
 import io.netty.channel.*;
 import io.netty.channel.socket.ChannelInputShutdownEvent;

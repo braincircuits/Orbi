@@ -1,6 +1,6 @@
-package com.blacicada.h3;
+package com.blacicada.proxy;
 
-import com.blacicada.common.h3.Authority;
+import com.blacicada.common.Authority;
 import com.blacicada.config.KernelConfig;
 import io.netty.channel.*;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
@@ -8,7 +8,7 @@ import io.netty.util.concurrent.*;
 import java.io.IOException;
 import java.util.*;
 
-/** 当前按默认配置路由；以后可在此按目标选择配置，而无需修改本地 HTTP 入口。 */
+/** 管理默认代理会话、跟踪隧道，并在切换时立即关闭旧代理连接。 */
 public final class SessionRouter implements AutoCloseable {
     private final EventLoop loop;
     private final DnsAddressResolverGroup resolver;
@@ -49,7 +49,6 @@ public final class SessionRouter implements AutoCloseable {
         return result;
     }
     /** 在控制线程准备新会话，事件循环内原子切换；旧隧道立即中断。 */
-    public void apply(KernelConfig next) throws Exception { apply(next, () -> { }); }
     public synchronized void apply(KernelConfig next, Runnable applied) throws Exception {
         KernelConfig.Profile old = config.profile(config.defaultConnectionId());
         KernelConfig.Profile selected = next.profile(next.defaultConnectionId());

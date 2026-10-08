@@ -1,6 +1,6 @@
-package com.blacicada.h3;
+package com.blacicada.proxy;
 
-import com.blacicada.common.h3.Authority;
+import com.blacicada.common.Authority;
 import io.netty.channel.Channel;
 import io.netty.util.concurrent.Future;
 
@@ -10,6 +10,6 @@ public interface ProxySession extends AutoCloseable {
     long connectionCount();
     String connectionState();
     String lastError();
-    default String stage() { return connectionState(); }
+    String stage();
     @Override void close();
 }

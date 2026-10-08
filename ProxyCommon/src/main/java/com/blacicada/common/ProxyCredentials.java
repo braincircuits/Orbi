@@ -1,8 +1,9 @@
-package com.blacicada.common.h3;
+package com.blacicada.common;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -21,12 +22,12 @@ public final class ProxyCredentials {
     public static String clientAuthorization(ProxyConfig config) {
         String username = config.get("username", "");
         String password = config.required("password");
-        return username.isEmpty() ? Transport.authorization(password) : accountToken(username, password);
+        return username.isEmpty() ? sharedToken(password) : accountToken(username, password);
     }
 
     public static ProxyCredentials loadServer(ProxyConfig config) throws IOException {
         if (config.get("usersFile", "").isEmpty()) {
-            return new ProxyCredentials(Map.of("共享密码", Transport.authorization(config.required("password"))), false);
+            return new ProxyCredentials(Map.of("共享密码", sharedToken(config.required("password"))), false);
         }
         // 重复账号通常是配置错误，不能让后面的密码悄悄覆盖前面的密码。
         Properties users = new Properties() {
@@ -48,6 +49,10 @@ public final class ProxyCredentials {
         return new ProxyCredentials(tokens, true);
     }
 
+    private static String sharedToken(String password) {
+        return "Bearer " + Base64.getEncoder().encodeToString(password.getBytes(StandardCharsets.UTF_8));
+    }
+
     private static String accountToken(String username, String password) {
         if (!username.matches("[A-Za-z0-9][A-Za-z0-9_.-]{0,63}"))
             throw new IllegalArgumentException("账号名应为 1 至 64 位字母、数字、下划线、点或连字符，且以字母或数字开头");
@@ -58,7 +63,8 @@ public final class ProxyCredentials {
     public String authenticate(CharSequence authorization) {
         if (authorization == null) return null;
         for (var entry : tokens.entrySet()) {
-            if (Transport.authorized(entry.getValue(), authorization)) return entry.getKey();
+            if (MessageDigest.isEqual(entry.getValue().getBytes(StandardCharsets.UTF_8),
+                    authorization.toString().getBytes(StandardCharsets.UTF_8))) return entry.getKey();
         }
         return null;
     }

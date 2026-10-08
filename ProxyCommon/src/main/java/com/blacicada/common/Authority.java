@@ -1,4 +1,4 @@
-package com.blacicada.common.h3;
+package com.blacicada.common;
 
 import java.net.IDN;
 import java.net.InetSocketAddress;

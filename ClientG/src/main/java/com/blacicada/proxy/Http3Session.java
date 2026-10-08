@@ -1,5 +1,6 @@
-package com.blacicada.h3;
+package com.blacicada.proxy;
 
+import com.blacicada.common.*;
 import com.blacicada.common.h3.*;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
@@ -82,7 +83,7 @@ public final class Http3Session implements ProxySession {
                     if (!created.isSuccess()) { streams--; result.tryFailure(created.cause()); return; }
                     QuicStreamChannel stream = (QuicStreamChannel) created.getNow();
                     stream.closeFuture().addListener(ignored -> streams--);
-                    result.addListener(done -> { if (!done.isSuccess()) abortRequest(stream); });
+                    result.addListener(done -> { if (!done.isSuccess()) Transport.abort(stream); });
                     var request = new DefaultHttp3HeadersFrame();
                     request.headers().method("CONNECT").authority(target.toString())
                             .set("proxy-authorization", authorization);
@@ -132,7 +133,7 @@ public final class Http3Session implements ProxySession {
                         creatingStream = false;
                         if (created.isSuccess()) {
                             QuicStreamChannel stream = (QuicStreamChannel) created.getNow();
-                            if (!request.promise().trySuccess(stream)) abortRequest(stream);
+                            if (!request.promise().trySuccess(stream)) Transport.abort(stream);
                         } else request.promise().tryFailure(created.cause());
                         // 下一轮调度避免同步完成回调造成递归，并重新读取剩余额度。
                         loop.execute(this::drainWaitingStreams);
@@ -213,13 +214,6 @@ public final class Http3Session implements ProxySession {
         return attempt;
     }
 
-    private void abortRequest(QuicStreamChannel stream) {
-        // CONNECT 尚未成功，取消两端方向，避免只发送 FIN 后仍等待服务端结束响应。
-        if (stream.isActive()) stream.shutdown((int) Http3ErrorCode.H3_REQUEST_CANCELLED.code())
-                .addListener(ignored -> stream.close());
-        else stream.close();
-    }
-
     private void checkUnresponsiveConnection(QuicChannel parent, long receivedBefore, long sentBefore) {
         if (receivedBefore < 0 || sentBefore < 0 || connection != parent || !parent.isActive()) return;
         parent.collectStats().addListener(done -> {
@@ -261,7 +255,7 @@ public final class Http3Session implements ProxySession {
                 checkUnresponsiveConnection(parent, receivedBefore, sentBefore);
                 result.tryFailure(new IOException("等待 CONNECT 响应超时：目标=" + target
                         + "，连接 ID=" + parent.id().asShortText() + "，流 ID=" + stream.streamId()));
-                abortRequest(stream);
+                Transport.abort(stream);
             }, config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
         }
         @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
