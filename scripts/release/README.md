@@ -49,7 +49,7 @@ java --enable-native-access=ALL-UNNAMED -jar client/client.jar --web --config cl
 
 此模式初始不启动转发，由 UI 调用 `/api/v1/proxy/start`。管理接口固定监听 `127.0.0.1`，发现文件位于 `client/config/run/control.json`，包含地址和访问令牌；所有业务请求要求 `Authorization: Bearer <token>`。UI 关闭后内核继续运行，退出使用 `/api/v1/kernel/shutdown`。详细接口见 [Web 管理接口](client/WEB-API.md)。
 
-规则更新只影响新请求；切换默认连接或修改当前连接参数立即关闭旧代理隧道；修改本地监听地址或端口立即重启转发并关闭全部旧连接。配置应用后需显式保存才会在进程重启后保留。`client/start.sh`、`client/start.cmd` 与 `client/background.sh` 均启动 Web 管理接口，不自动开启代理转发。
+规则更新立即关闭直连/代理结果变化的业务连接，其余连接及共享 HTTP/2、HTTP/3 主连接保持；新增网段规则涉及未知地址时，在异步 DNS 完成后判断。受影响请求需由浏览器或应用重新发起。切换默认连接或修改当前连接参数立即关闭旧代理隧道；修改本地监听地址或端口立即重启转发并关闭全部旧连接。配置应用后需显式保存才会在进程重启后保留。`client/start.sh`、`client/start.cmd` 与 `client/background.sh` 均启动 Web 管理接口，不自动开启代理转发。
 
 ## Linux / macOS 后台运行
 

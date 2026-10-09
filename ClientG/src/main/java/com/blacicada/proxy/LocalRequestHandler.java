@@ -25,6 +25,7 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private int pendingBytes;
     private HttpRequest request;
     private Channel remote;
+    private LocalSession localSession;
     private io.netty.util.concurrent.Future<?> opening;
     private boolean tunnel;
     private boolean ready;
@@ -71,31 +72,12 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void route(ChannelHandlerContext ctx, Authority target) {
-        // 每个请求固定一份规则快照，异步 DNS 回调不混用新旧规则。
-        DirectRoutes routes = routeSource.get();
-        if (routes.matches(target.host())) {
-            connectDirect(ctx, target.unresolved());
-        } else if (routes.needsResolution(target.host())) {
-            // 仅在存在 IP 规则时异步解析，并固定命中的地址，
-            // 避免二次解析连接到未命中规则的其他地址。
-            var lookup = resolver.getResolver(ctx.executor()).resolveAll(target.unresolved());
-            opening = lookup;
-            lookup.addListener(done -> {
-                if (failed || !ctx.channel().isActive()) return;
-                if (done.isSuccess()) {
-                    for (InetSocketAddress address : lookup.getNow()) {
-                        if (routes.matches(address.getAddress())) {
-                            connectDirect(ctx, address);
-                            return;
-                        }
-                    }
-                }
-                // 本地 DNS 解析失败时，仍允许远程服务端解析原域名。
-                connectProxy(ctx, target);
-            });
-        } else {
-            connectProxy(ctx, target);
-        }
+        localSession = new LocalSession(ctx.channel(), target, resolver.getResolver(ctx.executor()), address -> {
+            if (failed || !ctx.channel().isActive()) return;
+            if (address == null) connectProxy(ctx, target);
+            else connectDirect(ctx, address);
+        });
+        localSession.apply(routeSource.get());
     }
 
     private void connectDirect(ChannelHandlerContext ctx, InetSocketAddress address) {
@@ -105,6 +87,7 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
                 .option(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK)
                 .handler(new ChannelInboundHandlerAdapter()).connect(address);
         remote = connecting.channel();
+        localSession.remote(remote);
         connecting.addListener((ChannelFutureListener) f -> connected(ctx, f.isSuccess() ? f.channel() : null, f.cause()));
     }
 
@@ -133,12 +116,16 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void connected(ChannelHandlerContext ctx, Channel channel, Throwable error) {
+        if (failed || !ctx.channel().isActive() || localSession.isClosed()) {
+            if (channel != null) Transport.abort(channel);
+            return;
+        }
         if (channel == null) {
             if (error != null) LogManager.getLogger(LocalRequestHandler.class).warn("代理连接失败：{}", error.toString());
             fail(ctx, HttpResponseStatus.BAD_GATEWAY); return;
         }
         remote = channel;
-        if (failed || !ctx.channel().isActive()) { remote.close(); return; }
+        if (!localSession.remote(remote)) return;
         ready = true;
         timeout.cancel(false);
         remote.config().setAutoRead(false);

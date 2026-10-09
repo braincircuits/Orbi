@@ -64,6 +64,33 @@ class ControlHttpServerTest {
         ok("POST", "/proxy/start", null, 409);
         ok("GET", "/health", null, 200);
     }
+    @Test void tunnelApiAndEventsIncludeDirectConnectionsAndClearOnStop() throws Exception {
+        assertTrue(ok("GET", "/tunnels", null, 200).getAsJsonArray("data").isEmpty());
+        assertTrue(ok("GET", "/info", null, 200).toString().contains("\"tunnels\""));
+        addProfile("a", "http2", 4433, false);
+        ok("PATCH", "/settings", "{\"port\":0,\"routesInline\":\"127.0.0.1\"}", 200);
+        String address = ok("POST", "/proxy/start", null, 200).getAsJsonObject("data").get("address").getAsString();
+        try (var origin = new ServerSocket(0);
+             Socket direct = tunnel(Integer.parseInt(address.substring(address.lastIndexOf(':') + 1)), origin.getLocalPort());
+             Socket target = origin.accept()) {
+            var item = ok("GET", "/tunnels", null, 200).getAsJsonArray("data").get(0).getAsJsonObject();
+            assertEquals("direct", item.get("route").getAsString()); assertEquals("active", item.get("state").getAsString());
+            assertEquals("127.0.0.1:" + origin.getLocalPort(), item.get("target").getAsString());
+            assertFalse(item.toString().contains("test-secret"));
+            var response = client.send(HttpRequest.newBuilder(URI.create(web.url() + "/api/v1/events"))
+                    .header("Authorization", "Bearer " + token).build(), HttpResponse.BodyHandlers.ofInputStream());
+            try (var reader = new BufferedReader(new InputStreamReader(response.body()))) {
+                reader.readLine(); assertEquals("event: snapshot", reader.readLine());
+                var snapshot = JsonParser.parseString(reader.readLine().substring(6)).getAsJsonObject();
+                assertEquals(1, snapshot.getAsJsonArray("tunnels").size());
+            }
+            long cursor = control.events().cursor();
+            ok("POST", "/proxy/stop", null, 200);
+            assertTrue(ok("GET", "/tunnels", null, 200).getAsJsonArray("data").isEmpty());
+            assertTrue(control.events().await(cursor, 0).events().stream().anyMatch(event ->
+                    event.type().equals("status") && ((java.util.Map<?, ?>) event.data()).get("tunnels").equals(List.of())));
+        }
+    }
     @Test void revisionsPasswordsUniquenessPersistenceAndEmptyConfiguration() throws Exception {
         addProfile("a", "http2", 4433, false);
         long first = revision;
@@ -116,7 +143,7 @@ class ControlHttpServerTest {
         assertTrue(header.toString().startsWith("HTTP/1.1 200"), header.toString()); return socket;
     }
     static void echo(Socket socket) throws Exception { socket.getOutputStream().write(42); assertEquals(42, socket.getInputStream().read()); }
-    @Test void hotRulesAndNamesPreserveTunnelsButCredentialChangesCloseThem() throws Exception {
+    @Test void hotRulesCloseAffectedTunnelsAndPreserveDirectTrafficOnCredentialChanges() throws Exception {
         Properties values = new Properties(); values.setProperty("port", "0"); values.setProperty("bind", "127.0.0.1");
         values.setProperty("password", "test-secret"); values.setProperty("tls.cert", resource("localhost.crt")); values.setProperty("tls.key", resource("localhost.key"));
         try (var server = new Http2ProxyServer(new ProxyConfig(values, directory)).start();
@@ -140,11 +167,23 @@ class ControlHttpServerTest {
                     var unchanged = ok("GET", "/config", null, 200);
                     assertFalse(unchanged.toString().contains("broken-ca.pem"));
                     assertEquals(previousRevision, revision); echo(active);
-                    ok("PUT", "/routing/direct-rules", "{\"rules\":\"127.0.0.0/8\"}", 200); echo(active);
+                    ok("PUT", "/routing/direct-rules", "{\"rules\":\"10.0.0.0/8\"}", 200); echo(active);
+                    ok("PUT", "/routing/direct-rules", "{\"rules\":\"127.0.0.0/8\"}", 200);
+                    assertEquals(-1, active.getInputStream().read());
                     try (Socket direct = tunnel(port, origin.getLocalPort())) {
                         echo(direct);
+                        ok("PUT", "/routing/targets", "{\"target\":\"127.0.0.1:" + origin.getLocalPort() + "\",\"route\":\"proxy\"}", 200);
+                        assertEquals(-1, direct.getInputStream().read());
+                        try (Socket forcedProxy = tunnel(port, origin.getLocalPort())) {
+                            echo(forcedProxy);
+                            assertEquals("proxy", ok("GET", "/tunnels", null, 200).getAsJsonArray("data").get(0).getAsJsonObject().get("route").getAsString());
+                            ok("PUT", "/routing/targets", "{\"target\":\"127.0.0.1:" + origin.getLocalPort() + "\",\"route\":\"auto\"}", 200);
+                            assertEquals(-1, forcedProxy.getInputStream().read());
+                        }
+                    }
+                    try (Socket direct = tunnel(port, origin.getLocalPort())) {
                         ok("PATCH", "/profiles/a", "{\"config\":{\"password\":\"changed-secret\"}}", 200);
-                        assertEquals(-1, active.getInputStream().read()); echo(direct);
+                        echo(direct);
                     }
                 }
             } finally { ok("POST", "/proxy/stop", null, 200); origin.close(); workers.shutdownNow(); }
@@ -176,6 +215,41 @@ class ControlHttpServerTest {
         assertEquals("", ok("GET", "/routing", null, 200).getAsJsonObject("data").get("directRules").getAsString());
         job = ok("POST", "/routing/resolve", "{\"target\":\"127.0.0.1:80\"}", 202).getAsJsonObject("data").get("id").getAsString();
         assertEquals("proxy", awaitJob(job).getAsJsonObject("result").get("action").getAsString());
+    }
+    @Test void targetRoutesPreserveFileSourcePersistAndRestoreAutomaticRules() throws Exception {
+        addProfile("a", "http2", 4433, false);
+        Path rules = directory.resolve("target-rules.txt");
+        Files.writeString(rules, "example.com\n127.0.0.0/8\n");
+        JsonObject settings = new JsonObject(); settings.addProperty("routesFile", rules.toString());
+        ok("PATCH", "/settings", settings.toString(), 200);
+        long original = revision;
+        String proxy = "{\"target\":\"WWW.Example.COM.:443\",\"route\":\"proxy\"}";
+        assertEquals(428, request("PUT", "/routing/targets", proxy).statusCode());
+        ok("PUT", "/routing/targets", proxy, 200);
+        assertEquals(409, request("PUT", "/routing/targets", proxy, "If-Match", "" + original).statusCode());
+        long changed = revision; ok("PUT", "/routing/targets", proxy, 200); assertEquals(changed, revision);
+        ok("PUT", "/routing/targets", "{\"target\":\"[2001:db8::1]:443\",\"route\":\"direct\"}", 200);
+        var routing = ok("GET", "/routing", null, 200).getAsJsonObject("data");
+        assertEquals("proxy", routing.getAsJsonObject("targetRoutes").get("www.example.com").getAsString());
+        String forcedJob = ok("POST", "/routing/resolve", "{\"target\":\"www.example.com:443\"}", 202).getAsJsonObject("data").get("id").getAsString();
+        var forcedResult = awaitJob(forcedJob).getAsJsonObject("result");
+        assertEquals("proxy", forcedResult.get("action").getAsString());
+        assertEquals("target_rule", forcedResult.get("matchedBy").getAsString());
+        ok("POST", "/config/save", null, 200);
+        var loaded = KernelConfig.load(directory.resolve("kernel.json"));
+        assertEquals(rules.toString(), loaded.local().get("routesFile", ""));
+        assertFalse(loaded.local().values().containsKey("routesInline"));
+        var snapshot = com.blacicada.config.DirectRoutes.load(loaded.local());
+        assertFalse(snapshot.matches("www.example.com")); assertTrue(snapshot.matches("2001:0db8::1"));
+        assertEquals("example.com\n127.0.0.0/8\n", Files.readString(rules));
+        ok("PUT", "/routing/targets", "{\"target\":\"www.example.com:80\",\"route\":\"auto\"}", 200);
+        assertFalse(ok("GET", "/routing", null, 200).getAsJsonObject("data").getAsJsonObject("targetRoutes").has("www.example.com"));
+        String job = ok("POST", "/routing/resolve", "{\"target\":\"www.example.com:443\"}", 202).getAsJsonObject("data").get("id").getAsString();
+        assertEquals("direct", awaitJob(job).getAsJsonObject("result").get("action").getAsString());
+        changed = revision;
+        ok("PUT", "/routing/targets", "{\"target\":\"example.com:443\",\"route\":\"wrong\"}", 400);
+        ok("PUT", "/routing/targets", "{\"target\":\"bad/host:443\",\"route\":\"proxy\"}", 400);
+        assertEquals(changed, revision);
     }
     @Test void diagnosticTcpFailureAndRoutingResultAreObservable() throws Exception {
         int closedPort; try (var port = new ServerSocket(0)) { closedPort = port.getLocalPort(); }

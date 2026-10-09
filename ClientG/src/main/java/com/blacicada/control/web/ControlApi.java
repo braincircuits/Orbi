@@ -21,6 +21,7 @@ final class ControlApi {
                 case "GET /api/v1/info" -> data = control.info();
                 case "GET /api/v1/health" -> data = Map.of("ready", true);
                 case "GET /api/v1/status" -> data = control.status();
+                case "GET /api/v1/tunnels" -> data = control.tunnels();
                 case "POST /api/v1/proxy/start" -> { control.start(); data = control.status(); }
                 case "POST /api/v1/proxy/stop" -> { control.stop(); data = control.status(); }
                 case "POST /api/v1/proxy/restart" -> { control.restart(); data = control.status(); }
@@ -38,6 +39,7 @@ final class ControlApi {
                 case "GET /api/v1/routing" -> data = control.routing();
                 case "PUT /api/v1/routing/default" -> { control.select(string(body, "profileId"), revision(ifMatch)); data = control.routing(); }
                 case "PUT /api/v1/routing/direct-rules" -> { control.updateRules(string(body, "rules"), revision(ifMatch)); data = control.routing(); }
+                case "PUT /api/v1/routing/targets" -> { control.routeTarget(string(body, "target"), string(body, "route"), revision(ifMatch)); data = control.routing(); }
                 case "POST /api/v1/routing/validate" -> { KernelControl.validateRules(string(body, "rules")); data = Map.of("valid", true); }
                 case "POST /api/v1/routing/reload" -> { control.reloadRules(revision(ifMatch)); data = control.routing(); }
                 case "POST /api/v1/routing/resolve" -> { data = control.resolve(string(body, "target")); status = 202; }

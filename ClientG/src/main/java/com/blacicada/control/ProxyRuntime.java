@@ -20,6 +20,7 @@ final class ProxyRuntime implements AutoCloseable {
     String address() { return proxy == null ? "" : proxy.address().getHostString() + ":" + proxy.address().getPort(); }
     int activeTunnels() { return proxy == null ? 0 : proxy.activeTunnels(); }
     int pendingTunnels() { return proxy == null ? 0 : proxy.pendingTunnels(); }
+    java.util.List<java.util.Map<String, Object>> tunnels() { return proxy == null ? java.util.List.of() : proxy.tunnels(); }
     boolean requiresRestart(KernelConfig next) {
         return proxy != null && listenerChanged(proxy.configuration().local(), next.local());
     }

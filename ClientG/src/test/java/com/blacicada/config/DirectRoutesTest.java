@@ -10,6 +10,29 @@ import java.util.Properties;
 import static org.junit.jupiter.api.Assertions.*;
 
 class DirectRoutesTest {
+    @Test void exactTargetOverridesBeatDomainAndNetworkRulesWithoutDns() throws Exception {
+        Properties settings = new Properties();
+        settings.setProperty("routesInline", "example.com\n0.0.0.0/0\n::/0");
+        settings.setProperty("routesOverrides", "proxy WWW.Example.COM.\nproxy 2001:db8::1\ndirect other.test");
+        var routes = DirectRoutes.load(new ProxyConfig(settings, directory));
+        assertFalse(routes.matches("www.example.com"));
+        assertFalse(routes.needsResolution("www.example.com"));
+        assertTrue(routes.matches("sub.www.example.com"));
+        assertFalse(routes.matches("2001:0db8:0:0:0:0:0:1"));
+        assertTrue(routes.matches("2001:db8::2"));
+        assertTrue(routes.matches("other.test"));
+        assertFalse(routes.needsResolution("other.test"));
+        settings.setProperty("routesOverrides", "direct www.example.com");
+        assertFalse(routes.sameRules(DirectRoutes.load(new ProxyConfig(settings, directory))));
+        settings.setProperty("routesOverrides", "invalid example.com");
+        assertThrows(IOException.class, () -> DirectRoutes.load(new ProxyConfig(settings, directory)));
+    }
+    @Test void equivalentRulesIgnoreFormattingOrderDuplicatesAndHostBits() throws Exception {
+        var first = new DirectRoutes("Example.COM.\n10.1.2.3/8\n2001:db8::1/32\n");
+        var second = new DirectRoutes("# 注释\n2001:db8:1234::/32\n10.0.0.0/8\nexample.com\nexample.com\n10.0.0.1/8");
+        assertTrue(first.sameRules(second));
+        assertFalse(first.sameRules(new DirectRoutes("example.com\n10.0.0.0/16\n2001:db8::/32")));
+    }
     @TempDir Path directory;
     private DirectRoutes routes(String rules) throws IOException {
         Path file = directory.resolve("pac.txt");

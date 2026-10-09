@@ -99,6 +99,9 @@ public final class ControlTasks implements AutoCloseable {
     public Map<String, Object> resolve(Authority target, DirectRoutes rules, String defaultId) {
         return submit(job -> {
             stage(job, "routing");
+            String override = rules.override(target.host());
+            if (override != null) return Map.of("action", override.equals("proxy") && defaultId.isEmpty() ? "unavailable" : override,
+                    "profileId", override.equals("proxy") ? defaultId : "", "matchedBy", "target_rule");
             if (rules.matches(target.host())) return Map.of("action", "direct", "matchedBy", "direct_rule");
             if (rules.needsResolution(target.host())) {
                 var group = new NioEventLoopGroup(1); var resolver = Transport.resolver();

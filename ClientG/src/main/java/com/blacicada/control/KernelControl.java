@@ -50,7 +50,7 @@ public final class KernelControl implements AutoCloseable {
     }
     public synchronized Map<String, Object> info() {
         return Map.of("name", "network", "version", "1.0-SNAPSHOT", "apiVersion", 1,
-                "capabilities", List.of("http2", "http3", "multiConnection", "immediateSwitch", "hotSettings", "hotRoutes", "hotProfiles", "events", "logs", "asyncTests"));
+                "capabilities", List.of("http2", "http3", "multiConnection", "immediateSwitch", "hotSettings", "hotRoutes", "hotProfiles", "events", "logs", "asyncTests", "tunnels", "targetRoutes"));
     }
     public synchronized Map<String, Object> metadata() {
         return Map.of("revision", revision, "savedRevision", savedRevision, "dirty", revision != savedRevision,
@@ -63,6 +63,7 @@ public final class KernelControl implements AutoCloseable {
         result.put("error", redact(runtime.lastError()));
         result.put("address", runtime.address());
         result.put("defaultConnectionId", config.defaultConnectionId());
+        result.put("tunnels", tunnels());
         result.put("connections", config.connections().stream().map(p -> Map.of("id", p.id(), "name", p.name(),
                 "protocol", p.config().get("protocol", "http3"),
                 "state", active(p.id()) ? runtime.state() : "idle",
@@ -71,6 +72,7 @@ public final class KernelControl implements AutoCloseable {
         return result;
     }
     private boolean active(String id) { return runtime.isRunning() && id.equals(config.defaultConnectionId()); }
+    public synchronized List<Map<String, Object>> tunnels() { return runtime.tunnels(); }
     public synchronized JsonObject configuration() {
         JsonObject result = config.json(false);
         for (JsonElement item : result.getAsJsonArray("connections")) item.getAsJsonObject().addProperty("hasPassword", true);
@@ -129,9 +131,23 @@ public final class KernelControl implements AutoCloseable {
         checkRevision(expected); apply(editor.patchSettings(config, patch));
     }
     public synchronized Map<String, Object> routing() throws IOException {
-        return Map.of("defaultConnectionId", config.defaultConnectionId(), "directRules", rulesText());
+        var routes = runtime.routes(config);
+        return Map.of("defaultConnectionId", config.defaultConnectionId(), "directRules", routes.text(), "targetRoutes", routes.overrides());
     }
-    private String rulesText() throws IOException { return runtime.routes(config).text(); }
+    /** 只修改精确目标规则，保留原有内联或文件规则来源。 */
+    public synchronized void routeTarget(String target, String route, long expected) throws Exception {
+        checkRevision(expected);
+        if (!Set.of("proxy", "direct", "auto").contains(route))
+            throw new ControlException(400, "INVALID_ROUTE", "路由必须为 proxy、direct 或 auto", "route");
+        String host = DirectRoutes.normalizeHost(Authority.parse(target, -1).host());
+        var overrides = new TreeMap<>(runtime.routes(config).overrides());
+        if (route.equals("auto")) overrides.remove(host); else overrides.put(host, route);
+        if (overrides.equals(runtime.routes(config).overrides())) return;
+        JsonObject patch = new JsonObject();
+        patch.addProperty("routesOverrides", overrides.entrySet().stream()
+                .map(entry -> entry.getValue() + " " + entry.getKey()).collect(java.util.stream.Collectors.joining("\n")));
+        patchSettings(patch, expected);
+    }
     public static void validateRules(String rules) {
         try { new DirectRoutes(rules); }
         catch (IOException e) { throw new ControlException(400, "INVALID_RULE", e.getMessage(), "rules"); }

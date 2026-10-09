@@ -71,7 +71,8 @@ UI 通过 `error.code` 判断行为，通过中文 `message` 展示原因，不�
 | --- | --- | --- |
 | `GET /info` | 内核版本、API 版本、能力列表 | — |
 | `GET /health` | 管理接口就绪；不代表代理服务端或目标网站可达 | — |
-| `GET /status` | 转发状态、本地监听、默认连接、连接状态、活跃/等待隧道数量、最近错误 | — |
+| `GET /status` | 转发状态、本地监听、默认连接、连接状态、活跃/等待隧道数量、隧道明细、最近错误 | — |
+| `GET /tunnels` | 当前全部业务隧道明细，包含代理、直连和等待请求；停止时返回空数组 | — |
 | `POST /proxy/start` | 启动转发；至少需一份连接配置；重复启动不产生新实例 | — |
 | `POST /proxy/stop` | 关闭所有本地连接和代理会话，保留配置及管理接口 | — |
 | `POST /proxy/restart` | 断开所有旧连接并重新启动转发 | — |
@@ -89,9 +90,10 @@ UI 通过 `error.code` 判断行为，通过中文 `message` 展示原因，不�
 | `DELETE /profiles/{id}` | 删除连接；默认连接需先切换，停止状态可删除最后一份 | 是 |
 | `POST /profiles/{id}/disconnect` | 关闭该连接的当前会话及其隧道；后续请求按需重新连接 | — |
 | `POST /profiles/{id}/tests` | `{"target":"host:port"}`，异步验证连接、认证与目标 CONNECT，返回 202 | — |
-| `GET /routing` | 默认连接 ID 与当前直连规则文本 | — |
+| `GET /routing` | 默认连接 ID、当前直连规则文本与精确目标路由 `targetRoutes` | — |
 | `PUT /routing/default` | `{"profileId":"节点ID"}`，切换默认连接并关闭旧代理会话 | 是 |
 | `PUT /routing/direct-rules` | `{"rules":"example.com\n10.0.0.0/8"}`，替换内联直连规则 | 是 |
+| `PUT /routing/targets` | `{"target":"example.com:443","route":"proxy"}`，设置该域名或 IP 的所有端口；route 为 proxy/direct/auto | 是 |
 | `POST /routing/validate` | 同上，校验规则但不应用 | — |
 | `POST /routing/reload` | 重新读取当前规则来源；存在 routesInline 时仍优先使用内联规则 | 是 |
 | `POST /routing/resolve` | `{"target":"host:port"}`，异步解释路由结果，返回 202 | — |
@@ -128,7 +130,8 @@ UI 通过 `error.code` 判断行为，通过中文 `message` 展示原因，不�
 | 新增连接、修改非当前连接、修改名称 | 即时更新，不断开当前代理会话 |
 | 切换默认连接 | 立即关闭旧代理会话、旧代理隧道及排队请求；直连隧道保持；新请求走新连接 |
 | 修改当前连接地址、协议、账号、密码、证书路径、连接参数 | 重建当前代理会话，关闭旧代理隧道；新请求按需连接 |
-| 更新直连规则 | 新请求使用新规则；已经建立或正在处理的请求保持原路由 |
+| 更新直连规则 | 新请求使用新规则；已有及正在建立的业务连接重新判断路由，只关闭直连/代理结果发生变化的连接，共享 HTTP/2、HTTP/3 主连接保持 |
+| 设置精确目标路由 | 优先于域名后缀及 IP/CIDR 直连规则；按规范化后的域名或 IP 精确匹配全部端口，不扩展到子域名；只断开路由发生变化的连接 |
 | 修改公共 connectTimeoutMillis | 后续新接入的浏览器连接使用新值 |
 | 修改本地代理 bind/port | 立即重启转发并断开全部原有连接，包括直连；UI 需同步系统/浏览器代理地址 |
 | 新监听启动失败 | 尝试恢复旧监听；返回 409，配置及 revision 不变；已断开的隧道无法恢复 |
@@ -136,6 +139,24 @@ UI 通过 `error.code` 判断行为，通过中文 `message` 展示原因，不�
 | 管理地址、令牌或 CORS 白名单 | 需重启内核进程，通过启动参数修改 |
 
 不会自动监视磁盘文件。通过 API 修改立即应用；修改 `routesFile` 内容后调用规则重载。需要从内联切回文件规则时，PATCH `/settings` 提交 `{"routesInline":null,"routesFile":"pac.txt"}`。替换同一路径的 CA 文件后需显式断开对应会话使证书重新加载。配置保存与应用分离：成功应用后需显式 `/config/save` 才会持久化。
+
+规则变化按最终路由结果判断：移除某条域名规则但仍被另一条规则覆盖时保持连接；仅编辑注释、顺序或重复项不会中断。判断所需的地址已知时，在应用操作中立即发起关闭；已有代理域名因新增网段规则需要 DNS 时，异步解析完成后再决定，API 成功响应不表示这些解析均已结束。连续更新时按最新规则处理 DNS 结果。受影响连接不重放数据，需要浏览器或应用重新请求。
+
+UI 可提示“应用后立即断开路由变化的连接，其余连接保持；网段判断可能需要 DNS 解析”，替换原来的“应用后仅影响新请求”。此行为同时适用于内联规则更新、文件重载和修改规则来源，无需增加接口或重启代理服务端。主动断开会输出 INFO 日志，包含目标和新旧路由，可通过现有日志接口查询。
+
+业务连接以浏览器提交的 HTTP/CONNECT 目标为判断单位，内核不解析 TLS 隧道内的加密请求。
+
+## 隧道列表
+
+`GET /tunnels` 的 `data` 是当前全部业务隧道的数组；`/info` 通过 `tunnels` 能力标记提供此功能。`GET /status` 与 SSE 的 `snapshot`、`status` 中也包含同一格式的 `tunnels` 数组，明细变化会触发状态推送。内核每 250 毫秒检查状态变化；短于该间隔的请求可能不会出现在事件快照中，此接口不用于请求审计。
+
+每项包含 `id`（本地连接 ID）、`target`（HTTP/CONNECT 目标）、`source`（本地请求来源）、`route`（resolving/proxy/direct）、`state`（resolving/pending/active）、`profileId`、`profileName`、`protocol`（http2/http3/tcp）以及 `createdAt`（收到请求时的 Unix 毫秒时间）。IPv6 地址使用方括号。DNS 路由解析期间为 resolving，等待 TCP 或代理流建立时为 pending，远端连接建立后为 active；直连的连接配置 ID 和名称为空，协议为 tcp。
+
+列表包括普通 HTTP 转发、CONNECT 隧道和直连 TCP 连接，不包括尚未收到请求的本地空闲套接字、共享 HTTP/2 或 QUIC 主连接、独立诊断会话。连接关闭后自动移除，不保存历史记录。读取不改变配置版本、路由或代理连接；返回信息不包含密码、请求正文或 TLS 隧道内的数据。
+
+隧道列表可通过 `PUT /routing/targets` 切换目标路由；`targetRoutes` 能力表示内核支持此操作。`proxy` 强制走当前默认代理连接，`direct` 强制直连，`auto` 删除该目标的覆盖并恢复原直连规则判断。目标规范化忽略域名大小写和尾部句点，IPv6 不同写法视为同一地址。操作不会迁移或重放已有连接，路由变化时关闭原连接，由浏览器或应用重连；切换同一路由时保留连接，重复设置不推进配置版本。
+
+精确规则存储在 `local.routesOverrides` 字符串，每行格式为 `proxy 域名或IP` 或 `direct 域名或IP`，不包含端口；此字段与 `routesInline` / `routesFile` 独立，保持原规则文本和来源。`GET /routing` 的 `targetRoutes` 返回主机到 proxy/direct 的对象。成功应用后仍需通过 `POST /config/save` 持久化；完整配置 PUT 需带回此字段以保留目标规则。
 
 ## 异步诊断与事件
 
@@ -145,7 +166,7 @@ UI 通过 `error.code` 判断行为，通过中文 `message` 展示原因，不�
 
 代理运行时，规则查询和路由解释使用实际生效的规则快照。外部修改规则文件不会立即生效，可调用规则重载接口应用；其他重新应用配置的操作也会加载规则文件。代理停止时读取配置指定的规则。
 
-路由解释返回 direct/proxy/unavailable，以及 direct_rule/ip_rule/default 命中类别。含 IP/CIDR 规则时可能进行 DNS 查询；解析失败时与实际路由行为一致，使用默认代理。
+路由解释返回 direct/proxy/unavailable，以及 target_rule/direct_rule/ip_rule/default 命中类别。含 IP/CIDR 规则时可能进行 DNS 查询；解析失败时与实际路由行为一致，使用默认代理。
 
 SSE 初次订阅发送 `snapshot`，之后发送 `status`、`configuration`、`log`、`operation`。每条包含 id/event/data。重新订阅可通过 `Last-Event-ID` 请求补发，最近保留 512 条，游标过期时发送新快照，UI 应重新读取配置、日志或任务。最多 16 个 SSE 订阅。每 10 秒的注释帧只维持管理事件流，不是代理内核与代理服务端之间的业务心跳。
 

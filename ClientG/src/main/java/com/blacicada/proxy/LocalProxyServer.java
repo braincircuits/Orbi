@@ -33,7 +33,14 @@ public final class LocalProxyServer implements AutoCloseable {
                 || config.integer("port", 8080, 0, 65535) != next.local().integer("port", 8080, 0, 65535))
             throw new IllegalArgumentException("修改本地监听需要重启代理");
         DirectRoutes updated = DirectRoutes.load(next.local());
-        session.apply(next, () -> { config = next.local(); routes = updated; });
+        session.apply(next, () -> {
+            config = next.local(); routes = updated;
+            // 浏览器连接和路由器共用当前唯一的 EventLoop，无需另建会话集合。
+            for (Channel browser : clients) {
+                LocalSession local = browser.attr(LocalSession.KEY).get();
+                if (local != null) local.apply(updated);
+            }
+        });
     }
     public void disconnect() throws Exception { session.disconnect(); }
     public KernelConfig configuration() { return session.config(); }
@@ -64,6 +71,19 @@ public final class LocalProxyServer implements AutoCloseable {
     public InetSocketAddress address() { return (InetSocketAddress) listener.localAddress(); }
     public int activeTunnels() { return session.activeTunnels(); }
     public int pendingTunnels() { return session.pendingTunnels(); }
+    /** 浏览器请求包含代理流和直连 TCP 连接；空闲的本地套接字不计入隧道。 */
+    public java.util.List<java.util.Map<String, Object>> tunnels() {
+        return group.next().submit(() -> {
+            var result = new java.util.ArrayList<java.util.Map<String, Object>>();
+            for (Channel browser : clients) {
+                LocalSession local = browser.attr(LocalSession.KEY).get();
+                if (browser.isActive() && local != null && !local.isClosed()) result.add(local.snapshot(session.config()));
+            }
+            result.sort(java.util.Comparator.<java.util.Map<String, Object>, Long>comparing(item -> (Long) item.get("createdAt"))
+                    .thenComparing(item -> (String) item.get("id")));
+            return java.util.List.copyOf(result);
+        }).syncUninterruptibly().getNow();
+    }
     public long connectionCount() { return session.connectionCount(); }
     public String connectionState() { return session.connectionState(); }
     public String lastError() { return session.lastError(); }

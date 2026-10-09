@@ -43,7 +43,7 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
         }
         if (defaultConnectionId == null || (connections.isEmpty() ? !defaultConnectionId.isEmpty() : !ids.contains(defaultConnectionId))) throw new IllegalArgumentException("默认连接不存在");
         for (String key : local.values().stringPropertyNames())
-            if (!Set.of("bind", "port", "routesInline", "routesFile", "connectTimeoutMillis").contains(key))
+            if (!Set.of("bind", "port", "routesInline", "routesFile", "routesOverrides", "connectTimeoutMillis").contains(key))
                 throw new IllegalArgumentException("未知内核公共配置字段：" + key);
         local.integer("port", 8080, 0, 65535); local.connectTimeoutMillis();
         try { DirectRoutes.load(local); }

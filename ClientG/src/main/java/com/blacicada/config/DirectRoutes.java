@@ -7,16 +7,19 @@ import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.Map;
+import java.util.TreeMap;
 
-/** 不可变的直连规则：域名后缀、IP 地址和 CIDR 网段。 */
+/** 不可变路由规则：精确目标覆盖，以及域名后缀、IP 地址和 CIDR 直连规则。 */
 public final class DirectRoutes {
     private final String text;
     private final Set<String> domains;
-    private final List<Network> networks;
+    private final Set<Network> networks;
+    private final Map<String, String> overrides;
 
     public DirectRoutes(Path file) throws IOException {
         this(Files.exists(file) ? Files.readString(file) : "", file.toString());
@@ -26,13 +29,43 @@ public final class DirectRoutes {
 
     /** 内联规则即使为空也优先于文件规则。 */
     public static DirectRoutes load(ProxyConfig config) throws IOException {
-        return config.values().containsKey("routesInline") ? new DirectRoutes(config.get("routesInline", ""))
-                : new DirectRoutes(config.path("routesFile", "pac.txt"));
+        String overrides = config.get("routesOverrides", "");
+        if (config.values().containsKey("routesInline"))
+            return new DirectRoutes(config.get("routesInline", ""), "控制接口", overrides);
+        Path file = config.path("routesFile", "pac.txt");
+        return new DirectRoutes(Files.exists(file) ? Files.readString(file) : "", file.toString(), overrides);
     }
 
     public String text() { return text; }
+    public Map<String, String> overrides() { return overrides; }
+    public String override(String host) { return overrides.get(hostKey(host)); }
+
+    /** 精确目标规则优先于域名后缀和 DNS 网段规则；不扩展到子域名。 */
+    public static String normalizeHost(String host) {
+        InetAddress address = literal(host);
+        if (address != null) return address.getHostAddress();
+        String domain = hostKey(host);
+        if (domain.length() > 253 || domain.matches("[0-9.]+")
+                || !domain.matches("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"))
+            throw new IllegalArgumentException("应填写有效的域名或 IP 地址");
+        return domain;
+    }
+
+    private static String hostKey(String host) {
+        InetAddress address = literal(host);
+        return address != null ? address.getHostAddress() : java.net.IDN.toASCII(normalize(host));
+    }
+
+    /** 忽略注释、顺序、重复项及 CIDR 主机位，避免无效编辑触发重复 DNS。 */
+    public boolean sameRules(DirectRoutes other) {
+        return domains.equals(other.domains) && networks.equals(other.networks) && overrides.equals(other.overrides);
+    }
 
     private DirectRoutes(String text, String source) throws IOException {
+        this(text, source, "");
+    }
+
+    private DirectRoutes(String text, String source, String overrideText) throws IOException {
         this.text = text;
         var domainRules = new HashSet<String>();
         var networkRules = new ArrayList<Network>();
@@ -55,11 +88,7 @@ public final class DirectRoutes {
                         InetAddress address = literal(rule);
                         if (address != null) networkRules.add(new Network(address.getAddress(), address.getAddress().length * 8));
                         else {
-                            String domain = java.net.IDN.toASCII(normalize(rule));
-                            if (domain.length() > 253 || domain.matches("[0-9.]+")
-                                    || !domain.matches("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"))
-                                throw new IllegalArgumentException("应填写域名、IP 或 CIDR，不支持 URL 和通配符");
-                            domainRules.add(domain);
+                            domainRules.add(normalizeHost(rule));
                         }
                     }
                 } catch (IllegalArgumentException e) {
@@ -68,11 +97,28 @@ public final class DirectRoutes {
             }
         }
         domains = Set.copyOf(domainRules);
-        networks = List.copyOf(networkRules);
+        networks = Set.copyOf(networkRules);
+        var targetRules = new TreeMap<String, String>();
+        int lineNumber = 0;
+        for (String line : overrideText.lines().toList()) {
+            lineNumber++;
+            if (line.isBlank()) continue;
+            String[] fields = line.trim().split("\\s+", 2);
+            try {
+                if (fields.length != 2 || !Set.of("proxy", "direct").contains(fields[0]))
+                    throw new IllegalArgumentException("目标规则应为 proxy/direct 域名或IP");
+                targetRules.put(normalizeHost(fields[1]), fields[0]);
+            } catch (IllegalArgumentException e) {
+                throw new IOException("目标路由规则无效，位置：routesOverrides:" + lineNumber, e);
+            }
+        }
+        overrides = Map.copyOf(targetRules);
     }
 
     /** 不执行 DNS 解析；IP 地址不参与域名后缀匹配。 */
     public boolean matches(String host) {
+        String override = override(host);
+        if (override != null) return override.equals("direct");
         InetAddress address = literal(host);
         if (address != null) return matches(address);
         String name = normalize(host);
@@ -89,7 +135,9 @@ public final class DirectRoutes {
         return networks.stream().anyMatch(network -> network.matches(bytes));
     }
 
-    public boolean needsResolution(String host) { return !networks.isEmpty() && literal(host) == null; }
+    public boolean needsResolution(String host) {
+        return override(host) == null && !networks.isEmpty() && literal(host) == null;
+    }
 
     private static InetAddress literal(String host) {
         return NetUtil.isValidIpV4Address(host) || NetUtil.isValidIpV6Address(host)
@@ -104,7 +152,13 @@ public final class DirectRoutes {
     private record Network(byte[] address, int prefix) {
         Network {
             if (prefix < 0 || prefix > address.length * 8) throw new IllegalArgumentException("网段前缀长度无效");
+            address = address.clone();
+            for (int bit = prefix; bit < address.length * 8; bit++) address[bit / 8] &= (byte) ~(1 << (7 - bit % 8));
         }
+        @Override public boolean equals(Object other) {
+            return other instanceof Network network && prefix == network.prefix && Arrays.equals(address, network.address);
+        }
+        @Override public int hashCode() { return 31 * Arrays.hashCode(address) + prefix; }
         boolean matches(byte[] candidate) {
             if (candidate.length != address.length) return false;
             int fullBytes = prefix / 8;
