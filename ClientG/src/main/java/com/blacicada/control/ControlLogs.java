@@ -13,11 +13,14 @@ public final class ControlLogs extends AbstractAppender implements AutoCloseable
     private final ArrayDeque<Map<String, Object>> entries = new ArrayDeque<>();
     private final ControlEvents events;
     private final UnaryOperator<String> redact;
+    private final LoggerContext context;
     private long sequence;
     public ControlLogs(ControlEvents events, UnaryOperator<String> redact) {
         super("kernel-control-" + UUID.randomUUID(), null, null, true, Property.EMPTY_ARRAY);
         this.events = events; this.redact = redact; start();
-        ((LoggerContext) LogManager.getContext(false)).getRootLogger().addAppender(this);
+        // 显式使用内核类加载器，确保精简运行时中采集器与业务日志属于同一上下文。
+        context = (LoggerContext) LogManager.getContext(ControlLogs.class.getClassLoader(), false);
+        context.getRootLogger().addAppender(this);
     }
     @Override public synchronized void append(LogEvent event) {
         String text = redact.apply(event.getMessage().getFormattedMessage());
@@ -46,7 +49,7 @@ public final class ControlLogs extends AbstractAppender implements AutoCloseable
                 "items", items);
     }
     @Override public void close() {
-        ((LoggerContext) LogManager.getContext(false)).getRootLogger().removeAppender(this);
+        context.getRootLogger().removeAppender(this);
         stop();
     }
 }
