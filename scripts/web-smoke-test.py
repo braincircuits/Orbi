@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""通过真实 JAR 验证 Web 控制、HTTP/2 与 HTTP/3 转发、热更新和退出。"""
+"""通过真实内核验证 Web 控制、HTTP/2 与 HTTP/3 转发、热更新和退出。"""
 import http.client
 import http.server
 import json
@@ -34,8 +34,10 @@ def main():
                 profile_ports[protocol] = smoke.launch(ROOT / "Server/target/Server-1.0-SNAPSHOT.jar", settings,
                     "HTTP/2 代理服务端已监听" if protocol == "http2" else "HTTP/3 代理服务端已监听", processes)
             endpoint = base / "control.json"
-            process = subprocess.Popen([os.environ.get("UI_TEST_JAVA", "java"), "--enable-native-access=ALL-UNNAMED",
-                "-jar", str(ROOT / "ClientG/target/clientG-1.0-SNAPSHOT.jar"), "--web", "--config", str(base / "kernel.json"),
+            native = os.environ.get("NATIVE_CORE")
+            command = [native] if native else [os.environ.get("UI_TEST_JAVA", "java"), "--enable-native-access=ALL-UNNAMED",
+                "-jar", str(ROOT / "ClientG/target/clientG-1.0-SNAPSHOT.jar")]
+            process = subprocess.Popen([*command, "--web", "--config", str(base / "kernel.json"),
                 "--port", "0", "--endpoint-file", str(endpoint)], stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=base)
             processes.append(process)
@@ -43,7 +45,7 @@ def main():
             threading.Thread(target=lambda: diagnostics.extend(process.stdout), daemon=True).start()
             deadline = time.monotonic() + 15
             while not endpoint.exists():
-                assert process.poll() is None, "代理内核启动失败"
+                assert process.poll() is None, "代理内核启动失败：" + "".join(diagnostics)
                 assert time.monotonic() < deadline, "管理接口启动超时"
                 time.sleep(0.05)
             access = json.loads(endpoint.read_text())
@@ -110,7 +112,7 @@ def main():
             assert process.wait(timeout=10) == 0
             assert not endpoint.exists()
             assert not any(access["token"] in line or "web-test-secret" in line for line in diagnostics)
-            print("Web 联调通过：真实 JAR、HTTP/2、HTTP/3、HTTP/CONNECT、异步诊断、热更新、配置保存及退出清理。")
+            print("Web 联调通过：" + ("AOT 原生内核" if native else "JAR 内核") + "、HTTP/2、HTTP/3、HTTP/CONNECT、异步诊断、热更新、配置保存及退出清理。")
     finally:
         for process in reversed(processes):
             if process.poll() is None:

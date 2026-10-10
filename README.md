@@ -33,6 +33,8 @@ mvn -DskipTests package
 
 集成测试启动真实的本地 TCP/UDP 服务，覆盖并发流复用、拆包、请求体、半关闭、认证、证书校验、目标失败、直连规则和连接重建。测试不需要访问公网。`ClientG/src/test/resources/tls` 中的公开证书和私钥仅为测试夹具，不能用于部署。
 
+代理内核支持 GraalVM 25 AOT 构建：`GRAALVM_HOME=/实际路径/graalvm-25 sh scripts/build-native.sh`，生成无需 Java 运行时的本机程序。构建、动态库打包、元数据与协议验证见 [原生内核说明](docs/native-image.md)。
+
 ## 发布目录启动与远程部署
 
 在项目根目录执行以下命令。脚本会构建并运行测试，生成未压缩的发布目录：
