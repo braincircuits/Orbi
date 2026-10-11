@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 umask 077
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+command -v python3 >/dev/null
+if [ ! -f "$project_dir/ClientG/target/clientG-1.0-SNAPSHOT.jar" ]; then
+    printf '%s\n' '请先执行 mvn -DskipTests package 构建内核 JAR。' >&2
+    exit 1
+fi
 config_dir=${1:-.local-h3}
 if [ -e "$config_dir" ]; then
     echo "拒绝覆盖已有目录：$config_dir" >&2
@@ -19,33 +25,7 @@ password=$secret
 tls.cert=server.crt
 tls.key=server.key
 CONFIG
-cat > "$config_dir/kernel.json" <<CONFIG
-{
-  "version": 1,
-  "local": {
-    "bind": "127.0.0.1",
-    "port": 8080,
-    "routesFile": "pac.txt"
-  },
-  "defaultConnectionId": "default",
-  "connections": [
-    {
-      "id": "default",
-      "name": "默认连接",
-      "config": {
-        "protocol": "http3",
-        "server.host": "127.0.0.1",
-        "server.port": 4433,
-        "password": "$secret",
-        "tls.ca": "server.crt",
-        "tls.serverName": "localhost",
-        "connectTimeoutMillis": 10000,
-        "idleTimeoutSeconds": 300,
-        "maxStreams": 256
-      }
-    }
-  ]
-}
-CONFIG
-printf '# 为空时，所有目标均通过 HTTP/3 代理访问。\n' > "$config_dir/pac.txt"
+printf '%s\n' "$secret" | python3 "$project_dir/scripts/initialize-kernel.py" \
+    --jar "$project_dir/ClientG/target/clientG-1.0-SNAPSHOT.jar" \
+    --db "$config_dir/kernel.db" --ca "$config_dir/server.crt"
 printf '本机开发配置已生成：%s\n' "$config_dir"

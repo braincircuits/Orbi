@@ -9,13 +9,14 @@ if [ -e "$release_dir" ]; then
     exit 1
 fi
 command -v openssl >/dev/null
+command -v python3 >/dev/null
 (cd "$project_dir" && mvn -B -ntp package)
 mkdir -p "$release_dir"
 release_dir=$(CDPATH= cd -- "$release_dir" && pwd)
 for app in server client; do
     mkdir -p "$release_dir/$app/config" "$release_dir/$app/certs"
     config_name=server.properties
-    [ "$app" != client ] || config_name=kernel.json
+    [ "$app" != client ] || config_name=kernel.db
     sed "s/@APP@/$app/g; s/@CONFIG@/$config_name/g" "$project_dir/scripts/release/start.sh.template" > "$release_dir/$app/start.sh"
     sed "s/@APP@/$app/g; s/@CONFIG@/$config_name/g" "$project_dir/scripts/release/start.cmd.template" > "$release_dir/$app/start.cmd"
     cp "$project_dir/scripts/release/background.sh.template" "$release_dir/$app/background.sh"
@@ -42,38 +43,12 @@ connectTimeoutMillis=10000
 idleTimeoutSeconds=300
 maxStreams=256
 CONFIG
-cat > "$release_dir/client/config/kernel.json" <<CONFIG
-{
-  "version": 1,
-  "local": {
-    "bind": "127.0.0.1",
-    "port": 8080,
-    "routesFile": "pac.txt"
-  },
-  "defaultConnectionId": "default",
-  "connections": [
-    {
-      "id": "default",
-      "name": "默认连接",
-      "config": {
-        "protocol": "http3",
-        "server.host": "127.0.0.1",
-        "server.port": 4433,
-        "password": "$secret",
-        "tls.ca": "../certs/server.crt",
-        "tls.serverName": "localhost",
-        "connectTimeoutMillis": 10000,
-        "idleTimeoutSeconds": 300,
-        "maxStreams": 256,
-        "username": "client1"
-      }
-    }
-  ]
-}
-CONFIG
+printf '%s\n' "$secret" | python3 "$project_dir/scripts/initialize-kernel.py" \
+    --jar "$release_dir/client/client.jar" --db "$release_dir/client/kernel.db" \
+    --ca "$release_dir/client/certs/server.crt" --username client1
 printf '# 每行一个账号及其独立密码。修改后重启服务端。\nclient1=%s\n' "$secret" > "$release_dir/server/config/users.properties"
-printf '# 每行填写一个直连域名、IP 或 CIDR 网段；为空时全部走代理。\n' > "$release_dir/client/config/pac.txt"
 cp "$project_dir/scripts/release/README.md" "$release_dir/README.md"
-cp "$project_dir/examples/kernel.json" "$release_dir/client/config/kernel.example.json"
-sed 's|../examples/kernel.json|config/kernel.example.json|g' "$project_dir/docs/web-api.md" > "$release_dir/client/WEB-API.md"
+mkdir -p "$release_dir/client/examples"
+cp "$project_dir/examples/config-request.json" "$project_dir/examples/routing.json" "$release_dir/client/examples/"
+sed 's|../examples/|examples/|g' "$project_dir/docs/web-api.md" > "$release_dir/client/WEB-API.md"
 printf '\n未压缩的发布目录已生成：%s\n' "$release_dir"

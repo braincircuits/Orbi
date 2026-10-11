@@ -21,6 +21,11 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private final SessionRouter session;
     private final DnsAddressResolverGroup resolver;
     private final java.util.function.Supplier<DirectRoutes> routeSource;
+    private final TrafficStatistics traffic;
+    private final java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder;
+    private com.blacicada.config.KernelConfig requestConfig;
+    private String requestMethod;
+    private boolean accessCompleted;
     private final ArrayDeque<HttpContent> pending = new ArrayDeque<>();
     private int pendingBytes;
     private HttpRequest request;
@@ -32,8 +37,11 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private boolean failed;
     private ScheduledFuture<?> timeout;
 
-    LocalRequestHandler(ProxyConfig config, SessionRouter session, DnsAddressResolverGroup resolver, java.util.function.Supplier<DirectRoutes> routes) {
+    LocalRequestHandler(ProxyConfig config, SessionRouter session, DnsAddressResolverGroup resolver, java.util.function.Supplier<DirectRoutes> routes, TrafficStatistics traffic,
+                        java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder) {
         this.config = config; this.session = session; this.resolver = resolver; this.routeSource = routes;
+        this.traffic = traffic;
+        this.accessRecorder = accessRecorder;
     }
     @Override public void channelActive(ChannelHandlerContext ctx) {
         timeout = ctx.executor().schedule(() -> fail(ctx, HttpResponseStatus.GATEWAY_TIMEOUT),
@@ -72,12 +80,26 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void route(ChannelHandlerContext ctx, Authority target) {
+        requestConfig = session.config(); requestMethod = request.method().name();
         localSession = new LocalSession(ctx.channel(), target, resolver.getResolver(ctx.executor()), address -> {
             if (failed || !ctx.channel().isActive()) return;
             if (address == null) connectProxy(ctx, target);
             else connectDirect(ctx, address);
         });
+        recordAccess("pending");
+        ctx.channel().closeFuture().addListener(ignored -> recordAccess("cancelled"));
         localSession.apply(routeSource.get());
+    }
+
+    /** 只记录请求目标和连接结果，不记录 URL 路径、查询参数、请求头及正文。 */
+    private void recordAccess(String state) {
+        if (accessRecorder == null || localSession == null || accessCompleted) return;
+        var value = new java.util.LinkedHashMap<String, Object>(localSession.snapshot(requestConfig));
+        value.put("requestId", traffic.sessionId() + "/" + value.get("id"));
+        value.put("sessionId", traffic.sessionId()); value.put("method", requestMethod);
+        value.put("state", state); value.put("completedAt", state.equals("pending") ? 0L : System.currentTimeMillis());
+        accessCompleted = !state.equals("pending");
+        accessRecorder.accept(java.util.Map.copyOf(value));
     }
 
     private void connectDirect(ChannelHandlerContext ctx, InetSocketAddress address) {
@@ -126,9 +148,11 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
         }
         remote = channel;
         if (!localSession.remote(remote)) return;
+        recordAccess("connected");
         ready = true;
         timeout.cancel(false);
         remote.config().setAutoRead(false);
+        remote.pipeline().addLast("traffic", traffic.handler());
         remote.pipeline().addLast("relay", new RelayHandler(ctx.channel()));
         if (tunnel) {
             ctx.writeAndFlush(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK))
@@ -159,6 +183,7 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
 
     private void fail(ChannelHandlerContext ctx, HttpResponseStatus status) {
         if (failed) return;
+        recordAccess("failed");
         failed = true;
         if (opening != null && !opening.isDone()) opening.cancel(false);
         if (timeout != null) timeout.cancel(false);

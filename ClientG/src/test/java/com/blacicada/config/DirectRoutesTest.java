@@ -35,9 +35,7 @@ class DirectRoutesTest {
     }
     @TempDir Path directory;
     private DirectRoutes routes(String rules) throws IOException {
-        Path file = directory.resolve("pac.txt");
-        Files.writeString(file, rules);
-        return new DirectRoutes(file);
+        return new DirectRoutes(rules);
     }
 
     @Test void preservesDomainRulesAndIgnoresComments() throws Exception {
@@ -86,54 +84,30 @@ class DirectRoutesTest {
         assertFalse(ipv6.matches("127.0.0.1"));
     }
 
-    @Test void invalidCidrFailsWithFileAndLine() {
+    @Test void invalidCidrFailsWithRuleAndLine() {
         for (String rule : new String[]{"192.168.0.0/33", "::/129", "10.0.0.0/-1", "10.0.0.0/", "10.0.0.0/x", "example.com/24", "999.0.0.0/8", "::/64/2"}) {
             var error = assertThrows(IOException.class, () -> routes("# 规则说明\n" + rule));
-            assertTrue(error.getMessage().contains("pac.txt:2:"), error.getMessage());
+            assertTrue(error.getMessage().contains("直连规则:2:"), error.getMessage());
         }
     }
 
-    @Test void missingFileMeansProxyAll() throws Exception {
-        var routes = new DirectRoutes(directory.resolve("missing.txt"));
+    @Test void absentRulesMeanProxyAllAndExternalFileIsIgnored() throws Exception {
+        Files.writeString(directory.resolve("pac.txt"), "localhost");
+        var routes = DirectRoutes.load(new ProxyConfig(new Properties(), directory));
         assertFalse(routes.matches("127.0.0.1"));
         assertFalse(routes.matches("localhost"));
         assertFalse(routes.needsResolution("localhost"));
         assertEquals("", routes.text());
     }
 
-    @Test void loadsConfiguredFileAndPreservesOriginalText() throws Exception {
+    @Test void preservesOriginalTextAndSnapshot() throws Exception {
         String text = "# 保留注释与换行\r\n example.com # 直连\r\n\r\n";
-        Files.writeString(directory.resolve("custom.txt"), text);
-        Properties settings = new Properties(); settings.setProperty("routesFile", "custom.txt");
+        Properties settings = new Properties(); settings.setProperty("routesInline", text);
         var rules = DirectRoutes.load(new ProxyConfig(settings, directory));
         assertTrue(rules.matches("www.example.com"));
         assertEquals(text, rules.text());
-        Files.writeString(directory.resolve("custom.txt"), "other.example");
+        settings.setProperty("routesInline", "other.example");
         assertEquals(text, rules.text());
         assertFalse(rules.matches("other.example"));
-    }
-
-    @Test void inlineRulesTakePrecedenceIncludingEmptyText() throws Exception {
-        Files.writeString(directory.resolve("pac.txt"), "file.example");
-        Properties settings = new Properties(); settings.setProperty("routesInline", "inline.example\n");
-        var rules = DirectRoutes.load(new ProxyConfig(settings, directory));
-        assertTrue(rules.matches("inline.example"));
-        assertFalse(rules.matches("file.example"));
-        assertEquals("inline.example", rules.text());
-
-        settings.setProperty("routesInline", "");
-        rules = DirectRoutes.load(new ProxyConfig(settings, directory));
-        assertFalse(rules.matches("file.example"));
-        assertEquals("", rules.text());
-
-        settings.remove("routesInline");
-        assertTrue(DirectRoutes.load(new ProxyConfig(settings, directory)).matches("file.example"));
-    }
-
-    @Test void configuredFileValidationKeepsSourceAndLine() throws Exception {
-        Files.writeString(directory.resolve("custom.txt"), "# 第一行\n10.0.0.0/33\n");
-        Properties settings = new Properties(); settings.setProperty("routesFile", "custom.txt");
-        var error = assertThrows(IOException.class, () -> DirectRoutes.load(new ProxyConfig(settings, directory)));
-        assertTrue(error.getMessage().contains("custom.txt:2:"), error.getMessage());
     }
 }

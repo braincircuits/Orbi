@@ -26,8 +26,17 @@ public final class LocalProxyServer implements AutoCloseable {
     private SessionRouter session;
     private final KernelConfig initial;
     private Channel listener;
+    private final TrafficStatistics traffic = new TrafficStatistics();
+    private io.netty.util.concurrent.ScheduledFuture<?> trafficSampler;
+    private final java.util.function.Consumer<java.util.Map<String, Object>> trafficRecorder, accessRecorder;
+    public TrafficStatistics traffic() { return traffic; }
 
-    public LocalProxyServer(KernelConfig config) { this.initial = config; this.config = config.local(); }
+    public LocalProxyServer(KernelConfig config) { this(config, null, null); }
+    public LocalProxyServer(KernelConfig config, java.util.function.Consumer<java.util.Map<String, Object>> trafficRecorder,
+                            java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder) {
+        this.initial = config; this.config = config.local();
+        this.trafficRecorder = trafficRecorder; this.accessRecorder = accessRecorder;
+    }
     public void apply(KernelConfig next) throws Exception {
         if (!config.get("bind", "127.0.0.1").equals(next.local().get("bind", "127.0.0.1"))
                 || config.integer("port", 8080, 0, 65535) != next.local().integer("port", 8080, 0, 65535))
@@ -61,10 +70,12 @@ public final class LocalProxyServer implements AutoCloseable {
                             decoder.setSingleDecode(true);
                             ch.pipeline().addLast("responseEncoder", new HttpResponseEncoder());
                             ch.pipeline().addLast("requestDecoder", decoder);
-                            ch.pipeline().addLast("proxy", new LocalRequestHandler(config, session, resolver, () -> routes));
+                            ch.pipeline().addLast("proxy", new LocalRequestHandler(config, session, resolver, () -> routes, traffic, accessRecorder));
                         }
                     }).bind(new InetSocketAddress(config.get("bind", "127.0.0.1"),
                             config.integer("port", 8080, 0, 65535))).sync().channel();
+            traffic.recordTo(trafficRecorder);
+            trafficSampler = group.next().scheduleAtFixedRate(traffic::sample, 1, 1, TimeUnit.SECONDS);
             return this;
         } catch (Exception e) { close(); throw e; }
     }
@@ -84,15 +95,18 @@ public final class LocalProxyServer implements AutoCloseable {
             return java.util.List.copyOf(result);
         }).syncUninterruptibly().getNow();
     }
+    public io.netty.util.concurrent.Future<Double> latency() { return session.latency(); }
     public long connectionCount() { return session.connectionCount(); }
     public String connectionState() { return session.connectionState(); }
     public String lastError() { return session.lastError(); }
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        if (trafficSampler != null) trafficSampler.cancel(false);
         if (listener != null) listener.close().awaitUninterruptibly();
         clients.close().awaitUninterruptibly();
         if (session != null) session.close();
         resolver.close();
         group.shutdownGracefully(0, 2, TimeUnit.SECONDS).awaitUninterruptibly();
+        traffic.stop();
     }
 }

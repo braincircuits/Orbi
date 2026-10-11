@@ -10,7 +10,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 
-/** 独立的有界诊断任务，不占用控制锁或实际代理会话。 */
+/** 独立的有界诊断任务，不阻塞控制线程；概览检测复用实际转发路径。 */
 public final class ControlTasks implements AutoCloseable {
     private final ExecutorService workers = Executors.newFixedThreadPool(4);
     private final Semaphore slots = new Semaphore(4);
@@ -18,6 +18,7 @@ public final class ControlTasks implements AutoCloseable {
     private final ControlEvents events;
     private boolean closed;
     private static final class Job {
+        Map<String, Object> context = Map.of();
         final String id = UUID.randomUUID().toString();
         final long started = System.nanoTime();
         final String createdAt = Instant.now().toString();
@@ -29,20 +30,21 @@ public final class ControlTasks implements AutoCloseable {
         Map<String, Object> view() {
             return Map.of("id", id, "state", state, "stage", stage, "createdAt", createdAt,
                     "elapsedMillis", terminal() ? elapsed : TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started),
-                    "stages", List.copyOf(stages), "result", result);
+                    "stages", List.copyOf(stages), "result", result, "context", context);
         }
         boolean terminal() { return Set.of("succeeded", "failed", "cancelled").contains(state); }
     }
     @FunctionalInterface private interface Work { Object run(Job job) throws Exception; }
     public ControlTasks(ControlEvents events) { this.events = events; }
-    private synchronized Map<String, Object> submit(Work work) {
+    private Map<String, Object> submit(Work work) { return submit(Map.of(), work); }
+    private synchronized Map<String, Object> submit(Map<String, Object> context, Work work) {
         if (closed || !slots.tryAcquire()) throw new ControlException(429, "DIAGNOSTICS_BUSY", "同时运行的诊断任务过多，请稍后重试");
         while (jobs.size() >= 128) {
             String first = jobs.entrySet().stream().filter(e -> e.getValue().terminal()).map(Map.Entry::getKey).findFirst().orElse(null);
             if (first == null) { slots.release(); throw new ControlException(429, "DIAGNOSTICS_BUSY", "诊断任务已满"); }
             jobs.remove(first);
         }
-        Job job = new Job(); jobs.put(job.id, job);
+        Job job = new Job(); job.context = Map.copyOf(context); jobs.put(job.id, job);
         job.future = workers.submit(() -> {
             try {
                 synchronized (job) {
@@ -73,6 +75,38 @@ public final class ControlTasks implements AutoCloseable {
         job.stages.add(Map.of("stage", value, "elapsedMillis", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - job.started)));
         events.emit("operation", job.view());
     }
+    /** 模式、配置或服务生命周期变化时取消与旧出口关联的诊断。 */
+    public synchronized void cancelNetwork() {
+        for (Job job : jobs.values()) if (!job.context.isEmpty() && !job.terminal()) cancel(job.id);
+    }
+    public Map<String, Object> websites(InetSocketAddress proxy, Map<String, Object> context) {
+        return submit(context, job -> {
+            var items = new ArrayList<Map<String, Object>>();
+            for (String id : List.of("github", "google", "youtube")) {
+                if (Thread.currentThread().isInterrupted() || job.state.equals("cancelled")) throw new InterruptedException();
+                stage(job, id);
+                items.add(NetworkProbe.website(proxy, id, NetworkProbe.WEBSITES.get(id)));
+                synchronized (job) {
+                    if (job.state.equals("cancelled")) throw new InterruptedException();
+                    job.result = Map.of("websites", List.copyOf(items));
+                }
+                events.emit("operation", job.view());
+            }
+            return job.result;
+        });
+    }
+    public Map<String, Object> exitIp(InetSocketAddress proxy, Map<String, Object> context) {
+        return submit(context, job -> { stage(job, "exit_ip"); return NetworkProbe.exitIp(proxy); });
+    }
+    public Map<String, Object> latency(java.util.function.Supplier<io.netty.util.concurrent.Future<Double>> measure,
+                                       Map<String, Object> context) {
+        return submit(context, job -> {
+            stage(job, "latency");
+            var future = measure.get();
+            try { return Map.of("latencyMillis", future.get(5, TimeUnit.SECONDS), "checkedAt", Instant.now().toString()); }
+            finally { if (!future.isDone()) future.cancel(false); }
+        });
+    }
     public Map<String, Object> start(KernelConfig.Profile profile, Authority target) {
         return submit(job -> {
             var group = new NioEventLoopGroup(1);
@@ -99,6 +133,8 @@ public final class ControlTasks implements AutoCloseable {
     public Map<String, Object> resolve(Authority target, DirectRoutes rules, String defaultId) {
         return submit(job -> {
             stage(job, "routing");
+            if (!rules.mode().equals("rules")) return Map.of("action", rules.mode(),
+                    "profileId", rules.mode().equals("proxy") ? defaultId : "", "matchedBy", "global_mode");
             String override = rules.override(target.host());
             if (override != null) return Map.of("action", override.equals("proxy") && defaultId.isEmpty() ? "unavailable" : override,
                     "profileId", override.equals("proxy") ? defaultId : "", "matchedBy", "target_rule");
@@ -126,7 +162,7 @@ public final class ControlTasks implements AutoCloseable {
             case "tls", "quic_tls" -> "TLS_OR_TRANSPORT_FAILED"; case "http2_settings" -> "HTTP2_NEGOTIATION_FAILED";
             case "connect" -> "CONNECT_FAILED"; default -> "DIAGNOSTIC_FAILED"; };
         if (text.contains("407")) code = "AUTHENTICATION_FAILED";
-        else if (cause instanceof java.util.concurrent.TimeoutException || text.contains("超时") || text.contains("timed out"))
+        else if (cause instanceof java.util.concurrent.TimeoutException || cause instanceof java.net.http.HttpTimeoutException || text.contains("超时") || text.contains("timed out"))
             code = stage.toUpperCase(Locale.ROOT) + "_TIMEOUT";
         return Map.of("code", code, "stage", stage, "message", "诊断未通过，请检查该阶段的网络、证书或代理配置");
     }

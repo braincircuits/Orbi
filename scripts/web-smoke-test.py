@@ -7,6 +7,8 @@ import os
 import pathlib
 import subprocess
 import sys
+import sqlite3
+import shutil
 import tempfile
 import threading
 import time
@@ -35,20 +37,38 @@ def main():
                     "HTTP/2 代理服务端已监听" if protocol == "http2" else "HTTP/3 代理服务端已监听", processes)
             endpoint = base / "control.json"
             native = os.environ.get("NATIVE_CORE")
-            command = [native] if native else [os.environ.get("UI_TEST_JAVA", "java"), "--enable-native-access=ALL-UNNAMED",
-                "-jar", str(ROOT / "ClientG/target/clientG-1.0-SNAPSHOT.jar")]
-            process = subprocess.Popen([*command, "--web", "--config", str(base / "kernel.json"),
-                "--port", "0", "--endpoint-file", str(endpoint)], stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=base)
-            processes.append(process)
+            program_directory = base / "程序目录"
+            program_directory.mkdir()
+            executable = pathlib.Path(native) if native else ROOT / "ClientG/target/clientG-1.0-SNAPSHOT.jar"
+            copied = program_directory / executable.name
+            shutil.copy2(executable, copied)
+            if native:
+                for pattern in ("*.dylib", "*.so", "*.dll"):
+                    for library in executable.parent.glob(pattern):
+                        shutil.copy2(library, program_directory / library.name)
+            command = [str(copied)] if native else [os.environ.get("UI_TEST_JAVA", "java"), "--enable-native-access=ALL-UNNAMED", "-jar", str(copied)]
+            arguments = [*command, "--web", "--port", "0", "--endpoint-file", str(endpoint)]
             diagnostics = []
-            threading.Thread(target=lambda: diagnostics.extend(process.stdout), daemon=True).start()
-            deadline = time.monotonic() + 15
-            while not endpoint.exists():
-                assert process.poll() is None, "代理内核启动失败：" + "".join(diagnostics)
-                assert time.monotonic() < deadline, "管理接口启动超时"
-                time.sleep(0.05)
-            access = json.loads(endpoint.read_text())
+
+            def launch_kernel():
+                process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=base)
+                processes.append(process)
+                threading.Thread(target=lambda: diagnostics.extend(process.stdout), daemon=True).start()
+                deadline = time.monotonic() + 15
+                while not endpoint.exists():
+                    assert process.poll() is None, "代理内核启动失败：" + "".join(diagnostics)
+                    assert time.monotonic() < deadline, "管理接口启动超时"
+                    time.sleep(0.05)
+                return process, json.loads(endpoint.read_text())
+
+            process, access = launch_kernel()
+            database_file = program_directory / "kernel.db"
+            assert database_file.is_file(), "数据库必须位于程序同目录"
+            assert not (base / "kernel.db").exists(), "数据库不应创建在启动工作目录"
+            duplicate = subprocess.run(arguments, cwd=base, capture_output=True, text=True, timeout=15)
+            assert duplicate.returncode != 0 and "数据库已被其他内核实例占用" in duplicate.stdout + duplicate.stderr
+            assert json.loads(endpoint.read_text()) == access, "第二个实例不得覆盖管理发现文件"
             address = access["url"].removeprefix("http://")
             revision = 0
 
@@ -104,15 +124,30 @@ def main():
             api("PUT", "/routing/direct-rules", {"rules": "127.0.0.0/8"})
             api("PATCH", "/profiles/http3", {"config": {"password": "incorrect-password"}})
             request(tunnel=True)
-            api("POST", "/config/save")
-            assert json.loads((base / "kernel.json").read_text())["local"]["routesInline"] == "127.0.0.0/8"
+            exported = api("GET", "/routing/export")
+            api("PUT", "/routing/direct-rules", {"rules": ""})
+            api("POST", "/routing/import", exported)
+            assert api("GET", "/routing/export") == exported
+            with sqlite3.connect(database_file) as database:
+                assert database.execute("SELECT direct_rules FROM routing").fetchone()[0] == "127.0.0.0/8"
+                assert database.execute("SELECT revision FROM metadata").fetchone()[0] == revision
             api("POST", "/proxy/stop")
             assert api("GET", "/health")["ready"]
             api("POST", "/kernel/shutdown")
             assert process.wait(timeout=10) == 0
             assert not endpoint.exists()
+            saved_revision = revision
+            process, access = launch_kernel()
+            address = access["url"].removeprefix("http://")
+            state = api("GET", "/status")
+            assert revision == saved_revision and not state["running"], "重启必须恢复配置版本并保持转发停止"
+            assert api("GET", "/routing/export") == exported
+            assert len(api("GET", "/profiles")) == 2
+            api("POST", "/kernel/shutdown")
+            assert process.wait(timeout=10) == 0
+            assert not endpoint.exists()
             assert not any(access["token"] in line or "web-test-secret" in line for line in diagnostics)
-            print("Web 联调通过：" + ("AOT 原生内核" if native else "JAR 内核") + "、HTTP/2、HTTP/3、HTTP/CONNECT、异步诊断、热更新、配置保存及退出清理。")
+            print("Web 联调通过：" + ("AOT 原生内核" if native else "JAR 内核") + "、HTTP/2、HTTP/3、HTTP/CONNECT、异步诊断、热更新、SQLite 自动保存、程序同目录默认路径、独占运行、重启恢复、路由导入导出及退出清理。")
     finally:
         for process in reversed(processes):
             if process.poll() is None:

@@ -7,8 +7,18 @@ import java.util.*;
 /** 管理地址、令牌和跨域白名单是启动参数，不随代理配置热更新。 */
 public final class WebApplication {
     private WebApplication() { }
+    /** 原生程序取进程映像位置，JAR 取代码来源；IDE 运行时使用编译输出目录。 */
+    static Path defaultDatabase() throws Exception {
+        if ("runtime".equals(System.getProperty("org.graalvm.nativeimage.imagecode"))) {
+            Path executable = Path.of(ProcessHandle.current().info().command()
+                    .orElseThrow(() -> new IllegalStateException("无法确定可执行程序路径，请使用 --db 指定数据库"))).toRealPath();
+            return executable.getParent().resolve("kernel.db");
+        }
+        Path source = Path.of(WebApplication.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toRealPath();
+        return (Files.isDirectory(source) ? source : source.getParent()).resolve("kernel.db");
+    }
     public static void run(String[] args) throws Exception {
-        Path config = Path.of("kernel.json"), endpoint = null;
+        Path database = null, endpoint = null;
         int port = 9090;
         Set<String> origins = new HashSet<>();
         String token = ControlHttpServer.newToken();
@@ -17,7 +27,7 @@ public final class WebApplication {
             if (i + 1 >= args.length) throw new IllegalArgumentException("启动参数缺少值：" + key);
             String value = args[++i];
             switch (key) {
-                case "--config" -> config = Path.of(value);
+                case "--db" -> database = Path.of(value);
                 case "--port" -> port = Integer.parseInt(value);
                 case "--endpoint-file" -> endpoint = Path.of(value);
                 case "--token-file" -> token = Files.readString(Path.of(value)).trim();
@@ -32,9 +42,10 @@ public final class WebApplication {
             }
         }
         if (port < 0 || port > 65535) throw new IllegalArgumentException("管理端口无效");
-        if (endpoint == null) endpoint = config.toAbsolutePath().getParent().resolve("run/control.json");
+        if (database == null) database = defaultDatabase();
+        if (endpoint == null) endpoint = database.toAbsolutePath().getParent().resolve("run/control.json");
         Path endpointFile = endpoint.toAbsolutePath();
-        try (var control = new KernelControl(config); var web = new ControlHttpServer(control, port, token, origins)) {
+        try (var control = new KernelControl(database); var web = new ControlHttpServer(control, port, token, origins)) {
             var hook = new Thread(web::close, "web-control-shutdown");
             Runtime.getRuntime().addShutdownHook(hook);
             try {

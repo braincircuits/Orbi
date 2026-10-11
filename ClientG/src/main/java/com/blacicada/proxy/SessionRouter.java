@@ -21,7 +21,10 @@ public final class SessionRouter implements AutoCloseable {
     private boolean closed;
     public SessionRouter(EventLoop loop, DnsAddressResolverGroup resolver, KernelConfig config) throws Exception {
         this.loop = loop; this.resolver = resolver; this.config = config;
-        session = create(config.profile(config.defaultConnectionId()));
+        session = selectedSession(config);
+    }
+    private ProxySession selectedSession(KernelConfig value) throws Exception {
+        return value.routingMode().equals("direct") ? null : create(value.profile(value.defaultConnectionId()));
     }
     private ProxySession create(KernelConfig.Profile profile) throws Exception {
         return ProxySessionFactory.create(loop, profile.config(), resolver);
@@ -29,7 +32,7 @@ public final class SessionRouter implements AutoCloseable {
     public Future<Channel> open(Authority target, Channel browser) {
         Promise<Channel> result = loop.newPromise();
         loop.execute(() -> {
-            if (closed || !browser.isActive() || result.isDone()) { result.cancel(false); return; }
+            if (closed || session == null || !browser.isActive() || result.isDone()) { result.cancel(false); return; }
             if (browsers.add(browser)) browser.closeFuture().addListener(f -> browsers.remove(browser));
             pending.add(result); pendingCount = pending.size();
             Future<? extends Channel> opening = session.open(target);
@@ -50,18 +53,20 @@ public final class SessionRouter implements AutoCloseable {
     }
     /** 在控制线程准备新会话，事件循环内原子切换；旧隧道立即中断。 */
     public synchronized void apply(KernelConfig next, Runnable applied) throws Exception {
-        KernelConfig.Profile old = config.profile(config.defaultConnectionId());
-        KernelConfig.Profile selected = next.profile(next.defaultConnectionId());
-        boolean changed = !old.id().equals(selected.id()) || !old.config().values().equals(selected.config().values())
-                || !old.config().base().equals(selected.config().base());
-        ProxySession replacement = changed ? create(selected) : null;
+        KernelConfig.Profile old = config.connections().isEmpty() ? null : config.profile(config.defaultConnectionId());
+        KernelConfig.Profile selected = next.connections().isEmpty() ? null : next.profile(next.defaultConnectionId());
+        boolean changed = config.routingMode().equals("direct") != next.routingMode().equals("direct")
+                || !next.routingMode().equals("direct") && (old == null || selected == null
+                || !old.id().equals(selected.id()) || !old.config().values().equals(selected.config().values())
+                || !old.config().base().equals(selected.config().base()));
+        ProxySession replacement = changed ? selectedSession(next) : null;
         try {
             loop.submit(() -> {
                 if (closed) throw new IllegalStateException("代理内核已停止");
-                if (replacement != null) {
-                    clear(); session.close(); session = replacement;
+                if (changed) {
+                    clear(); if (session != null) session.close(); session = replacement;
                     org.apache.logging.log4j.LogManager.getLogger(SessionRouter.class).info(
-                            "代理内核已切换连接，旧隧道已关闭：连接 ID={}，协议={}", selected.id(), selected.config().get("protocol", "http3"));
+                            "代理内核已切换连接，旧隧道已关闭：连接 ID={}，模式={}", selected == null ? "无" : selected.id(), next.routingMode());
                 }
                 config = next;
                 applied.run();
@@ -74,17 +79,32 @@ public final class SessionRouter implements AutoCloseable {
         browsers.clear(); tunnels.clear(); activeCount = 0;
     }
     public synchronized void disconnect() throws Exception {
-        ProxySession replacement = create(config.profile(config.defaultConnectionId()));
-        try { loop.submit(() -> { clear(); session.close(); session = replacement; }).syncUninterruptibly(); }
-        catch (Exception e) { replacement.close(); throw e; }
+        ProxySession replacement = selectedSession(config);
+        try { loop.submit(() -> { clear(); if (session != null) session.close(); session = replacement; }).syncUninterruptibly(); }
+        catch (Exception e) { if (replacement != null) replacement.close(); throw e; }
     }
     public int activeTunnels() { return activeCount; }
     public int pendingTunnels() { return pendingCount; }
     public KernelConfig config() { return config; }
-    public long connectionCount() { return session.connectionCount(); }
-    public String connectionState() { return session.connectionState(); }
-    public String lastError() { return session.lastError(); }
+    public long connectionCount() { return session == null ? 0 : session.connectionCount(); }
+    public String connectionState() { return session == null ? "unused" : session.connectionState(); }
+    public String lastError() { return session == null ? "" : session.lastError(); }
+    public Future<Double> latency() {
+        Promise<Double> result = loop.newPromise();
+        loop.execute(() -> {
+            if (result.isDone()) return;
+            if (closed || session == null) { result.tryFailure(new IOException("当前模式未使用代理连接")); return; }
+            var measurement = session.latency();
+            result.addListener(f -> { if (f.isCancelled()) measurement.cancel(false); });
+            measurement.addListener(f -> {
+                if (f.isSuccess()) result.trySuccess((Double) f.getNow());
+                else if (f.isCancelled()) result.cancel(false);
+                else result.tryFailure(f.cause());
+            });
+        });
+        return result;
+    }
     @Override public synchronized void close() {
-        loop.submit(() -> { closed = true; clear(); session.close(); }).syncUninterruptibly();
+        loop.submit(() -> { closed = true; clear(); if (session != null) session.close(); }).syncUninterruptibly();
     }
 }

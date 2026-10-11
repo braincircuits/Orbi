@@ -2,7 +2,7 @@
   <configuration default="false" name="HTTP3 Client" type="Application" factoryName="Application">
     <option name="MAIN_CLASS_NAME" value="com.blacicada.ClientApplication" />
     <module name="clientG" />
-    <option name="PROGRAM_PARAMETERS" value="--web --config $PROJECT_DIR$/.local-h3/kernel.json" />
+    <option name="PROGRAM_PARAMETERS" value="--web --db $PROJECT_DIR$/.local-h3/kernel.db" />
     <option name="VM_PARAMETERS" value="--enable-native-access=ALL-UNNAMED" />
     <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
     <method v="2"><option name="Make" enabled="true" /></method>

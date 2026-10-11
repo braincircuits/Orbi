@@ -13,7 +13,7 @@ Java 25 + Netty 4.2.18.Final。Flutter UI 称为「代理客户端」，Java Cli
 
 - 已有发布目录：按下面的「发布目录启动与远程部署」启动，不需要 Maven。
 - 从源码构建：安装 JDK 25、Maven 3.9，以及支持 `-addext` 的 OpenSSL（生成证书使用）。
-- 配置直连网段：查看「PAC 直连规则」，修改客户端实际使用的规则文件。
+- 配置直连网段：查看「直连规则」，通过管理接口修改并自动保存。
 
 ## 构建与测试
 
@@ -32,6 +32,8 @@ mvn -DskipTests package
 - `ClientG/target/clientG-1.0-SNAPSHOT.jar`
 
 集成测试启动真实的本地 TCP/UDP 服务，覆盖并发流复用、拆包、请求体、半关闭、认证、证书校验、目标失败、直连规则和连接重建。测试不需要访问公网。`ClientG/src/test/resources/tls` 中的公开证书和私钥仅为测试夹具，不能用于部署。
+
+本机初始化和发布脚本需要 Python 3，并通过管理 API 创建数据库；运行发布产物不需要 Python。
 
 代理内核支持 GraalVM 25 AOT 构建：`GRAALVM_HOME=/实际路径/graalvm-25 sh scripts/build-native.sh`，生成无需 Java 运行时的本机程序。构建、动态库打包、元数据与协议验证见 [原生内核说明](docs/native-image.md)。
 
@@ -54,7 +56,7 @@ release/
 └── client/
     ├── client.jar
     ├── start.sh / start.cmd / background.sh
-    ├── config/kernel.json、pac.txt
+    ├── kernel.db
     └── certs/server.crt
 ```
 
@@ -75,14 +77,14 @@ release/
 远程部署步骤：
 
 1. 将整个 `release/server/` 复制到服务端机器，将整个 `release/client/` 复制到客户端机器，保留各自内部目录结构。
-2. 编辑客户端 `config/kernel.json`，在各连接的 `config` 中把 `server.host` 改为服务端可访问的 IP 或域名。`server.port` 必须与服务端 `port` 一致。
+2. 通过客户端或管理 API，在各连接的 `config` 中把 `server.host` 改为服务端可访问的 IP 或域名。`server.port` 必须与服务端 `port` 一致。
 3. 在服务端防火墙、安全组及必要的路由器端口转发中放行对应 **UDP** 端口，默认 `4433`。
-4. 保持客户端 `username`、`password` 与服务端账号文件对应。使用脚本生成的证书时，保留 `tls.serverName=localhost` 和 `tls.ca=../certs/server.crt`；连接地址与证书验证名称是两个独立配置。
+4. 保持客户端 `username`、`password` 与服务端账号文件对应。使用脚本生成的证书时，保留 `tls.serverName=localhost` 和 `tls.ca=certs/server.crt`；连接地址与证书验证名称是两个独立配置。
 5. 先启动服务端，再启动代理内核；通过管理接口调用 `/api/v1/proxy/start` 开启转发，然后将浏览器/应用的 HTTP 和 HTTPS 代理地址均设为 `127.0.0.1:8080`。本地代理入口使用 HTTP，HTTPS 网站通过 CONNECT 隧道访问。
 
 每次打包生成默认账号 `client1` 的随机密码及有效期 365 天的自签名证书。客户端只需要公开证书，私钥保留在服务端。更换证书时需同步客户端信任证书及 `tls.serverName`，名称必须匹配新证书的 SAN；证书到期需要手动更新。客户端目录含访问凭证，只分发给获准使用代理的用户。
 
-发布目录已被 Git 忽略。脚本拒绝覆盖已有目录；再次生成可使用 `sh scripts/package-release.sh /tmp/network-release-next`。升级现有部署时，停止两端进程，将新构建的两个 JAR 分别替换为 `server/server.jar` 和 `client/client.jar`，保留原有配置、PAC 和证书后重启。不要混用不同次打包生成的密码或证书。
+发布目录已被 Git 忽略。脚本拒绝覆盖已有目录；再次生成可使用 `sh scripts/package-release.sh /tmp/network-release-next`。升级现有部署时，停止两端进程，将新构建的两个 JAR 分别替换为 `server/server.jar` 和 `client/client.jar`，保留 SQLite 数据库、服务端配置和证书后重启；旧 JSON/PAC 配置不会自动迁移，需通过管理接口重新录入。不要混用不同次打包生成的密码或证书。
 
 发布目录自带的说明来源于 [发布使用说明模板](scripts/release/README.md)。
 
@@ -113,7 +115,7 @@ macOS 使用目录锁防止管理命令并发执行；若命令被强制终止�
 
 ## 源码构建后的本机体验
 
-以下脚本生成独立的 `.local-h3/` 配置、随机密码和 localhost 自签名证书，不覆盖已有配置。需要支持 `-addext` 的 OpenSSL。
+先完成 JAR 构建。以下脚本通过管理接口初始化独立的 `.local-h3/kernel.db`，生成随机密码和 localhost 自签名证书，不覆盖已有目录。需要 Python 3 和支持 `-addext` 的 OpenSSL。
 
 ```sh
 sh scripts/create-local-config.sh
@@ -123,7 +125,7 @@ java --enable-native-access=ALL-UNNAMED -jar Server/target/Server-1.0-SNAPSHOT.j
 另开终端：
 
 ```sh
-java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --web --config .local-h3/kernel.json
+java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --web --db .local-h3/kernel.db
 ```
 
 浏览器设置 HTTP/HTTPS 代理为 `127.0.0.1:8080`，或使用：
@@ -144,7 +146,7 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 ```
 
 1. 运行 `Server/src/test/java/com/blacicada/manual/ProxyHelloReceiver.java`，默认监听 `127.0.0.1:18080`。
-2. 运行代理服务端 `NettyServer` 和代理内核 `ClientApplication`，通过管理接口调用 `/api/v1/proxy/start` 开始转发后，再运行发送端。使用上面的本机配置时，工作目录设置为项目根目录，Program arguments 分别填写 `.local-h3/server.properties` 和 `--web --config .local-h3/kernel.json`；VM options 填写 `--enable-native-access=ALL-UNNAMED`。
+2. 运行代理服务端 `NettyServer` 和代理内核 `ClientApplication`，通过管理接口调用 `/api/v1/proxy/start` 开始转发后，再运行发送端。使用上面的本机配置时，工作目录设置为项目根目录，Program arguments 分别填写 `.local-h3/server.properties` 和 `--web --db .local-h3/kernel.db`；VM options 填写 `--enable-native-access=ALL-UNNAMED`。
 3. 运行 `ClientG/src/test/java/com/blacicada/manual/ProxyHelloSender.java`。默认连接 `127.0.0.1:8080`，发送 `CONNECT 127.0.0.1:18080`，收到成功响应后发送 `hello world`。
 4. 接收端控制台打印收到的数据并原样回显，发送端打印 `代理通信测试成功`。接收端保持监听，可重复运行发送端；测试结束后点击 Stop 停止接收端及代理进程。
 
@@ -152,7 +154,7 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 
 ## 部署配置
 
-参考 `examples/server.properties` 和 `examples/kernel.json`。相对路径以各自配置文件所在目录为基准。代理服务端默认读取 `server.properties`，代理内核默认读取 `kernel.json`；内核不再接受 properties 或编号服务器列表。
+服务端参考 `examples/server.properties`，相对路径以服务端配置目录为基准。内核 API 请求体参考 [examples/config-request.json](examples/config-request.json)。内核默认使用可执行程序旁的 `kernel.db`：JAR 模式与 JAR 同目录，原生模式与原生程序同目录；IDE 运行使用编译输出目录。可通过 `--db` 指定路径，证书相对路径以数据库目录为基准。数据库不存在时自动建库，旧 JSON/PAC 文件不读取、不迁移、不删除。
 
 服务端：
 
@@ -174,7 +176,9 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 | `password` | 必填，账号密码或旧模式的共享密码；每个 CONNECT 请求均认证 |
 | `tls.serverName` | TLS 验证的服务端名称，默认等于 `server.host`，必须匹配证书 SAN |
 | `tls.ca` | 可选的 PEM 信任证书；省略则使用系统/JDK 默认信任链 |
-| `local.routesFile` | 直连域名/IP/CIDR 规则列表，默认 `pac.txt`；不存在或为空则全部走远程代理 |
+| `local.routesInline` | 直连域名/IP/CIDR 规则文本，存入 SQLite；默认空规则 |
+| `local.routesOverrides` | 精确目标强制 proxy/direct，每行一条；数据库按目标逐行保存 |
+| `local.routingMode` | rules（默认）、direct 或 proxy |
 
 两端均支持：
 
@@ -203,7 +207,7 @@ client2=替换为客户端2的随机长密码
 
 账号名为 1 至 64 位字母、数字、下划线、点或连字符，且以字母或数字开头。文件采用 Java properties 格式，反斜杠需按该格式转义；推荐用 `openssl rand -hex 32` 生成密码。空文件、空密码、重复或非法账号会阻止服务端启动。
 
-代理内核 1 的 `config/kernel.json` 中，在所选连接的 `config` 对象内填写：
+通过管理接口修改代理内核所选连接的 `config`：
 
 ```json
 {"username":"client1","password":"替换为客户端1的随机长密码"}
@@ -217,29 +221,12 @@ client2=替换为客户端2的随机长密码
 
 新生成的发布目录默认启用账号模式，创建随机密码的 `client1` 并写入配套客户端配置。既有发布目录的凭证不会因更新 JAR 自动切换认证模式。
 
-## PAC 直连规则（域名、IP 与网段）
+## 直连规则（域名、IP 与网段）
 
-这里的 `pac.txt` 是**客户端读取的直连列表**，不是浏览器执行的 JavaScript PAC 脚本。浏览器仍配置普通 HTTP 代理，不要把此文件填到浏览器的自动代理配置 URL 中。规则命中时由客户端直接连接目标，不经过 HTTP/3 服务端；未命中时走远程代理。普通 HTTP 和 HTTPS CONNECT 都适用。
+直连规则统一保存在 SQLite，通过 `PUT /api/v1/routing/direct-rules` 修改，或通过路由 JSON 导入。规则命中时由内核直接连接目标，未命中时走默认代理；全局模式和精确目标规则的优先级见 [Web API](docs/web-api.md)。浏览器仍配置普通 HTTP 代理。
 
-### 修改哪个文件
+规则为空或只有注释时不会自动添加内网直连规则。按需编辑以下规则文本，每行一条：
 
-| 启动方式 | 默认规则文件 |
-| --- | --- |
-| 发布目录启动脚本 | `release/client/config/pac.txt`（部署后为客户端目录下的 `config/pac.txt`） |
-| `.local-h3` 本机配置 / IDEA 保存的运行配置 | `.local-h3/pac.txt` |
-| 自定义配置文件 | `routesFile` 指向的文件；相对路径以该 JSON 文件所在目录为基准 |
-
-例如发布配置 `release/client/config/kernel.json` 的 `local` 对象中设置：
-
-```json
-{"routesFile":"pac.txt"}
-```
-
-此时读取同目录的 `pac.txt`，不会读取项目根目录同名文件。文件不存在、为空或只有注释时，全部目标走远程代理。程序不会自动添加内网直连规则。
-
-### 网段配置示例
-
-按需将以下内容写入实际使用的 `pac.txt`，UTF-8 编码，每行一条：
 
 ```text
 # 域名自身及其所有子域名直连；不填写协议、路径或端口
@@ -279,9 +266,9 @@ fc00::/7
 - 忽略空行和 `#` 注释，也支持行尾注释，例如 `192.168.1.0/24 # 办公网`。
 - 不支持 `*.example.com`、URL、端口、`192.168.*.*`、起止 IP 范围或 `255.255.255.0` 子网掩码写法。
 - 所有规则都是直连规则，没有反向规则或按顺序覆盖机制。CIDR 中的主机位不影响匹配，建议填写规范网络地址。
-- 非法 CIDR 会报告文件、行号和规则并阻止启动。调用直连规则更新/重载接口立即应用：关闭直连与代理之间发生变化的业务连接，路由结果未变的连接保持。无需重启服务端。
+- 非法 CIDR 会报告规则行号并拒绝修改。调用直连规则更新或导入接口立即应用：关闭直连与代理之间发生变化的业务连接，路由结果未变的连接保持。无需重启服务端。
 
-更多注释示例见 [examples/pac.txt](examples/pac.txt)。
+路由导入导出示例见 [examples/routing.json](examples/routing.json)，导入前请调整其中的默认连接 ID。
 
 ### 域名如何匹配网段
 
@@ -300,13 +287,13 @@ fc00::/7
 
 | 现象 | 检查方式 |
 | --- | --- |
-| 启动提示找不到配置、证书或私钥 | 使用启动脚本；服务端指定 properties 路径，代理内核使用 `--web --config kernel.json`；检查路径是否相对于配置文件目录，复制部署时是否保留 `certs/` |
+| 启动提示找不到配置、证书或私钥 | 使用启动脚本；服务端指定 properties 路径，代理内核使用 `--web --db /数据目录/kernel.db`；服务端相对路径基于配置文件目录，内核基于数据库目录，复制部署时是否保留 `certs/` |
 | 启动提示端口占用 | 停止旧进程或修改 `port`；服务端修改端口后同步客户端 `server.port`，客户端修改端口后同步浏览器代理设置 |
 | 客户端启动成功，但无法访问网站 | 共享 QUIC 连接按需建立，启动成功不代表已连接服务端；检查 `server.host`、端口以及 UDP 防火墙规则 |
 | TLS 握手或证书校验失败 | 检查证书有效期、`tls.ca` 是否信任当前服务端证书，以及 `tls.serverName` 是否匹配证书 SAN |
 | 返回 502 | 查看客户端和服务端终端日志；检查账号和密码、目标 DNS 和目标 TCP 可达性。直连目标由客户端访问，代理目标由服务端访问 |
 | 返回 504 | 初始请求建立超时；检查网络和服务端可达性，再按需调整 `connectTimeoutMillis` |
-| PAC 修改没有生效 | 确认 `routesFile` 实际指向的文件，调用规则重载接口，再建立新连接测试 |
+| 路由修改没有生效 | 使用管理接口查询当前规则和全局模式；外部 PAC 文件不参与路由 |
 | hello world 测试未经过服务端 | 清空测试配置的直连规则；回环地址或网段命中时会直接连接本机接收端 |
 
 验证 HTTP 和 HTTPS 代理时可显式排除环境中 `NO_PROXY` 的影响：
@@ -346,27 +333,27 @@ CONNECT 超时后会取消对应请求流的双向传输。若整个等待期间
 代理客户端通过本机 HTTP + JSON 操作代理内核，通过 SSE 订阅状态、日志与诊断结果。支持连接配置增删改、切换连接、启动/停止转发和热更新；UI 关闭后内核继续运行。
 
 ```sh
-java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --web --config kernel.json --port 9090
+java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --web --db /数据目录/kernel.db --port 9090
 ```
 
-代理内核只接受 `--web` 入口，不再接受无参数启动或直接传入配置文件。启动脚本和 IDEA 配置也使用 Web 模式。启动后代理转发处于停止状态，UI 调用 `/api/v1/proxy/start` 开始转发。管理接口固定监听 `127.0.0.1`，默认发现文件为配置目录下的 `run/control.json`，包含管理地址和随机令牌；仅当前用户可读写。用 `--port 0` 自动分配管理端口。所有接口要求 `Authorization: Bearer <token>`，令牌不要放入 URL。
+代理内核只接受 `--web` 入口，不再接受无参数启动或直接传入配置文件。启动脚本和 IDEA 配置也使用 Web 模式。启动后代理转发处于停止状态，UI 调用 `/api/v1/proxy/start` 开始转发。管理接口固定监听 `127.0.0.1`，默认发现文件为数据库目录下的 `run/control.json`，包含管理地址和随机令牌；仅当前用户可读写。用 `--port 0` 自动分配管理端口。所有接口要求 `Authorization: Bearer <token>`，令牌不要放入 URL。
 
-详细接口、请求示例、错误码、热更新规则和 Flutter 接入流程见 [Web 管理接口文档](docs/web-api.md)。修改本地代理监听地址/端口会立即重启转发并断开全部旧连接；管理接口保持运行。修改配置只应用到内存，调用保存接口后才会在进程重启后保留。
+详细接口、请求示例、错误码、热更新规则和 Flutter 接入流程见 [Web 管理接口文档](docs/web-api.md)。修改本地代理监听地址/端口会立即重启转发并断开全部旧连接；管理接口保持运行。修改成功后自动保存到 SQLite，重启后恢复；不再提供手动保存。
 
 
 ## 多连接配置与 HTTP/2
 
-完整示例见 [examples/kernel.json](examples/kernel.json)。JSON 配置的相对路径以文件所在目录为基准，Web 接口直接提交的配置以 `--config` 文件所在目录为基准。代理内核只读取 JSON 格式；在每份连接的 `config` 中设置 `"protocol":"http2"` 或 `"protocol":"http3"`。
+API 请求体示例见 [examples/config-request.json](examples/config-request.json)，可提交到 `PUT /api/v1/config`。内核通过 SQLite 持久化；在每份连接的 `config` 中设置 `"protocol":"http2"` 或 `"protocol":"http3"`。
 
 ```sh
-java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --web --config examples/kernel.json
+java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --web
 ```
 
 运行前替换示例中的服务器地址、账号和密码。示例默认使用系统信任证书；私有 CA 或自签名证书需要在每份连接的 `config` 中设置 `tls.ca`，且 `tls.serverName` 必须匹配证书。
 
 - `version`：目前固定为 `1`。
-- `local`：本地监听、直连规则与本地请求建立超时；`routesInline` 优先于 `routesFile`。
-- `connections`：1 至 128 份配置，每份包含稳定的 `id`、显示名称 `name`、连接参数 `config`。
+- `local`：本地监听、直连规则与本地请求建立超时；规则只来自数据库中的当前快照。
+- `connections`：0 至 128 份配置，每份包含稳定的 `id`、显示名称 `name`、连接参数 `config`。
 - `defaultConnectionId`：未命中直连规则时使用的连接 ID。
 - 唯一性按协议、规范化地址和端口判断；相同端点不能重复保存不同账号。域名不通过 DNS 解析后的 IP 去重。带作用域标识的 IPv6 地址暂不支持。
 - `protocol` 只接受 `http2`、`http3`，端口默认 `4433`。两种协议都复用单条连接承载多个 CONNECT 流，使用相同的认证机制。
@@ -424,17 +411,23 @@ HTTP/2 超时日志按实际阶段分别显示“等待 HTTP/2 流额度”“�
 | `SessionRouter` | 选择当前代理会话、切换连接及关闭旧隧道 |
 | `Http2Session` / `Http3Session` | 协议握手、单连接复用、流额度及请求超时 |
 
-配置修改遵循“校验版本 → 生成候选配置 → 应用运行状态 → 提交内存配置与版本 → 发布事件”。运行状态应用失败时不推进配置版本；监听变更失败会尝试恢复原监听。保存文件仍是显式操作。
+配置修改遵循“校验版本 → 生成候选配置 → 写入未提交的 SQLite 事务 → 应用运行状态 → 提交数据库及内存版本 → 发布事件”。应用或数据库提交失败会回滚；运行配置恢复失败时停止代理。事务恢复失败后需重启内核。已断开的业务连接无法恢复。
 
-`KernelControl` 的锁负责串行业务操作，`ControlApi` 在同一锁内取得操作结果和版本快照，实际 HTTP 响应写入在锁外执行。`ProxyRuntime` 只由控制入口访问；协议会话和流状态继续由所属 Netty EventLoop 串行处理。架构拆分不改变现有 API、配置格式或断线重连策略。
+`KernelControl` 的锁负责串行业务操作，`ControlApi` 在同一锁内取得操作结果和版本快照，实际 HTTP 响应写入在锁外执行。`ProxyRuntime` 只由控制入口访问；协议会话和流状态继续由所属 Netty EventLoop 串行处理。SQLite 版本移除了手动保存和文件重载接口；协议与断线重连策略保持。
 
 ### 包与复用边界
 
 - `ClientG/com.blacicada.proxy`：本地代理入口、默认会话路由与 HTTP/2、HTTP/3 会话；这些组件不再放在只表示 HTTP/3 的 `h3` 包中。
-- `ClientG/com.blacicada.config`：内核配置及直连规则。规则来源优先级统一由 `DirectRoutes.load` 处理，配置验证、启动、热更新共用该实现。
+- `ClientG/com.blacicada.config`：内核配置及直连规则。规则快照统一由 `DirectRoutes.load` 构造，配置验证、启动、热更新共用该实现。
 - `ProxyCommon/com.blacicada.common`：两端、两种协议实际共用的目标地址、配置、认证、转发与传输辅助代码。协议帧及 QUIC 专用处理仍放在 `common.h2`、`common.h3`。
-- `ClientG/com.blacicada.io.PrivateFiles`：配置文件与管理令牌文件共用私有原子写入，不再维护两份权限与替换逻辑。
+- `ClientG/com.blacicada.io.PrivateFiles`：数据库和管理令牌文件共用私有权限控制，发现文件继续原子写入。
 
-路由查询和诊断在代理运行时使用当前生效的规则快照。直接修改规则文件不会让诊断提前使用尚未重载的规则，可调用规则重载接口使其生效；其他重新应用配置的操作也会加载规则文件。代理停止时读取配置指定的规则。
+路由查询和诊断使用当前配置快照。SQLite 是唯一配置存储；不要直接修改运行中的数据库。
 
 保留 `ProxySession`、会话工厂和生命周期管理器，因为它们已有多种协议实现、多个调用点或独立资源管理职责。删除未使用的旧启动等待方法、配置 upsert、重复密码保留分支和过期重载，不为未来需求保留兼容空壳。
+
+## 路由导入导出
+
+`GET /api/v1/routing/export` 返回带版本号的路由文档，把响应中的 `data` 保存为 UTF-8 JSON。`POST /api/v1/routing/import` 接收该文档并要求 `If-Match`，完整替换模式、默认连接、直连规则和精确目标规则，校验及保存作为一次修改完成。默认连接 ID 必须已存在，导入不创建连接、不包含凭据。格式、错误和客户端接入说明见 [Web API](docs/web-api.md#sqlite-与路由导入导出)。
+
+数据库包含代理密码且未加密，仅应由当前用户访问。同一数据库只能由一个内核实例打开；损坏或未知版本的数据库不会自动重置。日志、活动连接、事件和诊断结果不入库；`control.json` 继续供客户端发现正在运行的内核。备份前先停止内核，保留数据库及配套证书。

@@ -8,7 +8,7 @@ else
 fi
 cd "$app_dir"
 if [ "@APP@" = client ]; then
-    set -- --web --config "$app_dir/config/@CONFIG@"
+    set -- --web
 else
     set -- "$app_dir/config/@CONFIG@"
 fi

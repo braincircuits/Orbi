@@ -56,8 +56,7 @@ class Http3IntegrationTest {
         options.setProperty("connectTimeoutMillis", "3000");
         options.setProperty("maxStreams", Integer.toString(streams));
         if (direct) {
-            Path routes = directory.resolve("direct.txt"); Files.writeString(routes, "# 注释\n\n127.0.0.1\n");
-            options.setProperty("routesFile", routes.toString());
+            options.setProperty("routesInline", "# 注释\n\n127.0.0.1\n");
         }
         return new ProxyConfig(options, directory);
     }
@@ -187,9 +186,11 @@ class Http3IntegrationTest {
         }
     }
     @Test void cidrBypassesProxyForLiteralAndResolvedDomainEvenWhenServerIsDown() throws Exception {
-        Files.writeString(directory.resolve("pac.txt"), "127.0.0.0/8\n");
+        var routedOptions = clientConfig("wrong", "localhost", false, 8);
+        var routedValues = routedOptions.values(); routedValues.setProperty("routesInline", "127.0.0.0/8\n");
+        var routedConfig = new ProxyConfig(routedValues, directory);
         server.close();
-        try (var direct = proxy(clientConfig("wrong", "localhost", false, 8)).start()) {
+        try (var direct = proxy(routedConfig).start()) {
             for (String host : List.of("127.0.0.1", "localhost")) {
                 try (Socket s = socket(direct)) {
                     send(s, "CONNECT " + host + ":" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
@@ -204,8 +205,10 @@ class Http3IntegrationTest {
     }
 
     @Test void nonMatchingCidrStillUsesHttp3() throws Exception {
-        Files.writeString(directory.resolve("pac.txt"), "10.0.0.0/8\n");
-        try (var routed = proxy(clientConfig("integration-test-secret", "localhost", false, 8)).start();
+        var routedOptions = clientConfig("integration-test-secret", "localhost", false, 8);
+        var routedValues = routedOptions.values(); routedValues.setProperty("routesInline", "10.0.0.0/8\n");
+        var routedConfig = new ProxyConfig(routedValues, directory);
+        try (var routed = proxy(routedConfig).start();
              Socket s = tunnel(routed, echo.port())) {
             send(s, "proxy");
             assertEquals("proxy", new String(s.getInputStream().readNBytes(5), StandardCharsets.US_ASCII));
@@ -215,11 +218,13 @@ class Http3IntegrationTest {
     }
 
     @Test void cidrAlsoAppliesToOrdinaryHttpRequests() throws Exception {
-        Files.writeString(directory.resolve("pac.txt"), "127.0.0.0/8\n");
+        var routedOptions = clientConfig("wrong", "localhost", false, 8);
+        var routedValues = routedOptions.values(); routedValues.setProperty("routesInline", "127.0.0.0/8\n");
+        var routedConfig = new ProxyConfig(routedValues, directory);
         try (Origin http = new Origin(s -> {
             assertTrue(headers(s.getInputStream()).startsWith("GET /cidr HTTP/1.1"));
             send(s, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
-        }); var direct = proxy(clientConfig("wrong", "localhost", false, 8)).start();
+        }); var direct = proxy(routedConfig).start();
              Socket s = socket(direct)) {
             send(s, "GET http://localhost:" + http.port() + "/cidr HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assertTrue(headers(s.getInputStream()).startsWith("HTTP/1.1 200"));

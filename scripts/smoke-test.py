@@ -83,14 +83,14 @@ def main():
             )
             udp_port = launch(ROOT / "Server/target/Server-1.0-SNAPSHOT.jar", server_config,
                               f"{label} 代理服务端已监听", processes, server_logs)
-            client_config = base / "kernel.json"
-            client_config.write_text(json.dumps({"version": 1, "local": {"port": 0}, "defaultConnectionId": "test",
+            client_database = base / "kernel.db"
+            initial_config = {"version": 1, "local": {"port": 0}, "defaultConnectionId": "test",
                 "connections": [{"id": "test", "name": "测试", "config": {"protocol": protocol,
                 "password": "smoke-only", "server.host": "127.0.0.1", "server.port": udp_port,
-                "tls.ca": str(cert), "tls.serverName": "localhost", "idleTimeoutSeconds": 10}}]}))
+                "tls.ca": str(cert), "tls.serverName": "localhost", "idleTimeoutSeconds": 10}}]}
             endpoint = base / "control.json"
             client = subprocess.Popen(["java", "--enable-native-access=ALL-UNNAMED", "-jar",
-                str(ROOT / "ClientG/target/clientG-1.0-SNAPSHOT.jar"), "--web", "--config", str(client_config),
+                str(ROOT / "ClientG/target/clientG-1.0-SNAPSHOT.jar"), "--web", "--db", str(client_database),
                 "--port", "0", "--endpoint-file", str(endpoint)], cwd=base,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             processes.append(client)
@@ -103,6 +103,11 @@ def main():
             access = json.loads(endpoint.read_text())
             management = http.client.HTTPConnection(access["url"].removeprefix("http://"), timeout=10)
             try:
+                management.request("PUT", "/api/v1/config", json.dumps(initial_config), headers={
+                    "Authorization": "Bearer " + access["token"], "Content-Type": "application/json", "If-Match": "0"})
+                response = management.getresponse()
+                assert response.status == 200, response.read().decode()
+                response.read()
                 management.request("POST", "/api/v1/proxy/start", headers={"Authorization": "Bearer " + access["token"]})
                 response = management.getresponse()
                 assert response.status == 200

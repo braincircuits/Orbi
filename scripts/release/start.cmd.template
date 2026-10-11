@@ -1,11 +1,11 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-set "app_options="
-if "@APP@"=="client" set "app_options=--web --config"
+set app_options="%~dp0config\@CONFIG@"
+if "@APP@"=="client" set "app_options=--web"
 if defined JAVA_HOME (
-    "%JAVA_HOME%\bin\java.exe" --enable-native-access=ALL-UNNAMED -jar "%~dp0@APP@.jar" %app_options% "%~dp0config\@CONFIG@"
+    "%JAVA_HOME%\bin\java.exe" --enable-native-access=ALL-UNNAMED -jar "%~dp0@APP@.jar" %app_options%
 ) else (
-    java --enable-native-access=ALL-UNNAMED -jar "%~dp0@APP@.jar" %app_options% "%~dp0config\@CONFIG@"
+    java --enable-native-access=ALL-UNNAMED -jar "%~dp0@APP@.jar" %app_options%
 )
 exit /b %errorlevel%

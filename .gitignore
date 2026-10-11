@@ -1,6 +1,5 @@
 ### 项目忽略规则
 ### 用户忽略规则
-
 # IntelliJ 项目文件
 .idea
 target
@@ -18,3 +17,10 @@ certs/
 /.codex/
 
 /run/
+
+# 内核数据库、事务文件与实例锁
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.db.lock

@@ -9,10 +9,32 @@ import java.io.IOException;
 /** 只管理本地代理生命周期；调用方通过 KernelControl 的锁串行访问。 */
 final class ProxyRuntime implements AutoCloseable {
     private LocalProxyServer proxy;
+    private com.blacicada.proxy.TrafficStatistics lastTraffic;
+    private final HistoryRecorder history;
+    private final java.util.Map<String, Object> restoredTraffic;
+    ProxyRuntime(HistoryRecorder history, java.util.Map<String, Object> restoredTraffic) {
+        this.history = history; this.restoredTraffic = restoredTraffic;
+    }
+    java.util.Map<String, Object> traffic(boolean history) {
+        if (lastTraffic != null) return lastTraffic.snapshot(history);
+        if (restoredTraffic == null) return com.blacicada.proxy.TrafficStatistics.empty(history);
+        var result = new java.util.LinkedHashMap<>(restoredTraffic);
+        if (!history) result.remove("history");
+        return result;
+    }
 
     /** 运行时诊断与转发共用生效快照；停止时读取待启动的配置。 */
     DirectRoutes routes(KernelConfig config) throws IOException {
         return proxy == null ? DirectRoutes.load(config.local()) : proxy.routes();
+    }
+    LocalProxyServer runningProxy() {
+        if (proxy == null) throw new ControlException(409, "PROXY_STOPPED", "请先开启服务");
+        return proxy;
+    }
+    java.net.InetSocketAddress probeAddress() {
+        var address = runningProxy().address();
+        return address.getAddress().isAnyLocalAddress()
+                ? new java.net.InetSocketAddress(address.getAddress() instanceof java.net.Inet6Address ? "::1" : "127.0.0.1", address.getPort()) : address;
     }
     boolean isRunning() { return proxy != null; }
     String state() { return proxy == null ? "idle" : proxy.connectionState(); }
@@ -30,8 +52,9 @@ final class ProxyRuntime implements AutoCloseable {
     }
     void start(KernelConfig config) throws Exception {
         if (proxy != null) return;
-        if (config.connections().isEmpty()) throw new ControlException(409, "NO_DEFAULT_PROFILE", "请先添加连接配置");
-        proxy = new LocalProxyServer(config).start();
+        if (config.connections().isEmpty() && !config.routingMode().equals("direct")) throw new ControlException(409, "NO_DEFAULT_PROFILE", "请先添加连接配置");
+        proxy = new LocalProxyServer(config, history::traffic, history::access).start();
+        lastTraffic = proxy.traffic();
     }
     void stop() {
         if (proxy != null) { proxy.close(); proxy = null; }
@@ -39,7 +62,7 @@ final class ProxyRuntime implements AutoCloseable {
     void disconnect() throws Exception { if (proxy != null) proxy.disconnect(); }
     void apply(KernelConfig next) throws Exception {
         if (proxy == null) return;
-        if (next.connections().isEmpty()) throw new ControlException(409, "PROXY_RUNNING", "请先停止代理，再删除最后一份连接配置");
+        if (next.connections().isEmpty() && !next.routingMode().equals("direct")) throw new ControlException(409, "PROXY_RUNNING", "请先停止代理，再删除最后一份连接配置");
         if (!requiresRestart(next)) { proxy.apply(next); return; }
         KernelConfig previous = proxy.configuration();
         // 新监听失败时恢复旧配置；已经断开的浏览器连接无法恢复。

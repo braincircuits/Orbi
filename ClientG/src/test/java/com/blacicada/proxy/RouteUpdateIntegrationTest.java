@@ -31,6 +31,7 @@ class RouteUpdateIntegrationTest {
         final LongSupplier accepted;
         final LocalProxyServer proxy;
         final KernelConfig config;
+        final List<Map<String, Object>> access = new CopyOnWriteArrayList<>();
         Fixture(String protocol, int streams) throws Exception {
             Properties values = new Properties();
             values.setProperty("bind", "127.0.0.1"); values.setProperty("port", "0"); values.setProperty("password", "rules-test");
@@ -49,7 +50,7 @@ class RouteUpdateIntegrationTest {
             connection.setProperty("connectTimeoutMillis", "4000");
             Properties local = new Properties(); local.setProperty("port", "0"); local.setProperty("connectTimeoutMillis", "4000");
             config = new KernelConfig(new ProxyConfig(local, directory), List.of(new KernelConfig.Profile("test", "测试节点", new ProxyConfig(connection, directory))), "test");
-            proxy = new LocalProxyServer(config).start();
+            proxy = new LocalProxyServer(config, null, access::add).start();
             workers.submit(() -> {
                 while (!origin.isClosed()) try {
                     Socket socket = origin.accept(); workers.submit(() -> {
@@ -91,6 +92,85 @@ class RouteUpdateIntegrationTest {
     }
 
     @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
+    void trafficCountsOrdinaryHttpHeadersAndBodyOnce(String protocol) throws Exception {
+        try (var fixture = new Fixture(protocol, 32); var origin = new ServerSocket(0); var browser = new Socket()) {
+            browser.connect(fixture.proxy.address()); browser.setSoTimeout(5000); origin.setSoTimeout(5000);
+            browser.getOutputStream().write(("POST http://127.0.0.1:" + origin.getLocalPort()
+                    + "/ HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\nabc").getBytes(StandardCharsets.US_ASCII));
+            long uploaded;
+            byte[] response = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nxyz".getBytes(StandardCharsets.US_ASCII);
+            try (Socket remote = origin.accept()) {
+                remote.setSoTimeout(5000);
+                uploaded = headers(remote).getBytes(StandardCharsets.US_ASCII).length + 3;
+                assertEquals("abc", new String(remote.getInputStream().readNBytes(3), StandardCharsets.US_ASCII));
+                remote.getOutputStream().write(response);
+                assertArrayEquals(response, browser.getInputStream().readNBytes(response.length));
+            }
+            long expected = uploaded;
+            await(() -> { fixture.proxy.traffic().sample(); return fixture.proxy.traffic().snapshot(false).get("sentBytes").equals(expected); });
+            assertEquals((long) response.length, fixture.proxy.traffic().snapshot(false).get("receivedBytes"));
+        }
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
+    void trafficIncludesProxyAndDirectPayloadWithoutConnectHandshake(String protocol) throws Exception {
+        try (var fixture = new Fixture(protocol, 32)) {
+            fixture.rules("localhost");
+            try (Socket proxied = fixture.tunnel("127.0.0.1"); Socket direct = fixture.tunnel("localhost")) {
+                byte[] bytes = new byte[32768]; new Random(42).nextBytes(bytes);
+                for (Socket socket : List.of(proxied, direct)) {
+                    socket.getOutputStream().write(bytes);
+                    assertArrayEquals(bytes, socket.getInputStream().readNBytes(bytes.length));
+                }
+                await(() -> {
+                    fixture.proxy.traffic().sample();
+                    return fixture.proxy.traffic().snapshot(false).get("sentBytes").equals(65536L);
+                });
+                assertEquals(65536L, fixture.proxy.traffic().snapshot(false).get("receivedBytes"));
+                var recorded = fixture.access.stream().filter(item -> item.get("state").equals("connected")).toList();
+                assertEquals(2, recorded.size());
+                assertEquals(Set.of("direct", "proxy"), recorded.stream().map(item -> item.get("route")).collect(java.util.stream.Collectors.toSet()));
+                assertTrue(recorded.stream().allMatch(item -> item.get("method").equals("CONNECT")));
+                String session = (String) fixture.proxy.traffic().snapshot(false).get("sessionId");
+                fixture.rules("");
+                assertEquals(session, fixture.proxy.traffic().snapshot(false).get("sessionId"));
+            }
+        }
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
+    void globalModesOverrideRulesAndLatencyUsesCurrentTransport(String protocol) throws Exception {
+        try (var fixture = new Fixture(protocol, 32)) {
+            assertTrue(fixture.proxy.latency().get(5, TimeUnit.SECONDS) > 0);
+            assertTrue(fixture.proxy.tunnels().isEmpty());
+            fixture.rules("localhost");
+            try (Socket direct = fixture.tunnel("localhost")) {
+                echo(direct);
+                Properties local = fixture.proxy.configuration().local().values();
+                local.setProperty("routingMode", "proxy");
+                var forced = new KernelConfig(new ProxyConfig(local, directory), fixture.config.connections(), "test");
+                fixture.proxy.apply(forced);
+                assertEquals(-1, direct.getInputStream().read());
+                try (Socket proxied = fixture.tunnel("localhost")) {
+                    echo(proxied); assertEquals("proxy", fixture.proxy.tunnels().getFirst().get("route"));
+                    local.setProperty("routingMode", "direct");
+                    fixture.proxy.apply(new KernelConfig(new ProxyConfig(local, directory), fixture.config.connections(), "test"));
+                    assertEquals(-1, proxied.getInputStream().read());
+                    assertEquals("unused", fixture.proxy.connectionState());
+                    assertThrows(ExecutionException.class, () -> fixture.proxy.latency().get(1, TimeUnit.SECONDS));
+                }
+                try (Socket bypass = fixture.tunnel("127.0.0.1")) {
+                    echo(bypass); assertEquals("direct", fixture.proxy.tunnels().getFirst().get("route"));
+                    local.setProperty("routingMode", "rules");
+                    fixture.proxy.apply(new KernelConfig(new ProxyConfig(local, directory), fixture.config.connections(), "test"));
+                    assertEquals(-1, bypass.getInputStream().read());
+                    try (Socket restored = fixture.tunnel("127.0.0.1")) { echo(restored); }
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
     void domainChangesOnlyCloseAffectedTunnelsAndKeepSharedConnection(String protocol) throws Exception {
         try (var fixture = new Fixture(protocol, 32);
              Socket affected = fixture.tunnel("localhost"); Socket unaffected = fixture.tunnel("127.0.0.1")) {
@@ -127,15 +207,14 @@ class RouteUpdateIntegrationTest {
     }
 
     @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
-    void fileReloadChangesNetworkRoutesAndPreservesUnchangedDirectConnection(String protocol) throws Exception {
+    void ruleUpdateChangesNetworkRoutesAndPreservesUnchangedDirectConnection(String protocol) throws Exception {
         try (var fixture = new Fixture(protocol, 32)) {
-            Path file = directory.resolve("pac.txt"); Files.writeString(file, "localhost"); fixture.proxy.apply(fixture.config);
+            fixture.rules("localhost");
             try (Socket direct = fixture.tunnel("localhost"); Socket affected = fixture.tunnel("127.0.0.1")) {
-                Files.writeString(file, "localhost\n127.0.0.1/32"); echo(affected);
-                fixture.proxy.apply(fixture.config); assertEquals(-1, affected.getInputStream().read()); echo(direct);
+                echo(affected); fixture.rules("localhost\n127.0.0.1/32"); assertEquals(-1, affected.getInputStream().read()); echo(direct);
                 try (Socket networkDirect = fixture.tunnel("127.0.0.1")) {
-                    Files.writeString(file, "127.10.0.1/8\nlocalhost"); fixture.proxy.apply(fixture.config); echo(networkDirect); echo(direct);
-                    Files.writeString(file, "localhost"); fixture.proxy.apply(fixture.config);
+                    fixture.rules("127.10.0.1/8\nlocalhost"); echo(networkDirect); echo(direct);
+                    fixture.rules("localhost");
                     assertEquals(-1, networkDirect.getInputStream().read()); echo(direct);
                 }
                 assertEquals(1, fixture.accepted.getAsLong());

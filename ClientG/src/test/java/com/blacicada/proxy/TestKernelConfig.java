@@ -8,7 +8,7 @@ import java.util.*;
 final class TestKernelConfig {
     static KernelConfig from(ProxyConfig options) {
         Properties local = new Properties(), connection = options.values();
-        for (String key : List.of("bind", "port", "routesFile", "routesInline")) {
+        for (String key : List.of("bind", "port", "routesInline")) {
             Object value = connection.remove(key);
             if (value != null) local.put(key, value);
         }

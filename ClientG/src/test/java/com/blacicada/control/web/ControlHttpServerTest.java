@@ -25,7 +25,7 @@ class ControlHttpServerTest {
     final String token = "management-test-token-at-least-32-characters";
     long revision;
     @BeforeEach void start() throws Exception {
-        control = new KernelControl(directory.resolve("kernel.json"));
+        control = new KernelControl(directory.resolve("kernel.db"));
         web = new ControlHttpServer(control, 0, token, Set.of("http://localhost:3000")); web.start();
         client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
     }
@@ -53,6 +53,52 @@ class ControlHttpServerTest {
         if (certificate) { p.getAsJsonObject("config").addProperty("tls.ca", resource("localhost.crt")); p.getAsJsonObject("config").addProperty("tls.serverName", "localhost"); }
         ok("POST", "/profiles", p.toString(), 201);
     }
+    KernelConfig persisted() throws Exception {
+        // 通过独立只读 SQL 查询验证提交结果，不另开一个持有进程锁的内核。
+        try (var db = java.sql.DriverManager.getConnection("jdbc:sqlite:" + directory.resolve("kernel.db"))) {
+            JsonObject root = control.configuration();
+            try (var query = db.createStatement(); var rows = query.executeQuery("SELECT revision FROM metadata")) {
+                assertTrue(rows.next()); assertEquals(revision, rows.getLong(1));
+            }
+            try (var query = db.createStatement(); var rows = query.executeQuery("SELECT profile_id,value FROM profile_settings WHERE key='password'")) {
+                while (rows.next()) for (var item : root.getAsJsonArray("connections"))
+                    if (item.getAsJsonObject().get("id").getAsString().equals(rows.getString(1)))
+                        item.getAsJsonObject().getAsJsonObject("config").addProperty("password", rows.getString(2));
+            }
+            try (var query = db.createStatement(); var rows = query.executeQuery("SELECT mode,direct_rules FROM routing")) {
+                assertTrue(rows.next()); root.getAsJsonObject("local").addProperty("routingMode", rows.getString(1));
+                root.getAsJsonObject("local").addProperty("routesInline", rows.getString(2));
+            }
+            return KernelConfig.parse(root, directory);
+        }
+    }
+    @Test void overviewRequiresRunningServiceAndModesAreRevisionedAndPersistent() throws Exception {
+        ok("POST", "/overview/websites", null, 409);
+        ok("POST", "/overview/exit-ip", null, 409);
+        ok("POST", "/overview/latency", null, 409);
+        ok("PUT", "/routing/mode", "{\"mode\":\"invalid\"}", 400);
+        ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
+        ok("PATCH", "/settings", "{\"port\":0}", 200);
+        var started = ok("POST", "/proxy/start", null, 200).getAsJsonObject("data");
+        assertEquals("direct", started.get("routingMode").getAsString());
+        assertEquals("unused", started.get("connection").getAsString());
+        long generation = started.get("networkGeneration").getAsLong();
+        ok("POST", "/overview/latency", null, 409);
+        var resolved = ok("POST", "/routing/resolve", "{\"target\":\"example.com:443\"}", 202);
+        String id = resolved.getAsJsonObject("data").get("id").getAsString();
+        for (int i = 0; i < 100; i++) {
+            var task = ok("GET", "/operations/" + id, null, 200).getAsJsonObject("data");
+            if (task.get("state").getAsString().equals("succeeded")) {
+                assertEquals("global_mode", task.getAsJsonObject("result").get("matchedBy").getAsString()); break;
+            }
+            Thread.sleep(10);
+        }
+        assertEquals("succeeded", ok("GET", "/operations/" + id, null, 200).getAsJsonObject("data").get("state").getAsString());
+        assertEquals("direct", persisted().routingMode());
+        var stopped = ok("POST", "/proxy/stop", null, 200).getAsJsonObject("data");
+        assertTrue(stopped.get("networkGeneration").getAsLong() > generation);
+    }
+
     @Test void authenticatesAndRejectsUntrustedOriginsAndMalformedBodies() throws Exception {
         var anonymous = client.send(HttpRequest.newBuilder(URI.create(web.url() + "/api/v1/health")).build(), HttpResponse.BodyHandlers.ofString());
         assertEquals(401, anonymous.statusCode());
@@ -63,6 +109,39 @@ class ControlHttpServerTest {
         assertEquals(413, request("PUT", "/config", "x".repeat(1_048_577), "If-Match", "0").statusCode());
         ok("POST", "/proxy/start", null, 409);
         ok("GET", "/health", null, 200);
+    }
+    @Test void trafficApiRetainsStoppedHistoryAndResetsOnStart() throws Exception {
+        var empty = ok("GET", "/traffic", null, 200).getAsJsonObject("data");
+        assertEquals("", empty.get("sessionId").getAsString());
+        assertTrue(empty.getAsJsonArray("history").isEmpty());
+        ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
+        ok("PATCH", "/settings", "{\"port\":0}", 200);
+        var started = ok("POST", "/proxy/start", null, 200).getAsJsonObject("data").getAsJsonObject("traffic");
+        assertFalse(started.has("history"));
+        Thread.sleep(1100);
+        var live = ok("GET", "/traffic", null, 200).getAsJsonObject("data");
+        assertTrue(live.getAsJsonArray("history").size() >= 2);
+        assertTrue(((Map<?, ?>) control.snapshot().get("traffic")).containsKey("history"));
+        var stopped = ok("POST", "/proxy/stop", null, 200).getAsJsonObject("data").getAsJsonObject("traffic");
+        assertEquals(started.get("sessionId"), stopped.get("sessionId"));
+        assertEquals(0, stopped.get("sendBytesPerSecond").getAsDouble());
+        var next = ok("POST", "/proxy/start", null, 200).getAsJsonObject("data").getAsJsonObject("traffic");
+        assertNotEquals(started.get("sessionId"), next.get("sessionId"));
+        assertEquals(0, next.get("sentBytes").getAsLong());
+    }
+    @Test void historyEndpointsValidateRangesAndPaginatePersistentSamples() throws Exception {
+        ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
+        ok("PATCH", "/settings", "{\"port\":0}", 200);
+        ok("POST", "/proxy/start", null, 200); ok("POST", "/proxy/stop", null, 200);
+        var page = ok("GET", "/traffic/history?limit=1", null, 200).getAsJsonObject("data");
+        assertEquals(1, page.getAsJsonArray("items").size());
+        assertTrue(page.get("hasMore").getAsBoolean());
+        var older = ok("GET", "/traffic/history?beforeId=" + page.get("nextBeforeId").getAsLong(), null, 200).getAsJsonObject("data");
+        assertFalse(older.getAsJsonArray("items").isEmpty());
+        assertTrue(ok("GET", "/access-records?target=example.com", null, 200).getAsJsonObject("data").getAsJsonArray("items").isEmpty());
+        ok("GET", "/traffic/history?limit=501", null, 400);
+        ok("GET", "/access-records?from=2&to=1", null, 400);
+        ok("GET", "/access-records?beforeId=invalid", null, 400);
     }
     @Test void tunnelApiAndEventsIncludeDirectConnectionsAndClearOnStop() throws Exception {
         assertTrue(ok("GET", "/tunnels", null, 200).getAsJsonArray("data").isEmpty());
@@ -100,15 +179,13 @@ class ControlHttpServerTest {
         ok("PATCH", "/profiles/a", "{\"name\":\"重命名\"}", 200);
         assertEquals(409, request("PATCH", "/profiles/a", "{}", "If-Match", "" + first).statusCode());
         ok("POST", "/profiles", profile("duplicate", "http2", 4433), 409);
-        ok("POST", "/config/save", null, 200);
-        var loaded = KernelConfig.load(directory.resolve("kernel.json"));
+        var loaded = persisted();
         assertEquals("test-secret", loaded.profile("a").config().required("password"));
         assertEquals("重命名", loaded.profile("a").name());
-        assertFalse(ok("GET", "/status", null, 200).get("dirty").getAsBoolean());
+        assertFalse(ok("GET", "/status", null, 200).has("dirty"));
         ok("DELETE", "/profiles/a", null, 200);
         assertEquals(0, ok("GET", "/profiles", null, 200).getAsJsonArray("data").size());
-        ok("POST", "/config/save", null, 200);
-        assertTrue(KernelConfig.load(directory.resolve("kernel.json")).connections().isEmpty());
+        assertTrue(persisted().connections().isEmpty());
         web.writeEndpoint(directory.resolve("control.json"));
         assertTrue(Files.readString(directory.resolve("control.json")).contains(token));
         assertEquals("rw-------", java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(directory.resolve("control.json"))));
@@ -201,26 +278,19 @@ class ControlHttpServerTest {
             assertFalse(ok("GET", "/status", null, 200).getAsJsonObject("data").get("running").getAsBoolean());
         }
     }
-    @Test void routingDiagnosticsUseActiveRulesUntilExplicitReload() throws Exception {
-        Path rules = directory.resolve("active-rules.txt"); Files.writeString(rules, "127.0.0.0/8\n");
+    @Test void routingDiagnosticsUseCurrentDatabaseRules() throws Exception {
         addProfile("a", "http2", 4433, false);
-        JsonObject settings = new JsonObject(); settings.addProperty("port", 0); settings.addProperty("routesFile", rules.toString());
-        ok("PATCH", "/settings", settings.toString(), 200); ok("POST", "/proxy/start", null, 200);
-        // 外部文件变更尚未重载时，诊断必须与正在转发的规则快照一致。
-        Files.writeString(rules, "");
-        assertEquals("127.0.0.0/8\n", ok("GET", "/routing", null, 200).getAsJsonObject("data").get("directRules").getAsString());
+        ok("PATCH", "/settings", "{\"port\":0,\"routesInline\":\"127.0.0.0/8\"}", 200);
+        ok("POST", "/proxy/start", null, 200);
         String job = ok("POST", "/routing/resolve", "{\"target\":\"127.0.0.1:80\"}", 202).getAsJsonObject("data").get("id").getAsString();
         assertEquals("direct", awaitJob(job).getAsJsonObject("result").get("action").getAsString());
-        ok("POST", "/routing/reload", null, 200);
-        assertEquals("", ok("GET", "/routing", null, 200).getAsJsonObject("data").get("directRules").getAsString());
+        ok("PUT", "/routing/direct-rules", "{\"rules\":\"\"}", 200);
         job = ok("POST", "/routing/resolve", "{\"target\":\"127.0.0.1:80\"}", 202).getAsJsonObject("data").get("id").getAsString();
         assertEquals("proxy", awaitJob(job).getAsJsonObject("result").get("action").getAsString());
     }
-    @Test void targetRoutesPreserveFileSourcePersistAndRestoreAutomaticRules() throws Exception {
+    @Test void targetRoutesPreserveRuleTextPersistAndRestoreAutomaticRules() throws Exception {
         addProfile("a", "http2", 4433, false);
-        Path rules = directory.resolve("target-rules.txt");
-        Files.writeString(rules, "example.com\n127.0.0.0/8\n");
-        JsonObject settings = new JsonObject(); settings.addProperty("routesFile", rules.toString());
+        JsonObject settings = new JsonObject(); settings.addProperty("routesInline", "example.com\n127.0.0.0/8\n");
         ok("PATCH", "/settings", settings.toString(), 200);
         long original = revision;
         String proxy = "{\"target\":\"WWW.Example.COM.:443\",\"route\":\"proxy\"}";
@@ -235,13 +305,10 @@ class ControlHttpServerTest {
         var forcedResult = awaitJob(forcedJob).getAsJsonObject("result");
         assertEquals("proxy", forcedResult.get("action").getAsString());
         assertEquals("target_rule", forcedResult.get("matchedBy").getAsString());
-        ok("POST", "/config/save", null, 200);
-        var loaded = KernelConfig.load(directory.resolve("kernel.json"));
-        assertEquals(rules.toString(), loaded.local().get("routesFile", ""));
-        assertFalse(loaded.local().values().containsKey("routesInline"));
+        var loaded = persisted();
+        assertEquals("example.com\n127.0.0.0/8\n", loaded.local().values().getProperty("routesInline"));
         var snapshot = com.blacicada.config.DirectRoutes.load(loaded.local());
         assertFalse(snapshot.matches("www.example.com")); assertTrue(snapshot.matches("2001:0db8::1"));
-        assertEquals("example.com\n127.0.0.0/8\n", Files.readString(rules));
         ok("PUT", "/routing/targets", "{\"target\":\"www.example.com:80\",\"route\":\"auto\"}", 200);
         assertFalse(ok("GET", "/routing", null, 200).getAsJsonObject("data").getAsJsonObject("targetRoutes").has("www.example.com"));
         String job = ok("POST", "/routing/resolve", "{\"target\":\"www.example.com:443\"}", 202).getAsJsonObject("data").get("id").getAsString();
@@ -279,6 +346,81 @@ class ControlHttpServerTest {
             var codes = new ArrayList<>(List.of(one.get().statusCode(), two.get().statusCode()));
             Collections.sort(codes); assertEquals(List.of(200, 409), codes);
         }
+    }
+    @Test void routingExportImportIsAtomicVersionedAndPersistsAcrossRestart() throws Exception {
+        addProfile("a", "http2", 4433, false);
+        JsonObject document = JsonParser.parseString("""
+                {"version":1,"mode":"direct","defaultConnectionId":"a",
+                 "directRules":" # 注释\\r\\nexample.com\\r\\n",
+                 "targetRoutes":{"WWW.Example.COM.":"proxy","::1":"direct"}}
+                """).getAsJsonObject();
+        long before = revision;
+        assertEquals(428, request("POST", "/routing/import", document.toString()).statusCode());
+        ok("POST", "/routing/import", document.toString(), 200);
+        assertEquals(before + 1, revision);
+        JsonObject exported = ok("GET", "/routing/export", null, 200).getAsJsonObject("data");
+        assertFalse(exported.toString().contains("test-secret"));
+        assertEquals("proxy", exported.getAsJsonObject("targetRoutes").get("www.example.com").getAsString());
+        for (String invalid : List.of("version", "mode", "defaultConnectionId", "directRules", "targetRoutes")) {
+            JsonObject broken = exported.deepCopy();
+            switch (invalid) {
+                case "version" -> broken.addProperty(invalid, 99);
+                case "mode" -> broken.addProperty(invalid, "invalid");
+                case "defaultConnectionId" -> broken.addProperty(invalid, "不存在");
+                case "directRules" -> broken.addProperty(invalid, "10.0.0.0/99");
+                case "targetRoutes" -> broken.getAsJsonObject(invalid).addProperty("bad/host", "proxy");
+            }
+            long unchanged = revision;
+            ok("POST", "/routing/import", broken.toString(), 400);
+            assertEquals(unchanged, revision);
+            assertEquals(exported, ok("GET", "/routing/export", null, 200).getAsJsonObject("data"));
+        }
+        assertEquals(409, request("POST", "/routing/import", exported.toString(), "If-Match", "" + before).statusCode());
+        ok("PUT", "/routing/direct-rules", "{\"rules\":\"\"}", 200);
+        ok("POST", "/routing/import", exported.toString(), 200);
+        long saved = revision;
+        web.close();
+        control = new KernelControl(directory.resolve("kernel.db"));
+        web = new ControlHttpServer(control, 0, token, Set.of()); web.start();
+        assertEquals(saved, control.metadata().get("revision"));
+        assertEquals(exported, ok("GET", "/routing/export", null, 200).getAsJsonObject("data"));
+        assertFalse(ok("GET", "/status", null, 200).getAsJsonObject("data").get("running").getAsBoolean());
+        ok("POST", "/config/save", null, 404);
+        ok("POST", "/routing/reload", null, 404);
+        ok("PATCH", "/settings", "{\"routesFile\":\"pac.txt\"}", 400);
+    }
+    @Test void failedDatabaseWriteDoesNotChangeConfigurationOrVersion() throws Exception {
+        addProfile("a", "http2", 4433, false);
+        var before = control.configuration(); long unchanged = revision;
+        try (var db = java.sql.DriverManager.getConnection("jdbc:sqlite:" + directory.resolve("kernel.db"));
+             var sql = db.createStatement()) {
+            sql.execute("CREATE TRIGGER reject_settings BEFORE INSERT ON settings BEGIN SELECT RAISE(ABORT,'测试写入失败'); END");
+            ok("PATCH", "/settings", "{\"port\":12345}", 503);
+            assertEquals(unchanged, revision); assertEquals(before, control.configuration());
+            sql.execute("DROP TRIGGER reject_settings");
+            ok("PATCH", "/settings", "{\"port\":12345}", 200);
+            assertEquals(unchanged + 1, revision);
+        }
+    }
+    @Test void failedCommitRestoresRunningConfiguration() throws Exception {
+        addProfile("a", "http2", 4433, false);
+        ok("PATCH", "/settings", "{\"port\":0,\"routingMode\":\"direct\"}", 200);
+        ok("POST", "/proxy/start", null, 200);
+        long unchanged = revision;
+        try (var reader = java.sql.DriverManager.getConnection("jdbc:sqlite:" + directory.resolve("kernel.db"))) {
+            reader.setAutoCommit(false);
+            try (var query = reader.createStatement(); var rows = query.executeQuery("SELECT revision FROM metadata")) {
+                assertTrue(rows.next());
+                // 持有读取事务，使候选配置写入后无法获得提交所需的排他锁。
+                ok("PUT", "/routing/mode", "{\"mode\":\"rules\"}", 503);
+                assertEquals(unchanged, revision);
+                assertEquals("direct", control.routing().get("mode"));
+                assertTrue((boolean) control.status().get("running"));
+                assertEquals("unused", control.status().get("connection"));
+            }
+            reader.rollback();
+        }
+        assertEquals("direct", persisted().routingMode());
     }
     @Test void diagnosticsLimitAndCancellationReleaseWorkSlots() throws Exception {
         try (var blackhole = new ServerSocket(0)) {
@@ -327,7 +469,7 @@ class ControlHttpServerTest {
         }
     }
     @Test void rejectsRemovedStandaloneAndPipeModes() {
-        for (String[] args : List.of(new String[]{"--ui"}, new String[]{"kernel.json"}, new String[0])) {
+        for (String[] args : List.of(new String[]{"--ui"}, new String[]{"kernel.db"}, new String[0])) {
             var error = assertThrows(IllegalArgumentException.class, () -> com.blacicada.ClientApplication.main(args));
             assertTrue(error.getMessage().contains("--web"));
         }

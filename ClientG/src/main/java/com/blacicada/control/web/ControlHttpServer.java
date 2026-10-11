@@ -108,10 +108,10 @@ public final class ControlHttpServer implements AutoCloseable {
             exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
             exchange.sendResponseHeaders(200, 0);
             OutputStream output = exchange.getResponseBody();
-            if (previous == null) writeEvent(output, cursor, "snapshot", control.status());
+            if (previous == null) writeEvent(output, cursor, "snapshot", control.snapshot());
             while (!closed.get()) {
                 var batch = control.events().await(cursor, 10000);
-                if (batch.reset()) writeEvent(output, batch.cursor(), "snapshot", control.status());
+                if (batch.reset()) writeEvent(output, batch.cursor(), "snapshot", control.snapshot());
                 else if (batch.events().isEmpty()) { output.write(": 保持管理订阅\n\n".getBytes(StandardCharsets.UTF_8)); output.flush(); }
                 else for (var event : batch.events()) writeEvent(output, event.id(), event.type(), event.data());
                 cursor = batch.cursor();

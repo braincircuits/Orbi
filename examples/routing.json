@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "mode": "rules",
+  "defaultConnectionId": "node-h3",
+  "directRules": "# 本机和内网直连\nlocalhost\n127.0.0.0/8\n10.0.0.0/8\n192.168.0.0/16\n",
+  "targetRoutes": {
+    "www.example.com": "proxy"
+  }
+}

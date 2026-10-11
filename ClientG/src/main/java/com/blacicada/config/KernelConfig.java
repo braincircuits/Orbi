@@ -1,7 +1,6 @@
 package com.blacicada.config;
 
 import com.blacicada.common.*;
-import com.blacicada.io.PrivateFiles;
 import com.google.gson.*;
 import io.netty.util.NetUtil;
 import java.net.IDN;
@@ -9,13 +8,15 @@ import java.nio.file.*;
 import java.util.*;
 import java.io.IOException;
 
-/** 不可变配置快照；文件和控制接口使用相同的校验入口。 */
+/** 不可变配置快照；数据库和控制接口使用相同的校验入口。 */
 public record KernelConfig(ProxyConfig local, List<Profile> connections, String defaultConnectionId) {
     private static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Set<String> CONNECTION_KEYS = Set.of("protocol", "server.host", "server.port", "username", "password",
             "tls.ca", "tls.serverName", "connectTimeoutMillis", "idleTimeoutSeconds", "maxStreams");
     public record Profile(String id, String name, ProxyConfig config) {
         public Profile {
+            for (String key : config.values().stringPropertyNames())
+                if (!CONNECTION_KEYS.contains(key)) throw new IllegalArgumentException("未知连接配置字段：" + key);
             if (id == null || !id.matches("[A-Za-z0-9_.-]{1,64}")) throw new IllegalArgumentException("连接 ID 无效");
             if (name == null || name.isBlank()) throw new IllegalArgumentException("连接名称不能为空");
             String protocol = config.get("protocol", "http3");
@@ -43,12 +44,13 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
         }
         if (defaultConnectionId == null || (connections.isEmpty() ? !defaultConnectionId.isEmpty() : !ids.contains(defaultConnectionId))) throw new IllegalArgumentException("默认连接不存在");
         for (String key : local.values().stringPropertyNames())
-            if (!Set.of("bind", "port", "routesInline", "routesFile", "routesOverrides", "connectTimeoutMillis").contains(key))
+            if (!Set.of("bind", "port", "routesInline", "routesOverrides", "routingMode", "connectTimeoutMillis").contains(key))
                 throw new IllegalArgumentException("未知内核公共配置字段：" + key);
         local.integer("port", 8080, 0, 65535); local.connectTimeoutMillis();
         try { DirectRoutes.load(local); }
         catch (IOException e) { throw new IllegalArgumentException("直连规则无效", e); }
     }
+    public String routingMode() { return local.get("routingMode", "rules"); }
     public Profile profile(String id) {
         return connections.stream().filter(p -> p.id().equals(id)).findFirst().orElseThrow(() -> new IllegalArgumentException("连接不存在"));
     }
@@ -58,10 +60,6 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
         if (id.equals(defaultConnectionId)) throw new IllegalArgumentException("请先切换默认连接，再删除此配置");
         return new KernelConfig(local, connections.stream().filter(p -> !p.id().equals(id)).toList(), defaultConnectionId);
     }
-    public static KernelConfig load(Path file) throws IOException {
-        if (!file.toString().endsWith(".json")) throw new IllegalArgumentException("代理内核只接受 kernel.json 格式的 JSON 配置");
-        return parse(JsonParser.parseString(Files.readString(file)).getAsJsonObject(), file.toAbsolutePath().getParent());
-    }
     public static KernelConfig parse(JsonObject root, Path base) {
         if (root.get("version").getAsInt() != 1) throw new IllegalArgumentException("不支持的配置版本");
         List<Profile> profiles = new ArrayList<>();
@@ -70,7 +68,6 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
     }
     private static Profile parseProfile(JsonObject object, Path base) {
         Properties p = properties(object.getAsJsonObject("config"));
-        for (String key : p.stringPropertyNames()) if (!CONNECTION_KEYS.contains(key)) throw new IllegalArgumentException("未知连接配置字段：" + key);
         return new Profile(object.get("id").getAsString(), object.get("name").getAsString(), new ProxyConfig(p, base));
     }
     private static Properties properties(JsonObject object) {
@@ -81,7 +78,6 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
     public JsonObject json(boolean secrets) {
         JsonObject root = new JsonObject(); root.addProperty("version", 1);
         Properties localValues = local.values();
-        if (localValues.containsKey("routesFile")) localValues.setProperty("routesFile", local.path("routesFile", "").toString());
         root.add("local", JSON.toJsonTree(localValues)); root.addProperty("defaultConnectionId", defaultConnectionId);
         JsonArray all = new JsonArray();
         for (Profile profile : connections) {
@@ -92,10 +88,6 @@ public record KernelConfig(ProxyConfig local, List<Profile> connections, String 
             item.add("config", JSON.toJsonTree(values)); all.add(item);
         }
         root.add("connections", all); return root;
-    }
-    /** 写入同目录临时文件后原子替换，避免崩溃产生半份配置。 */
-    public void save(Path file) throws IOException {
-        PrivateFiles.writeAtomic(file, JSON.toJson(json(true)) + "\n");
     }
     private static String normalizedHost(String input) {
         String host = input.trim();

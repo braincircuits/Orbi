@@ -21,6 +21,15 @@ final class ControlApi {
                 case "GET /api/v1/info" -> data = control.info();
                 case "GET /api/v1/health" -> data = Map.of("ready", true);
                 case "GET /api/v1/status" -> data = control.status();
+                case "GET /api/v1/traffic" -> data = control.traffic();
+                case "GET /api/v1/traffic/history", "GET /api/v1/access-records" -> {
+                    var query = query(uri);
+                    boolean traffic = path.endsWith("/traffic/history");
+                    data = control.history(traffic, Long.parseLong(query.getOrDefault("from", "0")),
+                            Long.parseLong(query.getOrDefault("to", Long.toString(Long.MAX_VALUE))),
+                            Long.parseLong(query.getOrDefault("beforeId", Long.toString(Long.MAX_VALUE))),
+                            Integer.parseInt(query.getOrDefault("limit", "100")), query.getOrDefault(traffic ? "sessionId" : "target", ""));
+                }
                 case "GET /api/v1/tunnels" -> data = control.tunnels();
                 case "POST /api/v1/proxy/start" -> { control.start(); data = control.status(); }
                 case "POST /api/v1/proxy/stop" -> { control.stop(); data = control.status(); }
@@ -31,17 +40,21 @@ final class ControlApi {
                 case "GET /api/v1/config" -> data = control.configuration();
                 case "POST /api/v1/config/validate" -> data = control.validate(body);
                 case "PUT /api/v1/config" -> { control.configure(body, revision(ifMatch)); data = control.configuration(); }
-                case "POST /api/v1/config/save" -> { control.save(revision(ifMatch)); data = control.metadata(); }
                 case "GET /api/v1/settings" -> data = control.settings();
                 case "PATCH /api/v1/settings" -> { control.patchSettings(body, revision(ifMatch)); data = control.settings(); }
                 case "GET /api/v1/profiles" -> data = control.configuration().getAsJsonArray("connections");
                 case "POST /api/v1/profiles" -> { String id = control.createProfile(body, revision(ifMatch)); data = control.profile(id); status = 201; }
+                case "PUT /api/v1/routing/mode" -> { control.mode(string(body, "mode"), revision(ifMatch)); data = control.routing(); }
+                case "POST /api/v1/overview/websites" -> { data = control.networkTest("websites"); status = 202; }
+                case "POST /api/v1/overview/exit-ip" -> { data = control.networkTest("exit-ip"); status = 202; }
+                case "POST /api/v1/overview/latency" -> { data = control.networkTest("latency"); status = 202; }
+                case "GET /api/v1/routing/export" -> data = control.exportRouting();
+                case "POST /api/v1/routing/import" -> { control.importRouting(body, revision(ifMatch)); data = control.routing(); }
                 case "GET /api/v1/routing" -> data = control.routing();
                 case "PUT /api/v1/routing/default" -> { control.select(string(body, "profileId"), revision(ifMatch)); data = control.routing(); }
                 case "PUT /api/v1/routing/direct-rules" -> { control.updateRules(string(body, "rules"), revision(ifMatch)); data = control.routing(); }
                 case "PUT /api/v1/routing/targets" -> { control.routeTarget(string(body, "target"), string(body, "route"), revision(ifMatch)); data = control.routing(); }
                 case "POST /api/v1/routing/validate" -> { KernelControl.validateRules(string(body, "rules")); data = Map.of("valid", true); }
-                case "POST /api/v1/routing/reload" -> { control.reloadRules(revision(ifMatch)); data = control.routing(); }
                 case "POST /api/v1/routing/resolve" -> { data = control.resolve(string(body, "target")); status = 202; }
                 case "GET /api/v1/logs" -> {
                     Map<String, String> query = query(uri);

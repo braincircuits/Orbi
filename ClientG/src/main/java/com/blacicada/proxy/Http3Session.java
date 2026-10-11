@@ -149,6 +149,21 @@ public final class Http3Session implements ProxySession {
         }
     }
 
+    @Override public Future<Double> latency() {
+        Promise<Double> result = loop.newPromise();
+        loop.execute(() -> acquire().addListener(ready -> {
+            if (result.isDone()) return;
+            if (!ready.isSuccess()) { result.tryFailure(ready.cause()); return; }
+            QuicChannel channel = (QuicChannel) ready.getNow();
+            channel.collectPathStats(0).addListener(measured -> {
+                if (!measured.isSuccess()) { result.tryFailure(measured.cause()); return; }
+                long nanos = ((QuicConnectionPathStats) measured.getNow()).rtt();
+                if (nanos <= 0) result.tryFailure(new IOException("当前 QUIC 连接尚无有效 RTT 样本"));
+                else result.trySuccess(nanos / 1_000_000.0);
+            });
+        }));
+        return result;
+    }
     private Future<QuicChannel> acquire() {
         if (closed) return loop.newFailedFuture(new IOException("代理会话已关闭"));
         if (connection != null && connection.isActive()) return loop.newSucceededFuture(connection);

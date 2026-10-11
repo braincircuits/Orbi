@@ -12,7 +12,7 @@ release/
 └── client/
     ├── client.jar
     ├── start.sh / start.cmd / background.sh
-    ├── config/kernel.json、pac.txt
+    ├── kernel.db
     └── certs/server.crt
 ```
 
@@ -36,7 +36,7 @@ macOS / Linux，在此发布目录下运行：
 
 ```sh
 java --enable-native-access=ALL-UNNAMED -jar server/server.jar server/config/server.properties
-java --enable-native-access=ALL-UNNAMED -jar client/client.jar --web --config client/config/kernel.json
+java --enable-native-access=ALL-UNNAMED -jar client/client.jar --web
 ```
 
 ## Web 管理模式
@@ -44,12 +44,12 @@ java --enable-native-access=ALL-UNNAMED -jar client/client.jar --web --config cl
 Flutter 代理客户端可通过本机 Web 接口控制代理内核，在发布目录执行：
 
 ```sh
-java --enable-native-access=ALL-UNNAMED -jar client/client.jar --web --config client/config/kernel.json --port 9090
+java --enable-native-access=ALL-UNNAMED -jar client/client.jar --web  --port 9090
 ```
 
-此模式初始不启动转发，由 UI 调用 `/api/v1/proxy/start`。管理接口固定监听 `127.0.0.1`，发现文件位于 `client/config/run/control.json`，包含地址和访问令牌；所有业务请求要求 `Authorization: Bearer <token>`。UI 关闭后内核继续运行，退出使用 `/api/v1/kernel/shutdown`。详细接口见 [Web 管理接口](client/WEB-API.md)。
+此模式初始不启动转发，由 UI 调用 `/api/v1/proxy/start`。管理接口固定监听 `127.0.0.1`，发现文件位于 `client/run/control.json`，包含地址和访问令牌；所有业务请求要求 `Authorization: Bearer <token>`。UI 关闭后内核继续运行，退出使用 `/api/v1/kernel/shutdown`。详细接口见 [Web 管理接口](client/WEB-API.md)。
 
-规则更新立即关闭直连/代理结果变化的业务连接，其余连接及共享 HTTP/2、HTTP/3 主连接保持；新增网段规则涉及未知地址时，在异步 DNS 完成后判断。受影响请求需由浏览器或应用重新发起。切换默认连接或修改当前连接参数立即关闭旧代理隧道；修改本地监听地址或端口立即重启转发并关闭全部旧连接。配置应用后需显式保存才会在进程重启后保留。`client/start.sh`、`client/start.cmd` 与 `client/background.sh` 均启动 Web 管理接口，不自动开启代理转发。
+规则更新立即关闭直连/代理结果变化的业务连接，其余连接及共享 HTTP/2、HTTP/3 主连接保持；新增网段规则涉及未知地址时，在异步 DNS 完成后判断。受影响请求需由浏览器或应用重新发起。切换默认连接或修改当前连接参数立即关闭旧代理隧道；修改本地监听地址或端口立即重启转发并关闭全部旧连接。配置修改成功即自动保存到 SQLite，重启后恢复。`client/start.sh`、`client/start.cmd` 与 `client/background.sh` 均启动 Web 管理接口，不自动开启代理转发。
 
 ## Linux / macOS 后台运行
 
@@ -79,12 +79,12 @@ macOS 使用目录锁防止管理命令并发执行；若命令被强制终止�
 ## 配置
 
 - 默认服务端监听 UDP `4433`，客户端提供 `127.0.0.1:8080` HTTP 代理。
-- 默认客户端连接本机服务端，可以直接进行本机测试。远程部署时，在 `client/config/kernel.json` 中将对应连接 `config` 下的 `server.host` 改为服务端 IP 或域名，并开放服务端 UDP `4433`。
+- 默认客户端连接本机服务端，可以直接进行本机测试。远程部署时，通过客户端或管理 API 将对应连接 `config` 下的 `server.host` 改为服务端 IP 或域名，并开放服务端 UDP `4433`。
 - 每次打包生成默认账号 `client1` 的随机密码和有效期 365 天的自签名证书。客户端仅包含公开证书，服务端私钥仅位于 `server/certs/server.key`。
 - 默认 `tls.serverName=localhost` 与此次生成证书的身份匹配，即使修改连接地址，也应保留该值；若换用域名证书，需同步修改 `tls.serverName` 和客户端信任证书。证书和主机名校验始终启用。
 - 更改密码时，修改服务端 `config/users.properties` 中该账号的密码，并同步对应客户端的 `password`。
-- `client/config/pac.txt` 默认无直连规则，全部经过 HTTP/3 服务端。每行可填写直连域名、单个 IP 或 CIDR 网段，例如 `192.168.0.0/16`、`fd00::/8`，修改后调用规则重载接口。域名未命中规则时，若存在 IP/CIDR 规则，会异步解析并直连命中的 IP；无匹配或本地解析失败则走远程代理。
-- 配置中的相对文件路径以配置文件所在目录为基准。
+- 数据库默认无直连规则，全部经过 HTTP/3 服务端。每行可填写直连域名、单个 IP 或 CIDR 网段，例如 `192.168.0.0/16`、`fd00::/8`，通过规则更新接口修改并自动保存。域名未命中规则时，若存在 IP/CIDR 规则，会异步解析并直连命中的 IP；无匹配或本地解析失败则走远程代理。
+- 服务端相对路径以配置文件目录为基准；内核证书相对路径以数据库目录为基准。
 - 浏览器使用 HTTP/HTTPS 代理 `127.0.0.1:8080`。两端通信使用 HTTP/3，目标连接为 TCP。
 
 目录内包含实际运行凭证，请仅将客户端目录分发给获准使用代理的用户。
@@ -108,7 +108,7 @@ client2=替换为客户端2的随机长密码
 
 账号名为 1 至 64 位字母、数字、下划线、点或连字符，且以字母或数字开头。文件采用 Java properties 格式，反斜杠需按该格式转义；推荐用 `openssl rand -hex 32` 生成密码。空文件、空密码、重复或非法账号会阻止服务端启动。
 
-代理内核 1 的 `config/kernel.json` 中，在所选连接的 `config` 对象内填写：
+通过管理 API 修改代理内核所选连接的 `config`：
 
 ```json
 {"username":"client1","password":"替换为客户端1的随机长密码"}
@@ -124,7 +124,7 @@ client2=替换为客户端2的随机长密码
 
 ## 配置直连网段
 
-编辑 `client/config/pac.txt`，UTF-8 编码，每行一条。按需要选用以下规则：
+通过 `PUT /api/v1/routing/direct-rules` 更新直连规则文本，每行一条：
 
 ```text
 # 域名自身及所有子域名
@@ -146,13 +146,13 @@ fc00::/7
 
 例如只让 `192.168.1.*` 直连，填写 `192.168.1.0/24`；`192.168.0.0/16` 覆盖整个 `192.168.*.*`。前缀长度越大，范围越小；IPv4 支持 0–32，IPv6 支持 0–128。`0.0.0.0/0` 和 `::/0` 分别匹配全部 IPv4 和 IPv6 地址。
 
-空行和 `#` 注释会被忽略，也可写行尾注释。不支持 `*.example.com`、URL、端口、`192.168.*.*` 或起止 IP 范围。域名不区分大小写。所有条目均为直连规则，没有反向规则。文件为空或不存在时全部走远程代理，不会自动添加内网规则。
+空行和 `#` 注释会被忽略，也可写行尾注释。不支持 `*.example.com`、URL、端口、`192.168.*.*` 或起止 IP 范围。域名不区分大小写。所有条目均为直连规则，没有反向规则。规则为空时使用默认代理，不会自动添加内网规则。
 
-可调用 `/api/v1/routing/reload` 重载文件规则，无需重启服务端。非法 CIDR 会提示文件、行号并阻止启动。规则路径由代理内核配置 `local.routesFile` 决定（默认 `pac.txt`），相对于 `client/config/kernel.json` 所在目录。
+规则修改即时生效并保存，无需重启服务端。非法 CIDR 会提示行号并拒绝修改。可通过 `/api/v1/routing/export` 导出路由，保存响应 data 为 JSON；`/api/v1/routing/import` 接收文档并完整替换路由。导入要求当前 If-Match，默认连接 ID 必须存在，详情见 Web API 文档。
 
 域名先匹配域名规则；未命中且存在 IP/CIDR 规则时，客户端异步解析 DNS，选取第一个命中的 IP 直连。没有命中或本地 DNS 失败时转交服务端解析原域名。添加网段规则会增加客户端 DNS 查询；命中规则但直连失败时不会自动回退代理。直连的回环地址指客户端自身，代理的回环地址指服务端自身。
 
-此文件是客户端的直连列表，不是浏览器的 JavaScript PAC 脚本，不要将它填入浏览器的自动代理配置 URL。
+规则保存在 SQLite，不使用外部 PAC 文件。浏览器使用普通 HTTP 代理设置。
 
 ## 验证与排查
 
@@ -174,13 +174,13 @@ curl --noproxy "" --proxy http://127.0.0.1:8080 https://example.com/
 | TLS 校验失败 | 检查证书有效期、客户端 `tls.ca` 与 `tls.serverName` 是否对应当前服务端证书 |
 | 502 | 查看两端终端日志，检查账号和密码、目标 DNS 和目标 TCP 可达性 |
 | 504 | 请求建立超时，先检查网络，再按需调整 `connectTimeoutMillis` |
-| 网段规则不生效 | 检查实际 `routesFile` 路径，调用规则重载接口并建立新连接 |
+| 网段规则不生效 | 通过管理接口查询规则、精确目标覆盖和全局模式并建立新连接 |
 
 ## 更新与运行边界
 
-升级时停止两端，分别替换 `server/server.jar` 和 `client/client.jar`，保留配置、PAC 与证书，再重新启动。不同次打包会生成不同密码和证书，不要混用；证书到期需要手动更新，并同步客户端信任配置。
+升级时停止两端，分别替换 `server/server.jar` 和 `client/client.jar`，保留 SQLite 数据库、服务端配置与证书，再重新启动。不同次打包会生成不同密码和证书，不要混用；证书到期需要手动更新，并同步客户端信任配置。
 
-两端默认 `connectTimeoutMillis=10000`、`idleTimeoutSeconds=300`、`maxStreams=256`。配置在启动时读取；内核通过 Web 接口修改并保存，服务端修改后重启。服务端更改端口、密码或证书时，需要同步客户端相关配置。
+两端默认 `connectTimeoutMillis=10000`、`idleTimeoutSeconds=300`、`maxStreams=256`。配置在启动时读取；内核通过 Web 接口修改后自动保存，服务端修改后重启。服务端更改端口、密码或证书时，需要同步客户端相关配置。
 
 客户端入口为 HTTP/1.1 代理；HTTPS 使用 CONNECT 隧道。客户端到服务端使用单条 QUIC/HTTP/3 连接复用多个流，服务端到目标使用 TCP。连接配置也可显式选择 HTTP/2（TCP + TLS），服务端需设置 `protocols=http3,http2` 并放行相应 TCP 端口。两种协议不会自动回退。不支持 SOCKS5 或 UDP 目标。共享连接断开会结束现有隧道，后续请求按需重新连接，不会恢复已中断的 TCP 会话。
 
@@ -197,3 +197,9 @@ HTTP/2 超时日志按实际阶段分别显示“等待 HTTP/2 流额度”“�
 额度占用包含已预留但尚未完成创建的流；排队数量包含当前仍等待额度的请求。额度等待、流创建、请求发送和响应等待共用原有的 `connectTimeoutMillis` 预算，切换阶段不会重新计时。进入响应等待只表示本地写入完成，不证明服务端已收到或处理 CONNECT。
 
 两端日志里的连接 ID 是各自本地的 Channel ID，不能直接按相同值匹配。应结合连接地址、端口、时间及 HTTP/2 流 ID 对照。该诊断改进不会仅因某个请求超时就重建共享连接，也不代表已经确定超时根因。
+
+## 数据库位置与首次使用
+
+省略 `--db` 时使用内核 JAR 或原生可执行程序同目录的 `kernel.db`，与启动工作目录无关。发布脚本已创建配套数据库；可通过 `--db /可写目录/kernel.db` 指定其他位置。新路径自动创建空数据库，需要通过管理 API 添加连接。
+
+旧 kernel.json/PAC 不读取、不迁移，也不自动删除。同一数据库只能运行一个内核实例；数据库损坏或版本不支持时明确报错，不自动清空。程序目录必须可写，或者显式指定可写数据库路径。数据库包含密码且未加密，复制或备份前先停止内核，并妥善保护文件和配套证书。

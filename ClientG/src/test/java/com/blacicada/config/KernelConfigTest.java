@@ -1,6 +1,7 @@
 package com.blacicada.config;
 
 import com.blacicada.common.ProxyConfig;
+import com.blacicada.io.KernelDatabase;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.*;
@@ -26,8 +27,12 @@ class KernelConfigTest {
     @Test void roundTripPreservesSecretsButPublicViewRedactsThem() throws Exception {
         var config = new KernelConfig(new ProxyConfig(new Properties(), directory), List.of(profile("a", "localhost", "http2")), "a");
         assertFalse(config.json(false).toString().contains("secret-test"));
-        Path file = directory.resolve("kernel.json"); config.save(file);
-        assertEquals("secret-test", KernelConfig.load(file).profile("a").config().required("password"));
+        Path file = directory.resolve("kernel.db");
+        try (var database = new KernelDatabase(file)) { database.stage(config, 0); database.commit(); }
+        try (var database = new KernelDatabase(file)) {
+            assertEquals("secret-test", database.read().configuration().profile("a").config().required("password"));
+            assertEquals(1, database.read().revision());
+        }
         if (file.getFileSystem().supportedFileAttributeViews().contains("posix"))
             assertEquals("rw-------", java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(file)));
     }
@@ -41,7 +46,7 @@ class KernelConfigTest {
     @Test void rejectsOldFileAndServerFieldsInLocalConfiguration() throws Exception {
         Path old = directory.resolve("client.properties");
         Files.writeString(old, "server.host=localhost\npassword=test\n");
-        assertThrows(IllegalArgumentException.class, () -> KernelConfig.load(old));
+        assertThrows(java.io.IOException.class, () -> new KernelDatabase(old));
         Properties misplaced = new Properties(); misplaced.setProperty("server.host", "localhost");
         assertThrows(IllegalArgumentException.class, () -> new KernelConfig(new ProxyConfig(misplaced, directory),
                 List.of(profile("a", "localhost", "http3")), "a"));

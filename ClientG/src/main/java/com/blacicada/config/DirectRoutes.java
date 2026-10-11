@@ -4,8 +4,6 @@ import com.blacicada.common.ProxyConfig;
 import io.netty.util.NetUtil;
 import java.io.IOException;
 import java.net.InetAddress;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -17,24 +15,23 @@ import java.util.TreeMap;
 /** 不可变路由规则：精确目标覆盖，以及域名后缀、IP 地址和 CIDR 直连规则。 */
 public final class DirectRoutes {
     private final String text;
+    private String mode = "rules";
     private final Set<String> domains;
     private final Set<Network> networks;
     private final Map<String, String> overrides;
 
-    public DirectRoutes(Path file) throws IOException {
-        this(Files.exists(file) ? Files.readString(file) : "", file.toString());
-    }
+    public DirectRoutes(String text) throws IOException { this(text, "直连规则", ""); }
 
-    public DirectRoutes(String text) throws IOException { this(text, "控制接口"); }
-
-    /** 内联规则即使为空也优先于文件规则。 */
+    /** 规则仅来自当前配置快照，外部文件不参与路由。 */
     public static DirectRoutes load(ProxyConfig config) throws IOException {
-        String overrides = config.get("routesOverrides", "");
-        if (config.values().containsKey("routesInline"))
-            return new DirectRoutes(config.get("routesInline", ""), "控制接口", overrides);
-        Path file = config.path("routesFile", "pac.txt");
-        return new DirectRoutes(Files.exists(file) ? Files.readString(file) : "", file.toString(), overrides);
+        DirectRoutes rules = new DirectRoutes(config.values().getProperty("routesInline", ""), "直连规则",
+                config.get("routesOverrides", ""));
+        rules.mode = config.get("routingMode", "rules");
+        if (!Set.of("rules", "direct", "proxy").contains(rules.mode))
+            throw new IllegalArgumentException("全局模式必须为 rules、direct 或 proxy");
+        return rules;
     }
+    public String mode() { return mode; }
 
     public String text() { return text; }
     public Map<String, String> overrides() { return overrides; }
@@ -58,11 +55,7 @@ public final class DirectRoutes {
 
     /** 忽略注释、顺序、重复项及 CIDR 主机位，避免无效编辑触发重复 DNS。 */
     public boolean sameRules(DirectRoutes other) {
-        return domains.equals(other.domains) && networks.equals(other.networks) && overrides.equals(other.overrides);
-    }
-
-    private DirectRoutes(String text, String source) throws IOException {
-        this(text, source, "");
+        return mode.equals(other.mode) && domains.equals(other.domains) && networks.equals(other.networks) && overrides.equals(other.overrides);
     }
 
     private DirectRoutes(String text, String source, String overrideText) throws IOException {
@@ -117,6 +110,7 @@ public final class DirectRoutes {
 
     /** 不执行 DNS 解析；IP 地址不参与域名后缀匹配。 */
     public boolean matches(String host) {
+        if (!mode.equals("rules")) return mode.equals("direct");
         String override = override(host);
         if (override != null) return override.equals("direct");
         InetAddress address = literal(host);
@@ -131,12 +125,13 @@ public final class DirectRoutes {
     }
 
     public boolean matches(InetAddress address) {
+        if (!mode.equals("rules")) return mode.equals("direct");
         byte[] bytes = address.getAddress();
         return networks.stream().anyMatch(network -> network.matches(bytes));
     }
 
     public boolean needsResolution(String host) {
-        return override(host) == null && !networks.isEmpty() && literal(host) == null;
+        return mode.equals("rules") && override(host) == null && !networks.isEmpty() && literal(host) == null;
     }
 
     private static InetAddress literal(String host) {

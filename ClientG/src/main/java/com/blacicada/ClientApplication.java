@@ -4,7 +4,7 @@ package com.blacicada;
 public class ClientApplication {
     public static void main(String[] args) throws Exception {
         if (args.length == 0 || !args[0].equals("--web"))
-            throw new IllegalArgumentException("启动方式无效：请使用 --web --config kernel.json 启动管理接口");
+            throw new IllegalArgumentException("启动方式无效：请使用 --web [--db 数据库路径] 启动管理接口");
         com.blacicada.control.web.WebApplication.run(java.util.Arrays.copyOfRange(args, 1, args.length));
     }
 }

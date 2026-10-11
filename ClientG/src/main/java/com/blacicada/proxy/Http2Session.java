@@ -248,6 +248,32 @@ public final class Http2Session implements ProxySession {
         @Override public void channelInactive(ChannelHandlerContext ctx) { request.result.tryFailure(new IOException("CONNECT 流已关闭")); ctx.fireChannelInactive(); }
         @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) { request.result.tryFailure(cause); ctx.close(); }
     }
+    @Override public Future<Double> latency() {
+        Promise<Double> result = loop.newPromise();
+        loop.execute(() -> acquire().addListener(ready -> {
+            if (result.isDone()) return;
+            if (!ready.isSuccess()) { result.tryFailure(ready.cause()); return; }
+            Channel channel = (Channel) ready.getNow();
+            long started = System.nanoTime();
+            var handler = new ChannelInboundHandlerAdapter() {
+                @Override public void channelRead(ChannelHandlerContext ctx, Object message) {
+                    if (message instanceof Http2PingFrame ping && ping.ack() && ping.content() == started) {
+                        result.trySuccess((System.nanoTime() - started) / 1_000_000.0);
+                    } else ctx.fireChannelRead(message);
+                }
+                @Override public void channelInactive(ChannelHandlerContext ctx) {
+                    result.tryFailure(new IOException("测量期间服务端连接已关闭")); ctx.fireChannelInactive();
+                }
+            };
+            channel.pipeline().addLast(handler);
+            var timeout = loop.schedule(() -> result.tryFailure(new java.util.concurrent.TimeoutException("连接延迟检测超时")), 5, TimeUnit.SECONDS);
+            result.addListener(done -> { timeout.cancel(false); if (channel.pipeline().context(handler) != null) channel.pipeline().remove(handler); });
+            channel.writeAndFlush(new DefaultHttp2PingFrame(started)).addListener(sent -> {
+                if (!sent.isSuccess()) result.tryFailure(sent.cause());
+            });
+        }));
+        return result;
+    }
     public String stage() { return stage; }
     public String connectionState() { return state; }
     public String lastError() { return error; }
