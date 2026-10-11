@@ -509,7 +509,7 @@ class ProxyViewModel extends ChangeNotifier {
   Future<void> disconnect() => action(proxy.disconnect);
   Future<void> shutdown() => action(proxy.shutdown);
 
-  /// 合并重复退出请求；只有内核确认停止后才允许客户端退出。
+  /// 合并重复退出请求；内核完成退出或发现文件已移除后允许客户端退出。
   Future<bool> prepareToExit() =>
       _exitRequest ??= _prepareToExit().whenComplete(() => _exitRequest = null);
 

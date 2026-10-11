@@ -8,8 +8,86 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:network_ui/models/proxy_profile.dart';
 import 'package:network_ui/services/proxy_controller.dart';
 import 'package:network_ui/services/kernel_api_client.dart';
+import 'package:network_ui/view_models/proxy_view_model.dart';
+
+import 'view_model_test.dart' show TestDesktop;
 
 void main() {
+  for (final timing in ['请求前', '请求期间', '仍有发现文件']) {
+    test('内核断线退出：$timing，按发现文件判断能否退出客户端', () async {
+      final directory = await Directory.systemTemp.createTemp('network-exit-');
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final controller = ProxyController(directory: directory);
+      final desktop = TestDesktop(directory);
+      final model = ProxyViewModel(proxy: controller, native: desktop)
+        ..loading = false;
+      final messages = <UiMessage>[];
+      final subscription = model.messages.stream.listen(messages.add);
+      var exits = 0;
+      server.listen((request) async {
+        if (request.uri.path.endsWith('/kernel/shutdown')) {
+          exits++;
+          await controller.endpointFile.delete();
+          final socket = await request.response.detachSocket(
+            writeHeaders: false,
+          );
+          socket.destroy();
+          return;
+        }
+        request.response.write('{');
+        await request.response.close();
+      });
+      try {
+        await controller.endpointFile.parent.create(recursive: true);
+        await controller.endpointFile.writeAsString(
+          jsonEncode({
+            'url': 'http://127.0.0.1:${server.port}',
+            'token': 'test-only-token-012345678901234567890',
+            'apiVersion': 1,
+          }),
+        );
+        // 模拟连接失败后仍缓存着已校验地址与令牌。
+        await expectLater(
+          controller.attach(),
+          throwsA(isA<KernelApiException>()),
+        );
+        expect(controller.canShutdown, isTrue);
+        controller.running = true;
+        final database = File(controller.configPath);
+        await database.writeAsBytes([0, 1, 2, 3]);
+        if (timing != '请求期间') await server.close(force: true);
+        if (timing == '请求前') await controller.endpointFile.delete();
+
+        final allowed = await model.prepareToExit();
+        expect(allowed, timing != '仍有发现文件');
+        expect(exits, timing == '请求期间' ? 1 : 0);
+        expect(await database.readAsBytes(), [0, 1, 2, 3]);
+        if (allowed) {
+          expect(controller.canShutdown, isFalse);
+          expect(controller.connected, isFalse);
+          expect(controller.running, isFalse);
+          expect(controller.streaming, isFalse);
+          expect(controller.error, isEmpty);
+          expect(messages, isEmpty);
+          expect(desktop.windowShows, 0);
+          // 重复退出也不再访问旧地址。
+          expect(await model.prepareToExit(), isTrue);
+        } else {
+          expect(controller.canShutdown, isTrue);
+          expect(await controller.endpointFile.exists(), isTrue);
+          expect(messages.single.text, contains('尚不能确认内核已退出'));
+          expect(messages.single.text, isNot(contains('SocketException')));
+          expect(desktop.windowShows, 1);
+        }
+      } finally {
+        await subscription.cancel();
+        model.dispose();
+        await server.close(force: true);
+        await directory.delete(recursive: true);
+      }
+    });
+  }
+
   test('状态 JSON 损坏后仍可通过已校验的管理地址显式退出内核', () async {
     final directory = await Directory.systemTemp.createTemp('network-recover-');
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

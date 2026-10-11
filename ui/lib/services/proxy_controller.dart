@@ -840,11 +840,20 @@ class ProxyController extends ChangeNotifier {
   }
 
   Future<void> shutdown() => _operate(() async {
-    // 发现地址和令牌已校验时，即使状态 JSON 损坏，也允许显式退出内核。
-    if (!canShutdown) {
-      if (!await attach()) return;
+    // 内核退出会移除发现文件，此时不能继续请求缓存中的旧地址。
+    if (await endpointFile.exists()) {
+      try {
+        // 发现地址和令牌已校验时，即使状态 JSON 损坏，也允许显式退出内核。
+        if (!canShutdown) await attach();
+        if (canShutdown) await _request('POST', 'kernel/shutdown');
+      } catch (e) {
+        if (e is! SocketException && e is! HttpException) rethrow;
+        // 请求期间内核也可能完成退出；仍有发现文件时不能把断线当作退出成功。
+        if (await endpointFile.exists()) {
+          throw StateError('无法连接内核管理接口，尚不能确认内核已退出，请稍后重试');
+        }
+      }
     }
-    await _request('POST', 'kernel/shutdown');
     unsubscribe();
     connected = running = false;
     connection = 'idle';
