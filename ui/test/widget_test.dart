@@ -180,6 +180,7 @@ void main() {
       debugDefaultTargetPlatformOverride = platform;
       tester.view.physicalSize = const Size(1120, 780);
       model.navigate(1);
+      await tester.pumpWidget(NetworkApp(model: model));
       await tester.pumpAndSettle();
       final field = find.byKey(const ValueKey('field-server.host'));
       if (field.evaluate().isEmpty) {
@@ -189,6 +190,7 @@ void main() {
       await tester.ensureVisible(field);
       await tester.pumpAndSettle();
       final theme = Theme.of(tester.element(field));
+      expect(theme.platform, platform);
       reference ??= theme;
       referenceField ??= tester.getRect(field);
       expect(theme.colorScheme, reference.colorScheme);

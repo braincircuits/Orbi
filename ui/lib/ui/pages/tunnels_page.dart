@@ -193,18 +193,10 @@ class _TunnelsPageState extends State<TunnelsPage> {
                     key: const ValueKey('tunnel-search'),
                     decoration: const InputDecoration(
                       hintText: '搜索目标、来源或连接名称',
-                      constraints: BoxConstraints.tightFor(
-                        height: DesktopDesign.controlHeight,
+                      prefixIcon: Icon(
+                        Icons.search,
+                        size: DesktopDesign.actionIconSize,
                       ),
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 9,
-                        vertical: 5,
-                      ),
-                      prefixIconConstraints: BoxConstraints.tightFor(
-                        width: 36,
-                        height: DesktopDesign.controlHeight,
-                      ),
-                      prefixIcon: Icon(Icons.search, size: 18),
                     ),
                     onChanged: (value) => setState(() => query = value),
                   ),

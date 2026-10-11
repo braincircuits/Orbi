@@ -27,10 +27,7 @@ class LogsPage extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('运行日志', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 4),
-        Text('最近采集记录 · 按级别精确筛选', style: Theme.of(context).textTheme.bodySmall),
-        const SizedBox(height: 18),
+        ui.pageHeading('运行日志', '最近采集记录 · 按级别精确筛选'),
         Row(
           children: [
             SizedBox(

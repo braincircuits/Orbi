@@ -9,10 +9,62 @@ import '../widgets/traffic_chart.dart';
 import 'traffic_history_dialog.dart';
 
 /// 概览只读展示当前配置；检测统一由内核按实际出口执行。
-class OverviewPage extends StatelessWidget {
+class OverviewPage extends StatefulWidget {
   const OverviewPage({super.key, required this.model, this.onSettings});
   final ProxyViewModel model;
   final VoidCallback? onSettings;
+
+  @override
+  State<OverviewPage> createState() => _OverviewPageState();
+}
+
+class _OverviewPageState extends State<OverviewPage> {
+  ProxyViewModel get model => widget.model;
+  DiagnosticOperation? previousExit;
+  (int, int)? exitGeneration;
+
+  @override
+  void initState() {
+    super.initState();
+    _rememberExit();
+    model.addListener(_modelChanged);
+  }
+
+  @override
+  void didUpdateWidget(OverviewPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.model != model) {
+      oldWidget.model.removeListener(_modelChanged);
+      previousExit = null;
+      exitGeneration = null;
+      model.addListener(_modelChanged);
+      _rememberExit();
+    }
+  }
+
+  void _rememberExit() {
+    final proxy = model.proxy;
+    final generation = (proxy.kernelGeneration, proxy.networkGeneration);
+    if (exitGeneration != generation || !proxy.connected || !proxy.running) {
+      previousExit = null;
+    }
+    exitGeneration = generation;
+    final operation = proxy.overviewOperation('exit-ip');
+    // 同一网络上下文刷新时继续展示上次结果，避免内容清空造成布局跳动。
+    if (!proxy.overviewBusy('exit-ip')) {
+      previousExit = operation?.state == 'succeeded' ? operation : null;
+    }
+  }
+
+  void _modelChanged() {
+    setState(_rememberExit);
+  }
+
+  @override
+  void dispose() {
+    model.removeListener(_modelChanged);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -31,6 +83,7 @@ class OverviewPage extends StatelessWidget {
         : '${bind.contains(':') && !bind.startsWith('[') ? '[$bind]' : bind}:$port';
     final latency = proxy.overviewOperation('latency');
     final ip = proxy.overviewOperation('exit-ip');
+    final displayedIp = proxy.overviewBusy('exit-ip') ? previousExit : ip;
     final websites = proxy.overviewOperation('websites');
     final canTest = running && !model.locked;
     final modeLabel = switch (proxy.routingMode) {
@@ -63,16 +116,10 @@ class OverviewPage extends StatelessWidget {
           DesktopDesign.overviewControlHeight,
         ),
         padding: EdgeInsets.zero,
-        backgroundColor: Color.alphaBlend(
-          actionColor.withValues(alpha: .08),
-          ui.panel,
-        ),
+        backgroundColor: actionColor,
         foregroundColor: running
-            ? actionColor
-            : Color.lerp(actionColor, ui.ink, .2),
-        side: BorderSide(
-          color: Color.alphaBlend(actionColor.withValues(alpha: .2), ui.panel),
-        ),
+            ? theme.colorScheme.onError
+            : theme.colorScheme.onPrimary,
       ),
       onPressed: model.locked
           ? null
@@ -88,15 +135,34 @@ class OverviewPage extends StatelessWidget {
       ),
     );
     return ui.list('overview', [
-      ui.card(
-        Column(
+      Container(
+        key: const ValueKey('overview-service-panel'),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: Color.alphaBlend(ui.accent.withValues(alpha: .07), ui.panel),
+          borderRadius: BorderRadius.circular(DesktopDesign.panelRadius),
+          border: Border.all(color: ui.accent.withValues(alpha: .2)),
+        ),
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _pair(
               Row(
                 children: [
-                  ui.dot(running, size: 8),
-                  const SizedBox(width: 10),
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: ui.accent,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      Icons.power_settings_new_rounded,
+                      color: theme.colorScheme.onPrimary,
+                      size: 25,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -111,72 +177,77 @@ class OverviewPage extends StatelessWidget {
                               : proxy.connected
                               ? '服务已停止'
                               : '内核未连接',
-                          style: theme.textTheme.titleLarge,
+                          style: theme.textTheme.headlineSmall,
                         ),
-                        const SizedBox(height: 4),
-                        small('${running ? '正在使用' : '开启后使用'}$modeLabel模式'),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            ui.dot(running),
+                            const SizedBox(width: 6),
+                            Flexible(
+                              child: small(
+                                '${running ? '正在使用' : '开启后使用'}$modeLabel模式',
+                              ),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
                 ],
               ),
               toggle,
-              breakpoint: 500,
+              breakpoint: 430,
               stackedAlignment: Alignment.centerRight,
             ),
-            const Divider(height: 28),
+            const SizedBox(height: 20),
             _pair(
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('路由模式'),
+                  small('本地 HTTP 代理 · ${running ? '监听中' : '未监听'}'),
                   const SizedBox(height: 4),
-                  small(switch (proxy.routingMode) {
-                    'direct' => '接入流量直接访问目标网站',
-                    'proxy' => '接入流量统一经当前服务端转发',
-                    _ => '按目标路由和直连规则分流',
-                  }),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: SelectableText(
+                          localAddress,
+                          style: DesktopDesign.monoText,
+                        ),
+                      ),
+                      _copyButton(localAddress, '复制本地代理地址'),
+                    ],
+                  ),
                 ],
               ),
-              SizedBox(
-                width: DesktopDesign.overviewModeWidth * 3,
-                height: DesktopDesign.overviewControlHeight,
-                child: SegmentedButton<String>(
-                  key: const ValueKey('overview-mode'),
-                  expandedInsets: EdgeInsets.zero,
-                  style: const ButtonStyle(
-                    padding: WidgetStatePropertyAll(EdgeInsets.zero),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    visualDensity: VisualDensity.standard,
+              Tooltip(
+                message: '路由模式：仅作用于接入本地代理的流量；直连／全局模式覆盖路由规则',
+                child: SizedBox(
+                  width: DesktopDesign.overviewModeWidth * 3,
+                  height: DesktopDesign.overviewControlHeight,
+                  child: SegmentedButton<String>(
+                    key: const ValueKey('overview-mode'),
+                    expandedInsets: EdgeInsets.zero,
+                    style: const ButtonStyle(
+                      padding: WidgetStatePropertyAll(EdgeInsets.zero),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.standard,
+                    ),
+                    showSelectedIcon: false,
+                    segments: const [
+                      ButtonSegment(value: 'rules', label: Text('规则')),
+                      ButtonSegment(value: 'direct', label: Text('直连')),
+                      ButtonSegment(value: 'proxy', label: Text('全局')),
+                    ],
+                    selected: {proxy.routingMode},
+                    onSelectionChanged: model.locked || !proxy.connected
+                        ? null
+                        : (selected) => model.setRoutingMode(selected.single),
                   ),
-                  showSelectedIcon: false,
-                  segments: const [
-                    ButtonSegment(value: 'rules', label: Text('规则')),
-                    ButtonSegment(value: 'direct', label: Text('直连')),
-                    ButtonSegment(value: 'proxy', label: Text('全局')),
-                  ],
-                  selected: {proxy.routingMode},
-                  onSelectionChanged: model.locked || !proxy.connected
-                      ? null
-                      : (selected) => model.setRoutingMode(selected.single),
                 ),
               ),
-              breakpoint: 500,
+              breakpoint: 480,
               stackedAlignment: Alignment.centerRight,
-            ),
-            const SizedBox(height: 10),
-            small('仅作用于接入本地代理的流量；直连／全局模式覆盖路由规则'),
-            const Divider(height: 28),
-            Wrap(
-              spacing: 12,
-              runSpacing: 6,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                small('本地 HTTP 代理'),
-                SelectableText(localAddress, style: DesktopDesign.monoText),
-                _copyButton(localAddress, '复制本地代理地址'),
-                small(running ? '监听中' : '未监听'),
-              ],
             ),
           ],
         ),
@@ -199,7 +270,7 @@ class OverviewPage extends StatelessWidget {
       ],
       const SizedBox(height: 14),
       Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+        padding: EdgeInsets.zero,
         child: LayoutBuilder(
           builder: (context, constraints) {
             final traffic = proxy.connected ? proxy.traffic?.current : null;
@@ -227,7 +298,7 @@ class OverviewPage extends StatelessWidget {
                   key: ValueKey(
                     sending ? 'overview-send-rate' : 'overview-receive-rate',
                   ),
-                  style: theme.textTheme.titleLarge,
+                  style: theme.textTheme.headlineMedium,
                 ),
                 const SizedBox(height: 4),
                 small(
@@ -248,7 +319,7 @@ class OverviewPage extends StatelessWidget {
                     child: Text(
                       proxy.connected ? '${proxy.activeTunnelCount}' : '—',
                       key: const ValueKey('overview-active-tunnels'),
-                      style: theme.textTheme.titleLarge,
+                      style: theme.textTheme.headlineMedium,
                     ),
                   ),
                   TextButton(
@@ -272,7 +343,7 @@ class OverviewPage extends StatelessWidget {
                     latency?.state == 'succeeded'
                         ? '${_millis(latency!.result.latencyMillis)} ms'
                         : '—',
-                    style: theme.textTheme.titleLarge,
+                    style: theme.textTheme.headlineMedium,
                   ),
                   TextButton(
                     onPressed:
@@ -286,7 +357,7 @@ class OverviewPage extends StatelessWidget {
                 ],
               ),
             ];
-            final columns = constraints.maxWidth < 550 ? 2 : 4;
+            final columns = constraints.maxWidth < 680 ? 2 : 4;
             return Wrap(
               spacing: 16,
               runSpacing: 18,
@@ -295,7 +366,17 @@ class OverviewPage extends StatelessWidget {
                   SizedBox(
                     width:
                         (constraints.maxWidth - 16 * (columns - 1)) / columns,
-                    child: item,
+                    child: ui.card(
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          minHeight:
+                              96 *
+                              MediaQuery.textScalerOf(context).scale(13) /
+                              13,
+                        ),
+                        child: item,
+                      ),
+                    ),
                   ),
               ],
             );
@@ -309,225 +390,347 @@ class OverviewPage extends StatelessWidget {
           Icons.warning_amber_outlined,
           warning: true,
         ),
-      TrafficChart(
-        traffic: proxy.traffic,
-        connected: proxy.connected,
-        running: running,
-      ),
-      Align(
-        alignment: Alignment.centerRight,
-        child: TextButton.icon(
-          onPressed: proxy.connected
-              ? () => showDialog<void>(
-                  context: context,
-                  builder: (_) => TrafficHistoryDialog(proxy: proxy),
-                )
-              : null,
-          icon: const Icon(Icons.history, size: 16),
-          label: const Text('历史流量'),
+      ui.card(
+        Column(
+          children: [
+            TrafficChart(
+              traffic: proxy.traffic,
+              connected: proxy.connected,
+              running: running,
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: proxy.connected
+                    ? () => showDialog<void>(
+                        context: context,
+                        builder: (_) => TrafficHistoryDialog(proxy: proxy),
+                      )
+                    : null,
+                icon: const Icon(Icons.history, size: 16),
+                label: const Text('历史流量'),
+              ),
+            ),
+          ],
         ),
       ),
-      const Divider(height: 32),
+      const SizedBox(height: DesktopDesign.sectionSpacing),
       LayoutBuilder(
         builder: (context, constraints) {
-          final connectionCard = Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ui.heading(direct ? '代理连接 · 当前未使用' : '当前连接'),
-              ui.card(
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _pair(
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          title(connection?.name ?? '尚未配置连接'),
-                          const SizedBox(height: 14),
-                          small('当前地址'),
-                          const SizedBox(height: 4),
-                          SelectableText(
-                            connection?.endpoint ?? '—',
-                            key: const PageStorageKey('overview-endpoint'),
-                            style: DesktopDesign.monoText,
-                          ),
-                          const SizedBox(height: 12),
-                          small('传输协议'),
-                          const SizedBox(height: 4),
-                          Text(
-                            connection == null
-                                ? '—'
-                                : connection.protocol == 'http2'
-                                ? 'HTTP/2 · TCP + TLS'
-                                : 'HTTP/3 · QUIC',
-                          ),
-                        ],
-                      ),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          small('服务端连接'),
-                          const SizedBox(height: 4),
-                          Text(serverState),
-                          const SizedBox(height: 12),
-                          small('最近延迟检测'),
-                          const SizedBox(height: 4),
-                          small(
-                            direct
-                                ? '直连模式未使用'
-                                : !running
-                                ? '开启后可检测'
-                                : _taskLabel(latency),
-                          ),
-                        ],
-                      ),
-                      breakpoint: 480,
-                    ),
-                    const Divider(height: 24),
-                    small('在「连接配置」中修改或切换连接'),
-                  ],
-                ),
-              ),
-            ],
-          );
-          final exitCard = Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ui.heading('出口信息'),
-              ui.card(
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _pair(
-                      title(
-                        '出口 IP · ${proxy.routingMode == 'rules' ? '按规则查询' : '$modeLabel出口'}',
-                      ),
-                      TextButton.icon(
-                        onPressed: canTest && !proxy.overviewBusy('exit-ip')
-                            ? () => model.startOverview('exit-ip')
-                            : null,
-                        icon: const Icon(Icons.refresh, size: 16),
-                        label: Text(
-                          proxy.overviewBusy('exit-ip') ? '获取中…' : '刷新',
-                        ),
-                      ),
-                      breakpoint: 330,
-                    ),
-                    const SizedBox(height: 12),
-                    LayoutBuilder(
-                      builder: (context, constraints) {
-                        final result = ip?.state == 'succeeded'
-                            ? ip!.result
-                            : null;
-                        final location = {
-                          result?.country ?? '',
-                          result?.region ?? '',
-                          result?.city ?? '',
-                        }.where((v) => v.isNotEmpty).join(' · ');
-                        final values = [
-                          _value(
-                            context,
-                            '公网 IP',
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Flexible(
-                                  child: SelectableText(
-                                    result?.ip ?? '—',
-                                    style: DesktopDesign.monoText,
-                                  ),
-                                ),
-                                if (result?.ip != null)
-                                  _copyButton(result!.ip!, '复制出口 IP'),
-                              ],
-                            ),
-                          ),
-                          _value(
-                            context,
-                            '归属地',
-                            Text(
-                              location.isEmpty
-                                  ? result == null
-                                        ? '—'
-                                        : '未知'
-                                  : location,
-                            ),
-                          ),
-                          _value(
-                            context,
-                            '运营商 / 网络',
-                            Text(
-                              result == null
-                                  ? '—'
-                                  : result.provider.isEmpty
-                                  ? '未知'
-                                  : result.provider,
-                            ),
-                          ),
-                        ];
-                        if (constraints.maxWidth < 600) {
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              values[0],
-                              const SizedBox(height: 14),
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Expanded(child: values[1]),
-                                  const SizedBox(width: 16),
-                                  Expanded(child: values[2]),
-                                ],
-                              ),
-                            ],
-                          );
-                        }
-                        return Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            for (var i = 0; i < values.length; i++) ...[
-                              if (i > 0) const SizedBox(width: 16),
-                              Expanded(child: values[i]),
-                            ],
-                          ],
-                        );
-                      },
-                    ),
-                    const Divider(height: 24),
-                    small(!running ? '开启服务后可获取' : _taskLabel(ip)),
-                    const SizedBox(height: 4),
-                    small(
-                      '来源：ipwho.is · 连接变化后更新，可手动刷新 · 归属地仅供参考${proxy.routingMode == 'rules' ? '；不同目标的出口可能不同' : ''}',
-                    ),
-                    if (ip?.state == 'failed') ...[
-                      const SizedBox(height: 8),
-                      ui.notice(
-                        ip!.result.message ?? '出口 IP 查询失败，请重试',
-                        Icons.info_outline,
-                        warning: true,
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ],
-          );
-          return constraints.maxWidth < 760
+          final sideBySide = constraints.maxWidth >= 760;
+          final cardWidth = sideBySide
+              ? (constraints.maxWidth - 16) / 2
+              : constraints.maxWidth;
+          final stackFields =
+              cardWidth < 360 * MediaQuery.textScalerOf(context).scale(13) / 13;
+          final result = displayedIp?.state == 'succeeded'
+              ? displayedIp!.result
+              : null;
+          final location = {
+            result?.country ?? '',
+            result?.region ?? '',
+            result?.city ?? '',
+          }.where((value) => value.isNotEmpty).join(' · ');
+          Widget fields(Widget first, Widget second) => stackFields
               ? Column(
-                  children: [
-                    connectionCard,
-                    const SizedBox(height: 18),
-                    exitCard,
-                  ],
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [first, const SizedBox(height: 16), second],
                 )
               : Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(child: connectionCard),
+                    Expanded(child: first),
                     const SizedBox(width: 16),
-                    Expanded(child: exitCard),
+                    Expanded(child: second),
                   ],
                 );
+          final connectionBody = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(
+                  minHeight: DesktopDesign.controlHeight,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(child: title(connection?.name ?? '尚未配置连接')),
+                    const SizedBox(width: 12),
+                    Tooltip(
+                      message: '服务端连接',
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          ui.dot(
+                            running &&
+                                !direct &&
+                                proxy.connection == 'connected',
+                          ),
+                          const SizedBox(width: 6),
+                          Text(serverState),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              _value(
+                context,
+                '当前地址',
+                Row(
+                  children: [
+                    Expanded(
+                      child: SelectableText(
+                        connection?.endpoint ?? '—',
+                        key: const PageStorageKey('overview-endpoint'),
+                        style: DesktopDesign.monoText,
+                      ),
+                    ),
+                    if (connection != null)
+                      _copyButton(connection.endpoint, '复制服务端地址'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              fields(
+                _value(
+                  context,
+                  '传输协议',
+                  Text(
+                    connection == null
+                        ? '—'
+                        : connection.protocol == 'http2'
+                        ? 'HTTP/2 · TCP + TLS'
+                        : 'HTTP/3 · QUIC',
+                  ),
+                ),
+                _value(
+                  context,
+                  '最近延迟检测',
+                  small(
+                    direct
+                        ? '直连模式未使用'
+                        : !running
+                        ? '开启后可检测'
+                        : _taskLabel(latency),
+                  ),
+                ),
+              ),
+            ],
+          );
+          final connectionFooter = TextButton.icon(
+            onPressed: () => model.navigate(1),
+            icon: const Icon(Icons.tune, size: 16),
+            label: const Text('管理连接'),
+          );
+          final exitBody = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: title(
+                      '出口 IP · ${proxy.routingMode == 'rules' ? '按规则查询' : '$modeLabel出口'}',
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width:
+                        112 * MediaQuery.textScalerOf(context).scale(13) / 13,
+                    child: TextButton.icon(
+                      onPressed: canTest && !proxy.overviewBusy('exit-ip')
+                          ? () => model.startOverview('exit-ip')
+                          : null,
+                      icon: const Icon(Icons.refresh, size: 16),
+                      label: Text(
+                        proxy.overviewBusy('exit-ip') ? '获取中…' : '刷新',
+                        maxLines: 1,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              _value(
+                context,
+                '公网 IP',
+                ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    minHeight: DesktopDesign.controlHeight,
+                  ),
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: SelectableText(
+                          result?.ip ?? '—',
+                          style: DesktopDesign.monoText,
+                        ),
+                      ),
+                      if (result?.ip != null)
+                        _copyButton(result!.ip!, '复制出口 IP'),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              fields(
+                _value(
+                  context,
+                  '归属地',
+                  Text(
+                    location.isEmpty
+                        ? result == null
+                              ? '—'
+                              : '未知'
+                        : location,
+                  ),
+                ),
+                _value(
+                  context,
+                  '运营商 / 网络',
+                  Text(
+                    result == null
+                        ? '—'
+                        : result.provider.isEmpty
+                        ? '未知'
+                        : result.provider,
+                  ),
+                ),
+              ),
+            ],
+          );
+          final exitFooter = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              small(!running ? '开启服务后可获取' : _taskLabel(displayedIp)),
+              const SizedBox(height: 4),
+              small(
+                '来源：ipwho.is · 连接变化后更新，可手动刷新 · 归属地仅供参考${proxy.routingMode == 'rules' ? '；不同目标的出口可能不同' : ''}',
+              ),
+              if (ip?.state == 'failed') ...[
+                const SizedBox(height: 8),
+                ui.notice(
+                  ip!.result.message ?? '出口 IP 查询失败，请重试',
+                  Icons.info_outline,
+                  warning: true,
+                ),
+              ],
+            ],
+          );
+          final connectionHeading = direct ? '代理连接 · 当前未使用' : '当前连接';
+          Widget footer(Widget child, String key) => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Divider(key: ValueKey(key), height: 24),
+              child,
+            ],
+          );
+          if (!sideBySide) {
+            Widget details(
+              String heading,
+              String key,
+              Widget body,
+              Widget actions,
+            ) => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ui.heading(heading),
+                KeyedSubtree(
+                  key: ValueKey(key),
+                  child: ui.card(
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [body, footer(actions, '$key-divider')],
+                    ),
+                  ),
+                ),
+              ],
+            );
+            return Column(
+              children: [
+                details(
+                  connectionHeading,
+                  'overview-connection-card',
+                  connectionBody,
+                  connectionFooter,
+                ),
+                const SizedBox(height: 18),
+                details('出口信息', 'overview-exit-card', exitBody, exitFooter),
+              ],
+            );
+          }
+          // 正文和页脚分别共用表格行高，缩放、换行时分隔线仍处于同一基线。
+          Widget cell(Widget child, {bool bottom = false}) => Padding(
+            padding: EdgeInsets.fromLTRB(
+              16,
+              bottom ? 0 : 16,
+              16,
+              bottom ? 16 : 0,
+            ),
+            child: child,
+          );
+          return Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(child: ui.heading(connectionHeading)),
+                  const SizedBox(width: 16),
+                  Expanded(child: ui.heading('出口信息')),
+                ],
+              ),
+              Stack(
+                children: [
+                  Positioned.fill(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          child: Card(
+                            key: const ValueKey('overview-connection-card'),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Card(
+                            key: const ValueKey('overview-exit-card'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Table(
+                    columnWidths: const {1: FixedColumnWidth(16)},
+                    defaultVerticalAlignment: TableCellVerticalAlignment.top,
+                    children: [
+                      TableRow(
+                        children: [
+                          cell(connectionBody),
+                          const SizedBox.shrink(),
+                          cell(exitBody),
+                        ],
+                      ),
+                      TableRow(
+                        children: [
+                          cell(
+                            footer(
+                              connectionFooter,
+                              'overview-connection-card-divider',
+                            ),
+                            bottom: true,
+                          ),
+                          const SizedBox.shrink(),
+                          cell(
+                            footer(exitFooter, 'overview-exit-card-divider'),
+                            bottom: true,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ],
+          );
         },
       ),
       const SizedBox(height: 18),

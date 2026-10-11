@@ -138,7 +138,7 @@ void main() {
       addTearDown(model.dispose);
       await tester.pumpWidget(NetworkApp(model: model));
       expect(find.text('正在连接代理内核'), findsOneWidget);
-      expect(find.text('本地 HTTP 代理'), findsOneWidget);
+      expect(find.text('本地 HTTP 代理 · 未监听'), findsOneWidget);
       expect(find.text('活跃隧道'), findsNWidgets(2));
       expect(find.text('服务已停止'), findsNothing);
       expect(find.byKey(const ValueKey('startup-progress')), findsOneWidget);
@@ -171,7 +171,7 @@ void main() {
     });
   }
 
-  testWidgets('代理开关采用原型样式，文字对比清晰且明暗模式操作有效', (tester) async {
+  testWidgets('代理开关使用语义实心色，文字对比清晰且明暗模式操作有效', (tester) async {
     tester.view.physicalSize = const Size(1120, 780);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -197,13 +197,7 @@ void main() {
       final stopColor = stop.style!.backgroundColor!.resolve({})!;
       expect(
         stopColor,
-        Color.alphaBlend(
-          Theme.of(tester.element(find.text('停止'))).colorScheme.error
-              .withValues(alpha: .08),
-          Theme.of(tester.element(find.text('停止')))
-              .colorScheme
-              .surfaceContainerLowest,
-        ),
+        Theme.of(tester.element(find.text('停止'))).colorScheme.error,
       );
       final foreground = stop.style!.foregroundColor!.resolve({})!;
       expect(contrast(foreground, stopColor), greaterThanOrEqualTo(4.5));
@@ -222,13 +216,7 @@ void main() {
       final startColor = start.style!.backgroundColor!.resolve({})!;
       expect(
         startColor,
-        Color.alphaBlend(
-          Theme.of(tester.element(find.text('开启'))).colorScheme.primary
-              .withValues(alpha: .08),
-          Theme.of(tester.element(find.text('开启')))
-              .colorScheme
-              .surfaceContainerLowest,
-        ),
+        Theme.of(tester.element(find.text('开启'))).colorScheme.primary,
       );
       expect(
         contrast(start.style!.foregroundColor!.resolve({})!, startColor),
@@ -275,8 +263,17 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('服务运行中'), findsOneWidget);
     expect(find.text('等待建立'), findsNothing);
-    final overviewScrollable = find.descendant(of: find.byKey(const PageStorageKey('overview')), matching: find.byType(Scrollable)).first;
-    await tester.scrollUntilVisible(find.text('proxy.test:4433'), 250, scrollable: overviewScrollable);
+    final overviewScrollable = find
+        .descendant(
+          of: find.byKey(const PageStorageKey('overview')),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(
+      find.text('proxy.test:4433'),
+      250,
+      scrollable: overviewScrollable,
+    );
     expect(find.text('proxy.test:4433'), findsOneWidget);
     expect(find.text('默认连接'), findsOneWidget);
     expect(find.text('连接详情'), findsNothing);

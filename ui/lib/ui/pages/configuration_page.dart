@@ -30,6 +30,10 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   String? located;
   Timer? locateTimer;
   ProxyViewModel get model => widget.model;
+  double get _textScale =>
+      math.max(1, MediaQuery.textScalerOf(context).scale(13) / 13);
+  double get _cardHeight => 140 * _textScale;
+  double get _rowHeight => 64 * _textScale;
   List<ConnectionProfile> get filtered {
     final query = search.text.trim().toLowerCase();
     return model.connectionDrafts
@@ -97,7 +101,9 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !collectionScroll.hasClients) return;
-      final offset = cards ? (index ~/ columns) * 150.0 : index * 64.0;
+      final offset = cards
+          ? (index ~/ columns) * (_cardHeight + 10)
+          : index * _rowHeight;
       // 惰性列表的最大范围可能尚未更新，按目标行跳转后由布局校正边界。
       collectionScroll.jumpTo(offset);
     });
@@ -138,7 +144,11 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('连接配置', style: Theme.of(context).textTheme.titleMedium),
+                Text(
+                  '连接配置',
+                  style: Theme.of(context).textTheme.headlineSmall!
+                      .copyWith(fontSize: 22, fontWeight: FontWeight.w600),
+                ),
                 const SizedBox(height: 4),
                 Text(
                   '${model.connectionDrafts.length} 个连接 · 点击卡片切换，点击编辑修改配置',
@@ -186,21 +196,6 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
             onChanged: (_) => _filterChanged(),
             decoration: InputDecoration(
               hintText: '搜索名称或服务器',
-              constraints: const BoxConstraints.tightFor(
-                height: DesktopDesign.controlHeight,
-              ),
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 9,
-                vertical: 5,
-              ),
-              prefixIconConstraints: const BoxConstraints.tightFor(
-                width: 32,
-                height: DesktopDesign.controlHeight,
-              ),
-              suffixIconConstraints: const BoxConstraints.tightFor(
-                width: 30,
-                height: DesktopDesign.controlHeight,
-              ),
               prefixIcon: const Icon(Icons.search, size: 17),
               suffixIcon: search.text.isEmpty
                   ? null
@@ -235,13 +230,6 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
               ),
               const SizedBox(width: 8),
               SegmentedButton<bool>(
-                style: const ButtonStyle(
-                  padding: WidgetStatePropertyAll(
-                    EdgeInsets.symmetric(horizontal: 12),
-                  ),
-                  visualDensity: VisualDensity(vertical: -2.5),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
                 segments: const [
                   ButtonSegment(
                     value: true,
@@ -314,14 +302,39 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   Widget _browser(DesktopWidgets ui) => ui.card(
     Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: Color.alphaBlend(ui.accent.withValues(alpha: .06), ui.panel),
+            borderRadius: const BorderRadius.vertical(
+              top: Radius.circular(DesktopDesign.panelRadius),
+            ),
+          ),
           child: Row(
             children: [
+              Icon(Icons.hub_outlined, size: 22, color: ui.accent),
+              const SizedBox(width: 12),
               Expanded(
-                child: Text(
-                  '${math.min(loaded, filtered.length)} / ${filtered.length} 个连接',
-                  style: Theme.of(context).textTheme.bodySmall,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '当前连接 · ${model.activeConnection?.name ?? '尚未配置'}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 4),
+                    Tooltip(
+                      message: model.activeConnection?.endpoint ?? '应用连接后在此显示',
+                      child: Text(
+                        model.activeConnection?.endpoint ?? '应用连接后在此显示',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               TextButton.icon(
@@ -401,7 +414,10 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
       builder: (context, constraints) {
         columns = math.max(
           1,
-          math.min(3, ((constraints.maxWidth - 14) / 184).floor()),
+          math.min(
+            3,
+            ((constraints.maxWidth - 14) / (184 * _textScale)).floor(),
+          ),
         );
         return Scrollbar(
           controller: collectionScroll,
@@ -420,13 +436,13 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                         ),
                         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: columns,
-                          mainAxisExtent: 140,
+                          mainAxisExtent: _cardHeight,
                           mainAxisSpacing: 10,
                           crossAxisSpacing: 10,
                         ),
                       )
                     : SliverFixedExtentList(
-                        itemExtent: 64,
+                        itemExtent: _rowHeight,
                         delegate: SliverChildBuilderDelegate(
                           (context, index) => Padding(
                             padding: EdgeInsets.zero,
@@ -471,9 +487,13 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
     return Material(
       key: ValueKey('connection-${connection.id}'),
       clipBehavior: Clip.antiAlias,
-      color: ui.panel,
+      color: current
+          ? Color.alphaBlend(ui.accent.withValues(alpha: .07), ui.panel)
+          : ui.panel,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(cards ? 8 : 0),
+        borderRadius: BorderRadius.circular(
+          cards ? DesktopDesign.panelRadius : 0,
+        ),
         side: BorderSide(
           color: current || selected || located == connection.id
               ? ui.accent
@@ -782,7 +802,10 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                             },
                       style: TextButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 4),
-                        minimumSize: const Size(32, 28),
+                        minimumSize: const Size(
+                          32,
+                          DesktopDesign.controlHeight,
+                        ),
                       ),
                       child: const Text('还原'),
                     ),
@@ -793,7 +816,10 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                           : model.validateConfiguration,
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 8),
-                        minimumSize: const Size(40, 28),
+                        minimumSize: const Size(
+                          40,
+                          DesktopDesign.controlHeight,
+                        ),
                       ),
                       child: const Text('校验'),
                     ),

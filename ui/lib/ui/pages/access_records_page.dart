@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../desktop_theme.dart';
+
 import '../../models/kernel_status.dart';
 import '../../services/proxy_controller.dart';
 
@@ -90,7 +92,10 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
                 controller: search,
                 decoration: const InputDecoration(
                   hintText: '搜索历史域名、IP 或端口',
-                  prefixIcon: Icon(Icons.search),
+                  prefixIcon: Icon(
+                    Icons.search,
+                    size: DesktopDesign.actionIconSize,
+                  ),
                 ),
                 onSubmitted: available ? (_) => _load() : null,
               ),

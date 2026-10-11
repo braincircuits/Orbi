@@ -267,6 +267,18 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     await capture('dark-compact');
+    for (final brightness in [Brightness.light, Brightness.dark]) {
+      tester.platformDispatcher.platformBrightnessTestValue = brightness;
+      model.message('无法连接内核，请检查连接状态后重试。', failure: true);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await capture('${brightness.name}-message');
+      final message = find.byKey(const ValueKey('desktop-message'));
+      await tester.tap(
+        find.descendant(of: message, matching: find.byType(IconButton)),
+      );
+      await tester.pumpAndSettle();
+    }
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(() => directory!.delete(recursive: true));
   }, skip: destination == null);

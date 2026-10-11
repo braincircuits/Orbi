@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
@@ -34,10 +35,15 @@ class _ProxyHomeState extends State<ProxyHome> {
   (int, int)? overviewGeneration;
   bool overviewRefreshing = false;
   final titleDragKey = GlobalKey();
-  (Size, int)? titlebarLayout;
+  (Size, int, String, double)? titlebarLayout;
 
   void _configureTitlebar(Size size) {
-    final layout = (size, model.page);
+    final layout = (
+      size,
+      model.page,
+      model.page == 0 ? '' : _proxyState,
+      MediaQuery.textScalerOf(context).scale(14),
+    );
     if (titlebarLayout == layout) return;
     titlebarLayout = layout;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -62,14 +68,42 @@ class _ProxyHomeState extends State<ProxyHome> {
     model.addListener(_modelChanged);
     messages = model.messages.stream.listen((message) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message.text),
-          backgroundColor: message.failure
-              ? Theme.of(context).colorScheme.error
-              : null,
-        ),
-      );
+      final theme = Theme.of(context);
+      final size = MediaQuery.sizeOf(context);
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            key: const ValueKey('desktop-message'),
+            width: math.min(520, size.width - 32),
+            duration: Duration(seconds: message.failure ? 8 : 4),
+            content: Semantics(
+              liveRegion: true,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    message.failure
+                        ? Icons.error_outline
+                        : Icons.check_circle_outline,
+                    color: message.failure
+                        ? theme.colorScheme.error
+                        : DesktopDesign.success(theme.brightness),
+                    size: 20,
+                    semanticLabel: message.failure ? '操作失败' : '操作完成',
+                  ),
+                  const SizedBox(width: DesktopDesign.spacing),
+                  Expanded(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(maxHeight: size.height * .3),
+                      child: SingleChildScrollView(child: Text(message.text)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
     });
     NativeBridge.channel.setMethodCallHandler((call) async {
       if (call.method == 'showSettings') {
@@ -87,6 +121,20 @@ class _ProxyHomeState extends State<ProxyHome> {
     scheduleMicrotask(_refreshOverviewIfReady);
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _configureTitlebar(MediaQuery.sizeOf(context));
+  }
+
+  String get _proxyState => model.loading
+      ? '准备中…'
+      : !model.proxy.connected
+      ? '内核未连接'
+      : model.proxy.running
+      ? '代理运行中'
+      : '代理已停止';
+
   void _modelChanged() {
     if (!mounted) return;
     if (previousPage != model.page) {
@@ -97,6 +145,7 @@ class _ProxyHomeState extends State<ProxyHome> {
       overviewGeneration = null;
     }
     setState(() {});
+    _configureTitlebar(MediaQuery.sizeOf(context));
     scheduleMicrotask(_refreshOverviewIfReady);
   }
 
@@ -191,7 +240,6 @@ class _ProxyHomeState extends State<ProxyHome> {
   @override
   Widget build(BuildContext context) {
     final ui = DesktopWidgets(context, model);
-    _configureTitlebar(MediaQuery.sizeOf(context));
     return Shortcuts(
       // 表单焦点遍历使用统一规则，避免依赖宿主文本输入事件转换。
       shortcuts: const {
@@ -266,10 +314,9 @@ class _ProxyHomeState extends State<ProxyHome> {
                               ),
                               child: Padding(
                                 padding: EdgeInsets.symmetric(
-                                  horizontal:
-                                      MediaQuery.sizeOf(context).width < 760
-                                      ? 18
-                                      : 28,
+                                  horizontal: DesktopDesign.pageInset(
+                                    MediaQuery.sizeOf(context).width,
+                                  ),
                                   vertical:
                                       MediaQuery.sizeOf(context).height < 700
                                       ? 18
@@ -277,19 +324,22 @@ class _ProxyHomeState extends State<ProxyHome> {
                                 ),
                                 child: AbsorbPointer(
                                   absorbing: model.locked,
-                                  child: IndexedStack(
-                                    index: model.page,
-                                    children: [
-                                      OverviewPage(
-                                        model: model,
-                                        onSettings: _showSettings,
-                                      ),
-                                      ConfigurationPage(model: model),
-                                      RoutesPage(model: model),
-                                      LogsPage(model: model),
-                                      TunnelsPage(model: model),
-                                      DiagnosticsPage(model: model),
-                                    ],
+                                  child: ExcludeFocus(
+                                    excluding: model.locked,
+                                    child: IndexedStack(
+                                      index: model.page,
+                                      children: [
+                                        OverviewPage(
+                                          model: model,
+                                          onSettings: _showSettings,
+                                        ),
+                                        ConfigurationPage(model: model),
+                                        RoutesPage(model: model),
+                                        LogsPage(model: model),
+                                        TunnelsPage(model: model),
+                                        DiagnosticsPage(model: model),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
@@ -335,10 +385,14 @@ class _ProxyHomeState extends State<ProxyHome> {
                     width: 32,
                     height: 32,
                     decoration: BoxDecoration(
-                      color: theme.colorScheme.primaryContainer,
+                      color: theme.colorScheme.primary,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Icon(DesktopIcons.globe, size: 19, color: ui.accent),
+                    child: Icon(
+                      DesktopIcons.globe,
+                      size: 19,
+                      color: theme.colorScheme.onPrimary,
+                    ),
                   ),
                   const SizedBox(width: 10),
                   const Expanded(
@@ -355,7 +409,7 @@ class _ProxyHomeState extends State<ProxyHome> {
                 ],
               ),
               const SizedBox(height: 25),
-              Text('工作区', style: TextStyle(fontSize: 10, color: ui.muted)),
+              Text('网络工作区', style: TextStyle(fontSize: 10, color: ui.muted)),
             ],
           ),
         ),
@@ -378,14 +432,23 @@ class _ProxyHomeState extends State<ProxyHome> {
                 children: [
                   ui.dot(model.proxy.connected),
                   const SizedBox(width: 7),
-                  Text(
-                    model.proxy.connected ? '本机内核已连接' : '内核未连接',
-                    style: theme.textTheme.bodySmall!.copyWith(fontSize: 11),
+                  Expanded(
+                    child: Text(
+                      model.proxy.connected ? '本机内核已连接' : '内核未连接',
+                      style: theme.textTheme.labelSmall,
+                    ),
                   ),
                 ],
               ),
               const SizedBox(height: 4),
-              Text('API v1', style: TextStyle(fontSize: 10, color: ui.muted)),
+              Text(
+                model.loading
+                    ? '正在准备运行环境'
+                    : model.proxy.connected
+                    ? _proxyState
+                    : '请检查连接状态',
+                style: theme.textTheme.labelSmall,
+              ),
             ],
           ),
         ),
@@ -403,54 +466,61 @@ class _ProxyHomeState extends State<ProxyHome> {
     );
   }
 
-  Widget _toolbar(BuildContext context, DesktopWidgets ui) => Container(
-    height: DesktopDesign.toolbarHeight,
-    color: Theme.of(context).colorScheme.surface,
-    padding: const EdgeInsets.only(right: 22),
-    key: const ValueKey('desktop-titlebar'),
-    child: Row(
-      children: [
-        Expanded(
-          child: _windowDragArea(
-            key: titleDragKey,
-            child: Padding(
-              padding: const EdgeInsets.only(left: 22),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  pages[model.page].$3,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: ui.ink,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+  Widget _contentBar(Widget child) => Align(
+    alignment: Alignment.topCenter,
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(
+        maxWidth: DesktopDesign.contentMaxWidth,
+      ),
+      child: child,
+    ),
+  );
+
+  Widget _toolbar(BuildContext context, DesktopWidgets ui) => _contentBar(
+    Container(
+      height: DesktopDesign.toolbarHeight,
+      color: Theme.of(context).colorScheme.surface,
+      padding: EdgeInsets.only(
+        right: DesktopDesign.pageInset(MediaQuery.sizeOf(context).width),
+      ),
+      key: const ValueKey('desktop-titlebar'),
+      child: Row(
+        children: [
+          Expanded(
+            child: _windowDragArea(
+              key: titleDragKey,
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: DesktopDesign.pageInset(
+                    MediaQuery.sizeOf(context).width,
+                  ),
+                ),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    pages[model.page].$3,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall,
                   ),
                 ),
               ),
             ),
           ),
-        ),
-        if (model.page != 0) ...[
-          ui.dot(model.proxy.connected && model.proxy.running, size: 6),
-          const SizedBox(width: 7),
-          Text(
-            model.loading
-                ? '准备中…'
-                : model.proxy.running
-                ? '代理运行中'
-                : '代理已停止',
-            style: TextStyle(fontSize: 11, color: ui.muted),
-          ),
+          if (model.page != 0) ...[
+            ui.dot(model.proxy.connected && model.proxy.running, size: 6),
+            const SizedBox(width: 7),
+            Text(_proxyState, style: TextStyle(fontSize: 11, color: ui.muted)),
+          ],
+          if (model.page == 2) ...[
+            const SizedBox(width: 12),
+            FilledButton(
+              onPressed: model.locked ? null : model.apply,
+              child: const Text('应用配置'),
+            ),
+          ],
         ],
-        if (model.page == 2) ...[
-          const SizedBox(width: 12),
-          FilledButton(
-            onPressed: model.locked ? null : model.apply,
-            child: const Text('应用配置'),
-          ),
-        ],
-      ],
+      ),
     ),
   );
 
@@ -458,46 +528,52 @@ class _ProxyHomeState extends State<ProxyHome> {
   Widget _windowDragArea({required Key key, required Widget child}) =>
       SizedBox(key: key, height: DesktopDesign.toolbarHeight, child: child);
 
-  Widget _statusBar(BuildContext context, DesktopWidgets ui) => Container(
-    height: 36,
-    decoration: BoxDecoration(
-      border: Border(
-        top: BorderSide(color: ui.line.withValues(alpha: .6), width: .5),
+  Widget _statusBar(BuildContext context, DesktopWidgets ui) => _contentBar(
+    Container(
+      constraints: const BoxConstraints(minHeight: 36),
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(color: ui.line.withValues(alpha: .6), width: .5),
+        ),
       ),
-    ),
-    padding: const EdgeInsets.symmetric(horizontal: 20),
-    child: Row(
-      children: [
-        if (model.locked) ...[
-          SizedBox.square(
-            dimension: 12,
-            child: CircularProgressIndicator(strokeWidth: 2, color: ui.muted),
+      padding: EdgeInsets.symmetric(
+        horizontal: DesktopDesign.pageInset(MediaQuery.sizeOf(context).width),
+      ),
+      child: Row(
+        children: [
+          if (model.locked) ...[
+            SizedBox.square(
+              dimension: 12,
+              child: CircularProgressIndicator(strokeWidth: 2, color: ui.muted),
+            ),
+            const SizedBox(width: 7),
+          ],
+          Expanded(
+            child: Text(
+              model.loading
+                  ? model.proxy.connected
+                        ? '正在准备代理…'
+                        : '正在读取内核配置…'
+                  : model.locked
+                  ? '正在处理…'
+                  : !model.proxy.connected
+                  ? '等待连接内核'
+                  : model.proxy.configurationChanged
+                  ? '正在同步内核配置…'
+                  : model.dirty
+                  ? '草稿未应用'
+                  : '所有配置已保存',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
           ),
-          const SizedBox(width: 7),
+          const SizedBox(width: DesktopDesign.spacing),
+          IconButton(
+            tooltip: '重新读取内核配置',
+            onPressed: model.locked ? null : _reload,
+            icon: Icon(Icons.refresh, size: 14, color: ui.muted),
+          ),
         ],
-        Text(
-          model.loading
-              ? model.proxy.connected
-                    ? '正在准备代理…'
-                    : '正在读取内核配置…'
-              : model.locked
-              ? '正在处理…'
-              : !model.proxy.connected
-              ? '等待连接内核'
-              : model.proxy.configurationChanged
-              ? '正在同步内核配置…'
-              : model.dirty
-              ? '草稿未应用'
-              : '所有配置已保存',
-          style: TextStyle(color: ui.muted, fontSize: 11),
-        ),
-        const Spacer(),
-        IconButton(
-          tooltip: '重新读取内核配置',
-          onPressed: model.locked ? null : _reload,
-          icon: Icon(Icons.refresh, size: 14, color: ui.muted),
-        ),
-      ],
+      ),
     ),
   );
 }

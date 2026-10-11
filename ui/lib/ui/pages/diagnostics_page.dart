@@ -42,8 +42,7 @@ class DiagnosticsPage extends StatelessWidget {
         ? model.testProfileId
         : model.proxy.defaultConnectionId;
     return ui.list('diagnostics', [
-      Text('连接诊断', style: Theme.of(context).textTheme.titleLarge),
-      ui.caption('使用独立会话测试代理认证及目标 CONNECT'),
+      ui.pageHeading('连接诊断', '使用独立会话测试代理认证及目标 CONNECT'),
       ui.section('检查连接', [
         if (model.proxy.connections.isNotEmpty)
           ui.formRow(

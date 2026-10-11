@@ -51,7 +51,10 @@ class SettingsDialog extends StatelessWidget {
                 Expanded(
                   child: AbsorbPointer(
                     absorbing: model.locked,
-                    child: ui.list('settings', _settings(ui)),
+                    child: ExcludeFocus(
+                      excluding: model.locked,
+                      child: ui.list('settings', _settings(ui)),
+                    ),
                   ),
                 ),
                 StreamBuilder<UiMessage>(

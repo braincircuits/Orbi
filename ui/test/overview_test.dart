@@ -30,6 +30,7 @@ class ReadyOverviewModel extends ProxyViewModel {
 class OverviewApi extends KernelApiClient {
   int revision = 1, generation = 1, sequence = 0;
   String mode = 'proxy';
+  String provider = '测试网络';
   bool running = true, failWrite = false;
   Completer<Map<String, dynamic>>? delayed;
   final calls = <String>[];
@@ -128,7 +129,7 @@ class OverviewApi extends KernelApiClient {
         'ip': '203.0.113.24',
         'country': '日本',
         'city': '东京',
-        'provider': '测试网络',
+        'provider': provider,
         'checkedAt': '2026-10-10T08:00:00Z',
       },
       _ => {
@@ -289,6 +290,91 @@ void main() {
     await tester.pumpAndSettle();
     expect(requests('exit-ip'), 4);
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('刷新出口时保留本轮结果和卡片高度，网络变化后清除旧结果', (tester) async {
+    final (directory, api, proxy) = (await tester.runAsync(fixture))!;
+    final model = ReadyOverviewModel(proxy, directory);
+    api.provider = '很长的运营商名称，用来验证多行数据在刷新过程中不会消失并改变卡片高度';
+    proxy.appliedProfile = ProxyProfile(
+      values: {'server.host': '2001:db8:1000:578c:5400:6ff:fec7:a82c'},
+    );
+    model.accept(proxy.appliedProfile!);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    addTearDown(() async {
+      model.dispose();
+      await directory.delete(recursive: true);
+    });
+    for (final brightness in Brightness.values) {
+      for (final width in [1200.0, 900.0, 760.0, 700.0]) {
+        tester.platformDispatcher.textScaleFactorTestValue = width == 900
+            ? 1.3
+            : 1;
+        tester.view.physicalSize = Size(width, 2200);
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: desktopTheme(brightness),
+            home: Scaffold(body: OverviewPage(model: model)),
+          ),
+        );
+        await model.startOverview('exit-ip');
+        await tester.pumpAndSettle();
+        final exit = find.byKey(const ValueKey('overview-exit-card'));
+        final connection = find.byKey(
+          const ValueKey('overview-connection-card'),
+        );
+        final before = tester.getRect(exit);
+        if (width >= 760) {
+          expect(tester.getRect(connection).top, before.top);
+          expect(tester.getRect(connection).bottom, before.bottom);
+          expect(
+            tester
+                .getCenter(
+                  find.byKey(
+                    const ValueKey('overview-connection-card-divider'),
+                  ),
+                )
+                .dy,
+            tester
+                .getCenter(
+                  find.byKey(const ValueKey('overview-exit-card-divider')),
+                )
+                .dy,
+          );
+        }
+        api.delayed = Completer();
+        await tester.tap(find.text('刷新'));
+        await tester.pumpAndSettle();
+        expect(find.text('获取中…'), findsOneWidget);
+        expect(find.text('203.0.113.24'), findsOneWidget);
+        expect(find.text(api.provider), findsOneWidget);
+        expect(tester.getRect(exit), before);
+        api.delayed!.complete({
+          'revision': api.revision,
+          'data': api.operation('exit-ip'),
+        });
+        await tester.pumpAndSettle();
+        expect(tester.getRect(exit), before);
+        api.delayed = null;
+        expect(tester.takeException(), isNull);
+      }
+    }
+    api.delayed = Completer();
+    final refresh = model.startOverview('exit-ip');
+    await tester.pumpAndSettle();
+    final oldResult = api.operation('exit-ip');
+    api.generation++;
+    await tester.runAsync(() => proxy.attach());
+    await tester.pumpAndSettle();
+    expect(find.text('203.0.113.24'), findsNothing);
+    api.delayed!.complete({'revision': api.revision, 'data': oldResult});
+    await refresh;
+    await tester.pumpAndSettle();
+    expect(find.text('203.0.113.24'), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
 

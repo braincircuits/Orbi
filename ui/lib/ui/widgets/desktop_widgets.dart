@@ -26,10 +26,12 @@ class DesktopWidgets {
       color: active ? success : muted.withValues(alpha: .5),
     ),
   );
-  Widget card(Widget child, {EdgeInsets padding = const EdgeInsets.all(16)}) =>
-      Card(
-        child: Padding(padding: padding, child: child),
-      );
+  Widget card(
+    Widget child, {
+    EdgeInsets padding = const EdgeInsets.all(DesktopDesign.panelPadding),
+  }) => Card(
+    child: Padding(padding: padding, child: child),
+  );
   Widget notice(String text, IconData icon, {bool warning = false}) =>
       Container(
         padding: const EdgeInsets.all(11),
@@ -64,17 +66,29 @@ class DesktopWidgets {
     ),
   );
   Widget caption(String text) => Padding(
-    padding: const EdgeInsets.fromLTRB(3, 8, 3, 18),
+    padding: const EdgeInsets.fromLTRB(0, 8, 0, 16),
     child: Text(
       text,
       style: TextStyle(fontSize: 12, height: 1.5, color: muted),
     ),
   );
   Widget heading(String text) => Padding(
-    padding: const EdgeInsets.fromLTRB(3, 0, 3, 9),
-    child: Text(
-      text,
-      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: ink),
+    padding: const EdgeInsets.only(bottom: DesktopDesign.spacing),
+    child: Text(text, style: Theme.of(context).textTheme.titleSmall),
+  );
+  Widget pageHeading(String title, String subtitle) => Padding(
+    padding: const EdgeInsets.only(bottom: DesktopDesign.sectionSpacing),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: Theme.of(context).textTheme.headlineSmall!
+              .copyWith(fontSize: 22, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: DesktopDesign.spacing / 2),
+        Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
+      ],
     ),
   );
   Widget section(String title, List<Widget> rows, {String? footer}) => Column(
@@ -233,9 +247,9 @@ class DesktopWidgets {
     ),
   );
 
-  Widget empty(IconData icon, String title, String subtitle) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 36),
-    child: Center(
+  Widget empty(IconData icon, String title, String subtitle) => Center(
+    child: SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 36),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [

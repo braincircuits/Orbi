@@ -8,6 +8,11 @@ abstract final class DesktopDesign {
   static const monoFontFamily = 'RobotoMono';
   static const spacing = 8.0;
   static const controlHeight = 30.0;
+  static const inputPadding = EdgeInsets.symmetric(horizontal: 9, vertical: 5);
+  static const inputIconConstraints = BoxConstraints.tightFor(
+    width: controlHeight,
+    height: controlHeight,
+  );
   static const overviewControlHeight = 36.0;
   static const overviewToggleWidth = 90.0;
   static const overviewModeWidth = 64.0;
@@ -16,10 +21,13 @@ abstract final class DesktopDesign {
   static const detailIconSize = 16.0;
   static const navigationIconSize = 16.0;
   static const controlRadius = 6.0;
-  static const panelRadius = 9.0;
+  static const panelRadius = 12.0;
   static const toolbarHeight = 56.0;
   static const contentMaxWidth = 1200.0;
   static const navigationWidth = 184.0;
+  static const sectionSpacing = spacing * 3;
+  static const panelPadding = spacing * 2;
+  static double pageInset(double width) => width < 760 ? 18 : 28;
   static const applyAction = Color(0xFF1769DA);
   static Color trafficSend(Brightness brightness) =>
       brightness == Brightness.dark
@@ -59,14 +67,14 @@ ThemeData desktopTheme(Brightness brightness) {
         onPrimaryContainer: dark
             ? const Color(0xFFBDD8FF)
             : const Color(0xFF006BE6),
-        surface: dark ? const Color(0xFF202123) : const Color(0xFFFAFAFA),
-        surfaceContainerLowest: dark ? const Color(0xFF2B2C2F) : Colors.white,
+        surface: dark ? const Color(0xFF171C26) : const Color(0xFFF3F6FA),
+        surfaceContainerLowest: dark ? const Color(0xFF202735) : Colors.white,
         surfaceContainerLow: dark
-            ? const Color(0xFF29282D)
-            : const Color(0xFFEEEDF0),
+            ? const Color(0xFF1C2330)
+            : const Color(0xFFEAF0F7),
         surfaceContainer: dark
-            ? const Color(0xFF29282D)
-            : const Color(0xFFEEEDF0),
+            ? const Color(0xFF1C2330)
+            : const Color(0xFFEAF0F7),
         surfaceContainerHigh: dark
             ? const Color(0xFF303136)
             : const Color(0xFFE9E9ED),
@@ -79,8 +87,8 @@ ThemeData desktopTheme(Brightness brightness) {
             : const Color(0xFF6D6D76),
         outline: dark ? const Color(0xFF55565D) : const Color(0xFFBDBDC6),
         outlineVariant: dark
-            ? const Color(0xFF414247)
-            : const Color(0xFFDEDEE3),
+            ? const Color(0xFF323D4E)
+            : const Color(0xFFDFE6EF),
         secondaryContainer: dark
             ? const Color(0xFF354762)
             : const Color(0xFFDBE7FA),
@@ -127,18 +135,29 @@ ThemeData desktopTheme(Brightness brightness) {
   );
   return ThemeData(
     useMaterial3: true,
-    // 固定 Material 桌面组件形态；文本编辑仍使用 Flutter 的宿主键盘映射。
-    platform: TargetPlatform.linux,
+    // 通过组件主题统一视觉，保留真实宿主的文本编辑与键盘行为。
     brightness: brightness,
     fontFamily: DesktopDesign.fontFamily,
     fontFamilyFallback: DesktopDesign.fontFamilyFallback,
     colorScheme: scheme,
     scaffoldBackgroundColor: scheme.surface,
     visualDensity: VisualDensity.compact,
+    focusColor: scheme.primary.withValues(alpha: .16),
+    hoverColor: scheme.primary.withValues(alpha: .06),
     textTheme: TextTheme(
+      headlineSmall: TextStyle(
+        fontSize: 22,
+        fontWeight: FontWeight.w600,
+        color: scheme.onSurface,
+      ),
+      headlineMedium: TextStyle(
+        fontSize: 24,
+        fontWeight: FontWeight.w600,
+        color: scheme.onSurface,
+      ),
       bodyLarge: TextStyle(
         fontSize: DesktopDesign.bodyFontSize,
-        height: 1.5,
+        height: 20 / DesktopDesign.bodyFontSize,
         color: scheme.onSurface,
       ),
       bodyMedium: TextStyle(
@@ -161,6 +180,12 @@ ThemeData desktopTheme(Brightness brightness) {
         fontWeight: FontWeight.w500,
         color: scheme.onSurface,
       ),
+      titleSmall: TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+        color: scheme.onSurface,
+      ),
+      labelSmall: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
       labelLarge: TextStyle(
         fontSize: DesktopDesign.bodyFontSize,
         fontWeight: FontWeight.w400,
@@ -168,25 +193,50 @@ ThemeData desktopTheme(Brightness brightness) {
       ),
     ),
     filledButtonTheme: FilledButtonThemeData(style: button),
-    outlinedButtonTheme: OutlinedButtonThemeData(style: button),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: button.copyWith(
+        side: WidgetStateProperty.resolveWith(
+          (states) => BorderSide(
+            color: states.contains(WidgetState.disabled)
+                ? scheme.outlineVariant.withValues(alpha: .5)
+                : scheme.outlineVariant,
+          ),
+        ),
+      ),
+    ),
     textButtonTheme: TextButtonThemeData(style: button),
-    segmentedButtonTheme: SegmentedButtonThemeData(style: button),
+    segmentedButtonTheme: SegmentedButtonThemeData(
+      style: button.copyWith(
+        // SegmentedButton 内部最小高度为 40，通过共享密度统一到桌面控件高度。
+        visualDensity: const VisualDensity(vertical: -2.5),
+        padding: const WidgetStatePropertyAll(
+          EdgeInsets.symmetric(horizontal: 11),
+        ),
+        side: WidgetStatePropertyAll(BorderSide(color: scheme.outlineVariant)),
+      ),
+    ),
     iconButtonTheme: IconButtonThemeData(
       style: ButtonStyle(
         iconSize: const WidgetStatePropertyAll(DesktopDesign.actionIconSize),
         minimumSize: const WidgetStatePropertyAll(
           Size.square(DesktopDesign.controlHeight),
         ),
-        padding: const WidgetStatePropertyAll(EdgeInsets.all(8)),
+        padding: const WidgetStatePropertyAll(EdgeInsets.all(6)),
         shape: WidgetStatePropertyAll(shape),
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),
     ),
     inputDecorationTheme: InputDecorationTheme(
+      visualDensity: VisualDensity.standard,
       isDense: true,
       filled: true,
       fillColor: scheme.surfaceContainerLowest,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+      constraints: const BoxConstraints(minHeight: DesktopDesign.controlHeight),
+      contentPadding: DesktopDesign.inputPadding,
+      prefixIconConstraints: DesktopDesign.inputIconConstraints,
+      suffixIconConstraints: DesktopDesign.inputIconConstraints,
+      prefixIconColor: scheme.onSurfaceVariant,
+      suffixIconColor: scheme.onSurfaceVariant,
       border: inputBorder(scheme.outlineVariant),
       enabledBorder: inputBorder(scheme.outlineVariant),
       focusedBorder: inputBorder(scheme.primary, 2),
@@ -209,13 +259,13 @@ ThemeData desktopTheme(Brightness brightness) {
     ),
     drawerTheme: const DrawerThemeData(shape: RoundedRectangleBorder()),
     navigationDrawerTheme: NavigationDrawerThemeData(
-      backgroundColor: scheme.surfaceContainerLow,
+      backgroundColor: scheme.surfaceContainerLowest,
       elevation: 0,
       surfaceTintColor: Colors.transparent,
-      tileHeight: 34,
-      indicatorSize: const Size(164, 34),
+      tileHeight: 40,
+      indicatorSize: const Size(164, 40),
       indicatorShape: shape,
-      indicatorColor: scheme.primaryContainer,
+      indicatorColor: scheme.primary,
       labelTextStyle: WidgetStateProperty.resolveWith(
         (states) => TextStyle(
           fontFamily: DesktopDesign.fontFamily,
@@ -225,7 +275,7 @@ ThemeData desktopTheme(Brightness brightness) {
               ? FontWeight.w500
               : FontWeight.w400,
           color: states.contains(WidgetState.selected)
-              ? scheme.onPrimaryContainer
+              ? scheme.onPrimary
               : scheme.onSurfaceVariant,
         ),
       ),
@@ -233,7 +283,7 @@ ThemeData desktopTheme(Brightness brightness) {
         (states) => IconThemeData(
           size: DesktopDesign.navigationIconSize,
           color: states.contains(WidgetState.selected)
-              ? scheme.onPrimaryContainer
+              ? scheme.onPrimary
               : scheme.onSurfaceVariant,
         ),
       ),
@@ -249,15 +299,16 @@ ThemeData desktopTheme(Brightness brightness) {
         color: scheme.onSurface,
       ),
       inputDecorationTheme: InputDecorationThemeData(
+        visualDensity: VisualDensity.standard,
         isDense: true,
         filled: true,
         fillColor: scheme.surfaceContainerLowest,
-        constraints: const BoxConstraints.tightFor(height: 30),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-        suffixIconConstraints: const BoxConstraints.tightFor(
-          width: 28,
-          height: 30,
+        constraints: const BoxConstraints(
+          minHeight: DesktopDesign.controlHeight,
         ),
+        contentPadding: DesktopDesign.inputPadding,
+        suffixIconConstraints: DesktopDesign.inputIconConstraints,
+        suffixIconColor: scheme.onSurfaceVariant,
         border: inputBorder(scheme.outlineVariant),
         enabledBorder: inputBorder(scheme.outlineVariant),
         focusedBorder: inputBorder(scheme.primary, 2),
@@ -329,13 +380,25 @@ ThemeData desktopTheme(Brightness brightness) {
       selectionColor: scheme.primary.withValues(alpha: .25),
     ),
     dialogTheme: DialogThemeData(
+      backgroundColor: scheme.surfaceContainerLowest,
+      surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(DesktopDesign.panelRadius),
       ),
     ),
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
-      width: 440,
+      backgroundColor: scheme.surfaceContainerLowest,
+      contentTextStyle: TextStyle(
+        fontFamily: DesktopDesign.fontFamily,
+        fontFamilyFallback: DesktopDesign.fontFamilyFallback,
+        color: scheme.onSurface,
+        fontSize: DesktopDesign.bodyFontSize,
+        height: 1.5,
+      ),
+      closeIconColor: scheme.onSurfaceVariant,
+      showCloseIcon: true,
+      elevation: 3,
       shape: shape,
     ),
   );

@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:network_ui/models/kernel_status.dart';
+import 'package:network_ui/models/proxy_profile.dart';
 import 'package:network_ui/ui/desktop_theme.dart';
 import 'package:network_ui/ui/pages/overview_page.dart';
 
@@ -15,8 +16,15 @@ import 'traffic_fixture.dart';
 void main() {
   final destination = Platform.environment['UI_PREVIEW_DIR'];
   testWidgets('概览真实字体的明暗与宽窄窗口预览', (tester) async {
-    final (directory, _, proxy) = (await tester.runAsync(fixture))!;
+    final (directory, api, proxy) = (await tester.runAsync(fixture))!;
     final model = ReadyOverviewModel(proxy, directory);
+    proxy.appliedProfile = ProxyProfile(
+      values: {'server.host': '2001:db8:1000:578c:5400:6ff:fec7:a82c'},
+    );
+    model.accept(proxy.appliedProfile!);
+    api.provider = 'Example Network Company, LLC';
+    await model.startOverview('exit-ip');
+    await model.startOverview('latency');
     proxy.traffic = TrafficSnapshot.merge(null, trafficFixture(time: 300000));
     addTearDown(() async {
       model.dispose();
@@ -42,7 +50,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     final boundary = GlobalKey();
     for (final brightness in Brightness.values) {
-      for (final width in [900.0, 480.0, 320.0]) {
+      for (final width in [1200.0, 900.0, 480.0, 320.0]) {
         tester.view.physicalSize = Size(width, 1600);
         await tester.pumpWidget(
           MaterialApp(
