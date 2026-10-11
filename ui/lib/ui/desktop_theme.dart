@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// 共用原型的系统字体优先顺序、尺寸与间距，控件结构不随平台改变。
+/// macOS 风格的系统字体优先顺序、尺寸与间距，控件结构不随平台改变。
 abstract final class DesktopDesign {
   static const fontFamily = '.AppleSystemUIFont';
   static const fontFamilyFallback = ['PingFang SC', 'Segoe UI', 'NotoSansSC'];
@@ -21,14 +21,15 @@ abstract final class DesktopDesign {
   static const detailIconSize = 16.0;
   static const navigationIconSize = 16.0;
   static const controlRadius = 6.0;
-  static const panelRadius = 12.0;
+  static const panelRadius = 10.0;
   static const toolbarHeight = 56.0;
   static const contentMaxWidth = 1200.0;
   static const navigationWidth = 184.0;
   static const sectionSpacing = spacing * 3;
   static const panelPadding = spacing * 2;
   static double pageInset(double width) => width < 760 ? 18 : 28;
-  static const applyAction = Color(0xFF1769DA);
+  // 蓝色略深于系统默认强调色，保证白色按钮文字满足 4.5:1 对比度。
+  static const applyAction = Color(0xFF006FE6);
   static Color trafficSend(Brightness brightness) =>
       brightness == Brightness.dark
       ? const Color(0xFF56CEDC)
@@ -51,50 +52,50 @@ abstract final class DesktopDesign {
       : const Color(0xFF8C6200);
 }
 
-/// 统一的 Material 3 桌面主题；浅色、深色使用相同的排版和控件尺寸。
+/// 基于 Material 组件的 macOS 风格桌面主题；浅色、深色使用相同的排版和控件尺寸。
 ThemeData desktopTheme(Brightness brightness) {
   final dark = brightness == Brightness.dark;
   final scheme =
       ColorScheme.fromSeed(
-        seedColor: const Color(0xFF006BE6),
+        seedColor: const Color(0xFF006FE6),
         brightness: brightness,
       ).copyWith(
-        primary: dark ? const Color(0xFF78B5FF) : const Color(0xFF006BE6),
-        onPrimary: dark ? const Color(0xFF102B4A) : Colors.white,
+        primary: dark ? const Color(0xFF64A9FF) : const Color(0xFF006FE6),
+        onPrimary: dark ? const Color(0xFF08294F) : Colors.white,
         primaryContainer: dark
-            ? const Color(0xFF354762)
-            : const Color(0xFFDBE7FA),
+            ? const Color(0xFF34465E)
+            : const Color(0xFFE5EFFF),
         onPrimaryContainer: dark
             ? const Color(0xFFBDD8FF)
-            : const Color(0xFF006BE6),
-        surface: dark ? const Color(0xFF171C26) : const Color(0xFFF3F6FA),
-        surfaceContainerLowest: dark ? const Color(0xFF202735) : Colors.white,
+            : const Color(0xFF006FE6),
+        surface: dark ? const Color(0xFF202020) : const Color(0xFFF5F5F5),
+        surfaceContainerLowest: dark ? const Color(0xFF2B2B2B) : Colors.white,
         surfaceContainerLow: dark
-            ? const Color(0xFF1C2330)
-            : const Color(0xFFEAF0F7),
+            ? const Color(0xFF292929)
+            : const Color(0xFFEDEDEC),
         surfaceContainer: dark
-            ? const Color(0xFF1C2330)
-            : const Color(0xFFEAF0F7),
+            ? const Color(0xFF292929)
+            : const Color(0xFFEDEDEC),
         surfaceContainerHigh: dark
-            ? const Color(0xFF303136)
-            : const Color(0xFFE9E9ED),
+            ? const Color(0xFF383838)
+            : const Color(0xFFE5E5E5),
         surfaceContainerHighest: dark
-            ? const Color(0xFF38393D)
-            : const Color(0xFFE2E2E7),
-        onSurface: dark ? const Color(0xFFF0F0F3) : const Color(0xFF242429),
+            ? const Color(0xFF424242)
+            : const Color(0xFFDCDCDC),
+        onSurface: dark ? const Color(0xFFF2F2F2) : const Color(0xFF242424),
         onSurfaceVariant: dark
-            ? const Color(0xFFAEAEB8)
-            : const Color(0xFF6D6D76),
-        outline: dark ? const Color(0xFF55565D) : const Color(0xFFBDBDC6),
+            ? const Color(0xFFB0B0B0)
+            : const Color(0xFF6B6B6B),
+        outline: dark ? const Color(0xFF606060) : const Color(0xFFBEBEBE),
         outlineVariant: dark
-            ? const Color(0xFF323D4E)
-            : const Color(0xFFDFE6EF),
+            ? const Color(0xFF414141)
+            : const Color(0xFFDDDDDD),
         secondaryContainer: dark
-            ? const Color(0xFF354762)
-            : const Color(0xFFDBE7FA),
+            ? const Color(0xFF34465E)
+            : const Color(0xFFE5EFFF),
         onSecondaryContainer: dark
             ? const Color(0xFFBDD8FF)
-            : const Color(0xFF006BE6),
+            : const Color(0xFF006FE6),
       );
   final shape = RoundedRectangleBorder(
     borderRadius: BorderRadius.circular(DesktopDesign.controlRadius),
@@ -142,6 +143,7 @@ ThemeData desktopTheme(Brightness brightness) {
     colorScheme: scheme,
     scaffoldBackgroundColor: scheme.surface,
     visualDensity: VisualDensity.compact,
+    splashFactory: NoSplash.splashFactory,
     focusColor: scheme.primary.withValues(alpha: .16),
     hoverColor: scheme.primary.withValues(alpha: .06),
     textTheme: TextTheme(
@@ -195,6 +197,16 @@ ThemeData desktopTheme(Brightness brightness) {
     filledButtonTheme: FilledButtonThemeData(style: button),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: button.copyWith(
+        backgroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.disabled)
+              ? scheme.surfaceContainerLow
+              : scheme.surfaceContainerLowest,
+        ),
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.disabled)
+              ? scheme.onSurface.withValues(alpha: .38)
+              : scheme.onSurface,
+        ),
         side: WidgetStateProperty.resolveWith(
           (states) => BorderSide(
             color: states.contains(WidgetState.disabled)
@@ -207,6 +219,18 @@ ThemeData desktopTheme(Brightness brightness) {
     textButtonTheme: TextButtonThemeData(style: button),
     segmentedButtonTheme: SegmentedButtonThemeData(
       style: button.copyWith(
+        backgroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? dark
+                    ? scheme.outline
+                    : scheme.surfaceContainerLowest
+              : scheme.surfaceContainerHigh,
+        ),
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.disabled)
+              ? scheme.onSurface.withValues(alpha: .38)
+              : scheme.onSurface,
+        ),
         // SegmentedButton 内部最小高度为 40，通过共享密度统一到桌面控件高度。
         visualDensity: const VisualDensity(vertical: -2.5),
         padding: const WidgetStatePropertyAll(
@@ -259,13 +283,13 @@ ThemeData desktopTheme(Brightness brightness) {
     ),
     drawerTheme: const DrawerThemeData(shape: RoundedRectangleBorder()),
     navigationDrawerTheme: NavigationDrawerThemeData(
-      backgroundColor: scheme.surfaceContainerLowest,
+      backgroundColor: scheme.surfaceContainerLow,
       elevation: 0,
       surfaceTintColor: Colors.transparent,
-      tileHeight: 40,
-      indicatorSize: const Size(164, 40),
+      tileHeight: 34,
+      indicatorSize: const Size(164, 32),
       indicatorShape: shape,
-      indicatorColor: scheme.primary,
+      indicatorColor: scheme.onSurface.withValues(alpha: dark ? .10 : .08),
       labelTextStyle: WidgetStateProperty.resolveWith(
         (states) => TextStyle(
           fontFamily: DesktopDesign.fontFamily,
@@ -274,23 +298,19 @@ ThemeData desktopTheme(Brightness brightness) {
           fontWeight: states.contains(WidgetState.selected)
               ? FontWeight.w500
               : FontWeight.w400,
-          color: states.contains(WidgetState.selected)
-              ? scheme.onPrimary
-              : scheme.onSurfaceVariant,
+          color: scheme.onSurface,
         ),
       ),
       iconTheme: WidgetStateProperty.resolveWith(
         (states) => IconThemeData(
           size: DesktopDesign.navigationIconSize,
-          color: states.contains(WidgetState.selected)
-              ? scheme.onPrimary
-              : scheme.onSurfaceVariant,
+          color: scheme.primary,
         ),
       ),
     ),
     dividerTheme: DividerThemeData(
       color: scheme.outlineVariant,
-      thickness: 1,
+      thickness: .5,
       space: 1,
     ),
     dropdownMenuTheme: DropdownMenuThemeData(
@@ -380,7 +400,7 @@ ThemeData desktopTheme(Brightness brightness) {
       selectionColor: scheme.primary.withValues(alpha: .25),
     ),
     dialogTheme: DialogThemeData(
-      backgroundColor: scheme.surfaceContainerLowest,
+      backgroundColor: scheme.surface,
       surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(DesktopDesign.panelRadius),

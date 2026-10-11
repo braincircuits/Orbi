@@ -305,7 +305,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
-            color: Color.alphaBlend(ui.accent.withValues(alpha: .06), ui.panel),
+            color: Theme.of(context).colorScheme.surfaceContainerLow,
             borderRadius: const BorderRadius.vertical(
               top: Radius.circular(DesktopDesign.panelRadius),
             ),

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/proxy_profile.dart';
@@ -9,6 +9,7 @@ import '../services/native_bridge.dart';
 import '../services/kernel_api_client.dart';
 import '../services/proxy_controller.dart';
 import '../services/runtime_preferences.dart';
+import '../services/appearance_preferences.dart';
 
 class UiMessage {
   const UiMessage(this.text, {this.failure = false});
@@ -22,9 +23,12 @@ class ProxyViewModel extends ChangeNotifier {
     ProxyController? proxy,
     NativeBridge? native,
     RuntimePreferences? preferences,
+    AppearancePreferences? appearancePreferences,
   }) : proxy = proxy ?? ProxyController(),
        native = native ?? NativeBridge(),
-       preferences = preferences ?? RuntimePreferences() {
+       preferences = preferences ?? RuntimePreferences(),
+       appearancePreferences =
+           appearancePreferences ?? AppearancePreferences() {
     for (final e in ProxyProfile.defaults.entries) {
       fields[e.key] = TextEditingController(text: e.value);
     }
@@ -35,6 +39,9 @@ class ProxyViewModel extends ChangeNotifier {
   final NativeBridge native;
   final ProxyController proxy;
   final RuntimePreferences preferences;
+  final AppearancePreferences appearancePreferences;
+  final themeMode = ValueNotifier(ThemeMode.system);
+  bool savingAppearance = false;
   final messages = StreamController<UiMessage>.broadcast(sync: true);
   bool _disposed = false;
   bool _initialized = false;
@@ -68,6 +75,7 @@ class ProxyViewModel extends ChangeNotifier {
   final jar = TextEditingController();
   final logScroll = ScrollController();
   String resources = '';
+  bool sidebarMaterial = false;
   bool get usesNativeKernel => nativeKernelExecutable(resources).isNotEmpty;
   int page = 0;
   bool loading = true, dirty = false, showPassword = false, pauseLogs = false;
@@ -407,8 +415,18 @@ class ProxyViewModel extends ChangeNotifier {
   Future<void> _load() async {
     try {
       final env = await native.environment();
+      if (!active) return;
+      update(() => sidebarMaterial = env['sidebarMaterial'] == 'true');
       resources = env['resources']!;
       proxy.directory = Directory(env['support']!);
+      try {
+        final appearance = await appearancePreferences.read(proxy.directory);
+        if (!active) return;
+        themeMode.value = appearance;
+      } catch (_) {
+        message('读取外观设置失败，暂时跟随系统外观。', failure: true);
+      }
+      if (!active) return;
       final profile = ProxyProfile();
       if (!usesNativeKernel) {
         final runtime = await preferences.read(proxy.directory);
@@ -479,6 +497,23 @@ class ProxyViewModel extends ChangeNotifier {
 
   void message(String text, {bool failure = false}) {
     if (active) messages.add(UiMessage(text, failure: failure));
+  }
+
+  Future<void> setThemeMode(ThemeMode mode) async {
+    if (!active || savingAppearance || themeMode.value == mode) return;
+    final previous = themeMode.value;
+    update(() => savingAppearance = true);
+    themeMode.value = mode;
+    try {
+      await appearancePreferences.write(proxy.directory, mode);
+    } catch (_) {
+      if (active) {
+        themeMode.value = previous;
+        message('保存外观设置失败，已恢复原来的主题，请重试。', failure: true);
+      }
+    } finally {
+      if (active) update(() => savingAppearance = false);
+    }
   }
 
   Future<void> saveRuntime() => action(() async {
@@ -598,6 +633,7 @@ class ProxyViewModel extends ChangeNotifier {
       controller.dispose();
     }
     logScroll.dispose();
+    themeMode.dispose();
     super.dispose();
   }
 

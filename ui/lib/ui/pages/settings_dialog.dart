@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../view_models/proxy_view_model.dart';
 import '../widgets/desktop_widgets.dart';
+import '../widgets/desktop_select.dart';
 
 /// 独立设置面板与主窗口共享草稿，关闭面板不会丢弃未应用的编辑。
 class SettingsDialog extends StatelessWidget {
@@ -110,6 +111,25 @@ class SettingsDialog extends StatelessWidget {
     },
   );
   List<Widget> _settings(DesktopWidgets ui) => [
+    ui.section('外观', [
+      ui.formRow(
+        '主题',
+        DesktopSelect<ThemeMode>(
+          key: const ValueKey('theme-mode-selector'),
+          value: model.themeMode.value,
+          options: const [
+            (ThemeMode.system, '跟随系统'),
+            (ThemeMode.light, '浅色'),
+            (ThemeMode.dark, '深色'),
+          ],
+          onSelected: model.savingAppearance
+              ? null
+              : (mode) {
+                  if (mode != null) model.setThemeMode(mode);
+                },
+        ),
+      ),
+    ], footer: '选择后立即生效并自动保存，无需应用代理配置。'),
     ui.section('本地代理', [
       ui.field('bind'),
       ui.field('port', help: '填 0 时自动分配可用端口'),

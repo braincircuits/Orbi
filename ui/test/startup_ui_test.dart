@@ -9,6 +9,7 @@ import 'package:network_ui/models/proxy_profile.dart';
 import 'package:network_ui/services/native_bridge.dart';
 import 'package:network_ui/services/proxy_controller.dart';
 import 'package:network_ui/services/runtime_preferences.dart';
+import 'package:network_ui/services/appearance_preferences.dart';
 import 'package:network_ui/ui/pages/diagnostics_page.dart';
 import 'package:network_ui/ui/pages/tunnels_page.dart';
 import 'package:network_ui/view_models/proxy_view_model.dart';
@@ -32,6 +33,12 @@ class _Preferences extends RuntimePreferences {
   @override
   Future<RuntimePaths> read(Directory directory) async =>
       const RuntimePaths('', '');
+}
+
+// 启动时序测试只模拟慢内核，不等待测试时钟之外的本机文件读取。
+class _AppearancePreferences extends AppearancePreferences {
+  @override
+  Future<ThemeMode> read(Directory directory) async => ThemeMode.system;
 }
 
 class _Kernel extends ProxyController {
@@ -134,6 +141,7 @@ void main() {
         proxy: kernel,
         native: _Desktop(),
         preferences: _Preferences(),
+        appearancePreferences: _AppearancePreferences(),
       );
       addTearDown(model.dispose);
       await tester.pumpWidget(NetworkApp(model: model));
@@ -184,6 +192,7 @@ void main() {
       proxy: kernel,
       native: _Desktop(),
       preferences: _Preferences(),
+      appearancePreferences: _AppearancePreferences(),
     );
     addTearDown(model.dispose);
     await tester.pumpWidget(NetworkApp(model: model));
@@ -245,6 +254,7 @@ void main() {
       proxy: kernel,
       native: _Desktop(),
       preferences: _Preferences(),
+      appearancePreferences: _AppearancePreferences(),
     );
     addTearDown(model.dispose);
     String? copied;
@@ -313,6 +323,7 @@ void main() {
       proxy: kernel,
       native: _Desktop(),
       preferences: _Preferences(),
+      appearancePreferences: _AppearancePreferences(),
     );
     addTearDown(model.dispose);
     await tester.pumpWidget(NetworkApp(model: model));
@@ -361,6 +372,7 @@ void main() {
       proxy: kernel,
       native: _Desktop(),
       preferences: _Preferences(),
+      appearancePreferences: _AppearancePreferences(),
     );
     addTearDown(model.dispose);
     await tester.pumpWidget(NetworkApp(model: model));

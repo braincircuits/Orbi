@@ -139,9 +139,9 @@ class _OverviewPageState extends State<OverviewPage> {
         key: const ValueKey('overview-service-panel'),
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          color: Color.alphaBlend(ui.accent.withValues(alpha: .07), ui.panel),
+          color: ui.panel,
           borderRadius: BorderRadius.circular(DesktopDesign.panelRadius),
-          border: Border.all(color: ui.accent.withValues(alpha: .2)),
+          border: Border.all(color: ui.line),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

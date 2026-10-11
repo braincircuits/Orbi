@@ -3,6 +3,7 @@ import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
   private var desktopChannel: FlutterMethodChannel?
+  private let sidebarMaterial = NSVisualEffectView()
   private let titleDragView = WindowTitleDragView()
   private let windowButtonsView = WindowButtonsView()
   private var titleDragWidth: NSLayoutConstraint?
@@ -17,7 +18,21 @@ class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
     applyItem.isEnabled = false
     let controller = FlutterViewController()
+    // 保留 Flutter 为窗口内容控制器，材质只放在渲染视图下面。
     contentViewController = controller
+    sidebarMaterial.material = .sidebar
+    sidebarMaterial.blendingMode = .behindWindow
+    sidebarMaterial.state = .followsWindowActiveState
+    controller.view.addSubview(sidebarMaterial, positioned: .below, relativeTo: nil)
+    sidebarMaterial.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      sidebarMaterial.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor),
+      sidebarMaterial.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor),
+      sidebarMaterial.topAnchor.constraint(equalTo: controller.view.topAnchor),
+      sidebarMaterial.bottomAnchor.constraint(equalTo: controller.view.bottomAnchor)
+    ])
+    controller.backgroundColor = .clear
+    isOpaque = false
     setContentSize(NSSize(width: 1120, height: 780))
     minSize = NSSize(width: 860, height: 640)
     title = "Network"
@@ -28,7 +43,7 @@ class MainFlutterWindow: NSWindow {
     titlebarSeparatorStyle = .none
     toolbar = nil
     isMovableByWindowBackground = false
-    backgroundColor = .windowBackgroundColor
+    backgroundColor = .clear
     setFrameAutosaveName("NetworkMainWindow")
     if !setFrameUsingName("NetworkMainWindow") { center() }
     RegisterGeneratedPlugins(registry: controller)
@@ -51,17 +66,22 @@ class MainFlutterWindow: NSWindow {
           self.showMainWindow()
           result(nil)
         case "configureTitlebar":
-          if let geometry = call.arguments as? [String: Double],
-             let right = geometry["right"], let top = geometry["top"], let height = geometry["height"] {
+          if let geometry = call.arguments as? [String: Any],
+             let right = geometry["right"] as? Double,
+             let top = geometry["top"] as? Double,
+             let height = geometry["height"] as? Double,
+             let brightness = geometry["brightness"] as? String {
             self.titleDragWidth?.constant = max(0, right - 78)
             self.titlebarTopConstraints.forEach { $0.constant = top }
             self.titlebarHeightConstraints.forEach { $0.constant = height }
+            // 只覆盖材质的外观，避免覆盖窗口外观后阻断 Flutter 跟随系统。
+            self.sidebarMaterial.appearance = NSAppearance(named: brightness == "dark" ? .darkAqua : .aqua)
             self.layoutWindowButtons()
           }
           result(nil)
         case "environment":
           let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-          result(["support": root.appendingPathComponent("NetworkUI").path, "resources": Bundle.main.resourcePath ?? ""])
+          result(["support": root.appendingPathComponent("NetworkUI").path, "resources": Bundle.main.resourcePath ?? "", "sidebarMaterial": "true"])
         case "chooseFile":
           let panel = NSOpenPanel()
           panel.canChooseDirectories = false

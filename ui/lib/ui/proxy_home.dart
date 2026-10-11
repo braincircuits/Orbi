@@ -19,8 +19,8 @@ import 'pages/tunnels_page.dart';
 import 'pages/settings_dialog.dart';
 
 class ProxyHome extends StatefulWidget {
-  const ProxyHome({super.key, this.model});
-  final ProxyViewModel? model;
+  const ProxyHome({super.key, required this.model});
+  final ProxyViewModel model;
   @override
   State<ProxyHome> createState() => _ProxyHomeState();
 }
@@ -35,7 +35,7 @@ class _ProxyHomeState extends State<ProxyHome> {
   (int, int)? overviewGeneration;
   bool overviewRefreshing = false;
   final titleDragKey = GlobalKey();
-  (Size, int, String, double)? titlebarLayout;
+  (Size, int, String, double, Brightness)? titlebarLayout;
 
   void _configureTitlebar(Size size) {
     final layout = (
@@ -43,6 +43,7 @@ class _ProxyHomeState extends State<ProxyHome> {
       model.page,
       model.page == 0 ? '' : _proxyState,
       MediaQuery.textScalerOf(context).scale(14),
+      Theme.of(context).brightness,
     );
     if (titlebarLayout == layout) return;
     titlebarLayout = layout;
@@ -56,6 +57,7 @@ class _ProxyHomeState extends State<ProxyHome> {
           right: right,
           top: box.localToGlobal(Offset.zero).dy,
           height: box.size.height,
+          brightness: layout.$5.name,
         ),
       );
     });
@@ -64,7 +66,7 @@ class _ProxyHomeState extends State<ProxyHome> {
   @override
   void initState() {
     super.initState();
-    model = widget.model ?? ProxyViewModel();
+    model = widget.model;
     model.addListener(_modelChanged);
     messages = model.messages.stream.listen((message) {
       if (!mounted) return;
@@ -184,7 +186,6 @@ class _ProxyHomeState extends State<ProxyHome> {
     lifecycle.dispose();
     unawaited(messages.cancel());
     model.removeListener(_modelChanged);
-    if (widget.model == null) model.dispose();
     keyboardFocus.dispose();
     super.dispose();
   }
@@ -292,6 +293,9 @@ class _ProxyHomeState extends State<ProxyHome> {
           child: FocusTraversalGroup(
             policy: WidgetOrderTraversalPolicy(),
             child: Scaffold(
+              backgroundColor: model.sidebarMaterial
+                  ? Colors.transparent
+                  : null,
               body: Row(
                 children: [
                   _sidebar(
@@ -301,53 +305,56 @@ class _ProxyHomeState extends State<ProxyHome> {
                   ),
                   VerticalDivider(width: 1, color: ui.line),
                   Expanded(
-                    child: Column(
-                      children: [
-                        _toolbar(context, ui),
-                        const Divider(),
-                        Expanded(
-                          child: Align(
-                            alignment: Alignment.topCenter,
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(
-                                maxWidth: DesktopDesign.contentMaxWidth,
-                              ),
-                              child: Padding(
-                                padding: EdgeInsets.symmetric(
-                                  horizontal: DesktopDesign.pageInset(
-                                    MediaQuery.sizeOf(context).width,
-                                  ),
-                                  vertical:
-                                      MediaQuery.sizeOf(context).height < 700
-                                      ? 18
-                                      : 26,
+                    child: ColoredBox(
+                      color: Theme.of(context).colorScheme.surface,
+                      child: Column(
+                        children: [
+                          _toolbar(context, ui),
+                          const Divider(),
+                          Expanded(
+                            child: Align(
+                              alignment: Alignment.topCenter,
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  maxWidth: DesktopDesign.contentMaxWidth,
                                 ),
-                                child: AbsorbPointer(
-                                  absorbing: model.locked,
-                                  child: ExcludeFocus(
-                                    excluding: model.locked,
-                                    child: IndexedStack(
-                                      index: model.page,
-                                      children: [
-                                        OverviewPage(
-                                          model: model,
-                                          onSettings: _showSettings,
-                                        ),
-                                        ConfigurationPage(model: model),
-                                        RoutesPage(model: model),
-                                        LogsPage(model: model),
-                                        TunnelsPage(model: model),
-                                        DiagnosticsPage(model: model),
-                                      ],
+                                child: Padding(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: DesktopDesign.pageInset(
+                                      MediaQuery.sizeOf(context).width,
+                                    ),
+                                    vertical:
+                                        MediaQuery.sizeOf(context).height < 700
+                                        ? 18
+                                        : 26,
+                                  ),
+                                  child: AbsorbPointer(
+                                    absorbing: model.locked,
+                                    child: ExcludeFocus(
+                                      excluding: model.locked,
+                                      child: IndexedStack(
+                                        index: model.page,
+                                        children: [
+                                          OverviewPage(
+                                            model: model,
+                                            onSettings: _showSettings,
+                                          ),
+                                          ConfigurationPage(model: model),
+                                          RoutesPage(model: model),
+                                          LogsPage(model: model),
+                                          TunnelsPage(model: model),
+                                          DiagnosticsPage(model: model),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
                               ),
                             ),
                           ),
-                        ),
-                        _statusBar(context, ui),
-                      ],
+                          _statusBar(context, ui),
+                        ],
+                      ),
                     ),
                   ),
                 ],
@@ -369,10 +376,11 @@ class _ProxyHomeState extends State<ProxyHome> {
       width: extended ? DesktopDesign.navigationWidth : 150,
       child: NavigationDrawer(
         key: const ValueKey('desktop-navigation'),
+        backgroundColor: model.sidebarMaterial ? Colors.transparent : null,
         selectedIndex: navigationOrder.indexOf(model.page),
         onDestinationSelected: (index) =>
             model.navigate(navigationOrder[index]),
-        tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 1.5),
+        tilePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
         header: Padding(
           padding: const EdgeInsets.fromLTRB(22, 72, 12, 8),
           child: Column(
@@ -409,7 +417,14 @@ class _ProxyHomeState extends State<ProxyHome> {
                 ],
               ),
               const SizedBox(height: 25),
-              Text('网络工作区', style: TextStyle(fontSize: 10, color: ui.muted)),
+              Text(
+                '网络',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: ui.muted,
+                ),
+              ),
             ],
           ),
         ),
@@ -422,7 +437,7 @@ class _ProxyHomeState extends State<ProxyHome> {
               TextButton.icon(
                 onPressed: _showSettings,
                 style: TextButton.styleFrom(foregroundColor: ui.ink),
-                icon: const Icon(Icons.tune, size: 16),
+                icon: const Icon(Icons.settings_outlined, size: 16),
                 label: const Text('设置…'),
               ),
               const SizedBox(height: 12),
@@ -453,7 +468,19 @@ class _ProxyHomeState extends State<ProxyHome> {
           ),
         ),
         children: [
-          for (final entry in navigationOrder.indexed)
+          for (final entry in navigationOrder.indexed) ...[
+            if (entry.$1 == 4)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 22, 12, 8),
+                child: Text(
+                  '工具',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: ui.muted,
+                  ),
+                ),
+              ),
             NavigationDrawerDestination(
               icon: Tooltip(
                 message: '${pages[entry.$2].$2}  Ctrl/⌘+${entry.$1 + 1}',
@@ -461,6 +488,7 @@ class _ProxyHomeState extends State<ProxyHome> {
               ),
               label: Text(pages[entry.$2].$2),
             ),
+          ],
         ],
       ),
     );

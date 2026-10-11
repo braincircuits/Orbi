@@ -17,7 +17,7 @@ fi
 printf '%s\n' '正在构建 JAR 代理内核…'
 (cd "$CORE_ROOT" && JAVA_HOME="$JDK_HOME" mvn -q -pl ClientG -am -DskipTests package)
 printf '%s\n' '正在构建 macOS 界面…'
-(cd "$UI_ROOT" && "$FLUTTER" build macos --release)
+(cd "$UI_ROOT" && "$FLUTTER" build macos --release -t lib/main.dart)
 mkdir -p "$(dirname "$OUTPUT")"
 ditto "$UI_ROOT/build/macos/Build/Products/Release/network_ui.app" "$OUTPUT"
 ASSETS="$OUTPUT/Contents/Resources/proxy"
