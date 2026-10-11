@@ -77,6 +77,29 @@ class KernelDatabaseTest {
         assertThrows(IOException.class, () -> new KernelDatabase(newer));
         assertArrayEquals(before, Files.readAllBytes(newer));
     }
+    private Map<String, Object> sample(String session, long time, long sent, long received) {
+        return Map.of("sessionId", session, "startedAt", 0L, "sampledAt", time,
+                "sentBytes", sent, "receivedBytes", received, "sendBytesPerSecond", 0.0, "receiveBytesPerSecond", 0.0);
+    }
+    @Test void summariesUseCounterDifferencesAcrossBoundariesRestartsAndEmptyBuckets() throws Exception {
+        try (var database = new KernelDatabase(directory.resolve("kernel.db"))) {
+            database.writeHistory(List.of(
+                    sample("甲", 10, 100, 1000), sample("甲", 100, 130, 1040),
+                    sample("甲", 199, 150, 1100), sample("甲", 200, 160, 1200),
+                    sample("乙", 150, 0, 0), sample("乙", 190, 25, 50),
+                    sample("乙", 300, 25, 50), sample("乙", 500, 999, 999)), List.of());
+            var result = database.trafficSummary(List.of(100L, 200L, 300L, 400L, 500L));
+            assertEquals(85L, result.get("sentBytes")); assertEquals(250L, result.get("receivedBytes"));
+            assertEquals(6L, result.get("sampleCount")); assertEquals(300L, result.get("lastSampledAt"));
+            var buckets = (List<?>) result.get("buckets");
+            assertEquals(75L, ((Map<?, ?>) buckets.get(0)).get("sentBytes"));
+            assertEquals(10L, ((Map<?, ?>) buckets.get(1)).get("sentBytes"));
+            assertEquals(1L, ((Map<?, ?>) buckets.get(2)).get("sampleCount"));
+            assertEquals(0L, ((Map<?, ?>) buckets.get(3)).get("sampleCount"));
+            assertEquals(0L, ((Map<?, ?>) buckets.get(2)).get("sentBytes"));
+            assertEquals(0L, database.trafficSummary(List.of(600L, 700L)).get("sampleCount"));
+        }
+    }
     @Test void databaseJournalAndLockArePrivate() throws Exception {
         if (!directory.getFileSystem().supportedFileAttributeViews().contains("posix")) return;
         Path file = directory.resolve("kernel.db");

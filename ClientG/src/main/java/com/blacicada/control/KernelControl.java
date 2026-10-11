@@ -84,6 +84,29 @@ public final class KernelControl implements AutoCloseable {
     private boolean active(String id) { return runtime.isRunning() && id.equals(config.defaultConnectionId()); }
     public synchronized List<Map<String, Object>> tunnels() { return runtime.tunnels(); }
     public synchronized Map<String, Object> traffic() { return runtime.traffic(true); }
+    public synchronized Map<String, Object> trafficSummary(JsonObject body) throws SQLException {
+        ensureOpen();
+        var field = body.get("boundaries");
+        if (field == null || !field.isJsonArray() || field.getAsJsonArray().size() < 2 || field.getAsJsonArray().size() > 63)
+            throw new ControlException(400, "INVALID_QUERY", "统计需要 2 至 63 个递增的毫秒时间边界");
+        var boundaries = new ArrayList<Long>();
+        for (var value : field.getAsJsonArray()) {
+            long time;
+            try {
+                if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) throw new ArithmeticException();
+                time = value.getAsBigDecimal().longValueExact();
+            } catch (ArithmeticException | NumberFormatException e) {
+                throw new ControlException(400, "INVALID_QUERY", "统计时间必须是整数毫秒时间戳");
+            }
+            if (time < 0 || !boundaries.isEmpty() && time <= boundaries.getLast())
+                throw new ControlException(400, "INVALID_QUERY", "统计时间边界必须非负且严格递增");
+            boundaries.add(time);
+        }
+        if (boundaries.getLast() - boundaries.getFirst() > 32L * 86400000)
+            throw new ControlException(400, "INVALID_QUERY", "单次统计范围不能超过 32 天");
+        history.flush();
+        return database.trafficSummary(boundaries);
+    }
     public synchronized Map<String, Object> history(boolean traffic, long from, long to, long before, int limit, String filter) throws SQLException {
         ensureOpen();
         if (from < 0 || to <= from || before <= 0 || limit < 1 || limit > 500 || filter.length() > 255)

@@ -43,6 +43,14 @@ class ControlHttpServerTest {
         if (json.has("revision")) revision = json.get("revision").getAsLong();
         return json;
     }
+    @Test void trafficSummaryValidatesCalendarBoundaries() throws Exception {
+        var data = ok("POST", "/traffic/summary", "{\"boundaries\":[0,60000,120000]}", 200).getAsJsonObject("data");
+        assertEquals(2, data.getAsJsonArray("buckets").size());
+        assertEquals(0, data.get("sampleCount").getAsInt());
+        for (String boundaries : List.of("[]", "[0]", "[1,1]", "[2,1]", "[-1,1]", "[0,0.5]", "[0,\"1\"]", "[0,9223372036854775808]", "[0,2851200000]"))
+            assertEquals(400, request("POST", "/traffic/summary", "{\"boundaries\":" + boundaries + "}").statusCode());
+        assertEquals(400, request("POST", "/traffic/summary", "{}").statusCode());
+    }
     String profile(String id, String protocol, int port) {
         return "{\"id\":\"" + id + "\",\"name\":\"测试连接\",\"config\":{\"protocol\":\"" + protocol
                 + "\",\"server.host\":\"127.0.0.1\",\"server.port\":" + port + ",\"password\":\"test-secret\",\"connectTimeoutMillis\":1000}}";

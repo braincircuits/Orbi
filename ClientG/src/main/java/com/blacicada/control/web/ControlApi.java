@@ -22,6 +22,7 @@ final class ControlApi {
                 case "GET /api/v1/health" -> data = Map.of("ready", true);
                 case "GET /api/v1/status" -> data = control.status();
                 case "GET /api/v1/traffic" -> data = control.traffic();
+                case "POST /api/v1/traffic/summary" -> data = control.trafficSummary(body);
                 case "GET /api/v1/traffic/history", "GET /api/v1/access-records" -> {
                     var query = query(uri);
                     boolean traffic = path.endsWith("/traffic/history");

@@ -137,6 +137,46 @@ public final class KernelDatabase implements AutoCloseable {
             return page(items, limit);
         }
     }
+    /** 按本地日历边界汇总累计计数差值；增量归入采样时间所在区间，跨启动分别相减后相加。 */
+    public Map<String, Object> trafficSummary(List<Long> boundaries) throws SQLException {
+        String values = String.join(",", Collections.nCopies(boundaries.size() - 1, "(?,?,?)"));
+        String sql = """
+                WITH buckets(bucket, start, end) AS (VALUES %s),
+                grouped AS (
+                    SELECT b.bucket, t.session_id, MIN(t.sampled_at) AS first_at,
+                           MAX(t.sent_bytes) AS sent, MAX(t.received_bytes) AS received,
+                           COUNT(*) AS samples, MAX(t.sampled_at) AS latest
+                    FROM buckets b JOIN traffic_samples t ON t.sampled_at>=b.start AND t.sampled_at<b.end
+                    GROUP BY b.bucket, t.session_id
+                ), deltas AS (
+                    SELECT bucket, samples, latest,
+                           sent-COALESCE((SELECT sent_bytes FROM traffic_samples p WHERE p.session_id=g.session_id AND p.sampled_at<g.first_at ORDER BY p.sampled_at DESC LIMIT 1),0) AS sent,
+                           received-COALESCE((SELECT received_bytes FROM traffic_samples p WHERE p.session_id=g.session_id AND p.sampled_at<g.first_at ORDER BY p.sampled_at DESC LIMIT 1),0) AS received
+                    FROM grouped g
+                )
+                SELECT b.start, b.end, COALESCE(SUM(d.sent),0) AS sent,
+                       COALESCE(SUM(d.received),0) AS received, COALESCE(SUM(d.samples),0) AS samples,
+                       COALESCE(MAX(d.latest),0) AS latest
+                FROM buckets b LEFT JOIN deltas d ON d.bucket=b.bucket GROUP BY b.bucket ORDER BY b.bucket
+                """.formatted(values);
+        try (var query = connection.prepareStatement(sql)) {
+            for (int i = 0; i < boundaries.size() - 1; i++) {
+                query.setInt(i * 3 + 1, i); query.setLong(i * 3 + 2, boundaries.get(i)); query.setLong(i * 3 + 3, boundaries.get(i + 1));
+            }
+            var buckets = new ArrayList<Map<String, Object>>();
+            long sent = 0, received = 0, samples = 0, latest = 0;
+            try (var rows = query.executeQuery()) {
+                while (rows.next()) {
+                    long up = rows.getLong("sent"), down = rows.getLong("received"), count = rows.getLong("samples");
+                    sent += up; received += down; samples += count; latest = Math.max(latest, rows.getLong("latest"));
+                    buckets.add(Map.of("from", rows.getLong("start"), "to", rows.getLong("end"),
+                            "sentBytes", up, "receivedBytes", down, "sampleCount", count));
+                }
+            }
+            return Map.of("buckets", buckets, "sentBytes", sent, "receivedBytes", received,
+                    "sampleCount", samples, "lastSampledAt", latest);
+        }
+    }
     public Map<String, Object> accessHistory(long from, long to, long before, int limit, String target) throws SQLException {
         try (var query = connection.prepareStatement("SELECT * FROM access_records WHERE visited_at>=? AND visited_at<? AND id<? AND instr(lower(target),lower(?))>0 ORDER BY id DESC LIMIT ?")) {
             query.setLong(1, from); query.setLong(2, to); query.setLong(3, before); query.setString(4, target); query.setInt(5, limit + 1);
