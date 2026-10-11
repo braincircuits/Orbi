@@ -11,9 +11,27 @@ Java 25 + Netty 4.2.18.Final。Flutter UI 称为「代理客户端」，Java Cli
 
 ## 使用入口
 
+- 桌面客户端：Flutter 源码位于 [ui/](ui/README.md)，与内核统一由本仓库管理。
 - 已有发布目录：按下面的「发布目录启动与远程部署」启动，不需要 Maven。
 - 从源码构建：安装 JDK 25、Maven 3.9，以及支持 `-addext` 的 OpenSSL（生成证书使用）。
 - 配置直连网段：查看「直连规则」，通过管理接口修改并自动保存。
+
+## 仓库结构
+
+```text
+network/
+├── ClientG/      # Java 代理内核
+├── Server/       # Java 代理服务端
+├── ProxyCommon/  # Java 公共组件
+├── ui/           # Flutter 桌面客户端
+├── docs/         # 内核接口与构建文档
+├── scripts/      # 内核构建、发布与统一提交脚本
+└── pom.xml       # Maven 聚合项目
+```
+
+UI 与内核使用同一个 Git 仓库，Maven 和 Flutter 分别构建；`ui/` 不属于 Maven 模块。客户端开发、打包和测试命令见 [UI 说明](ui/README.md)。在仓库根目录执行 `sh ui/scripts/run-dev.sh` 可构建 JAR 并启动 macOS 开发界面，需要 Flutter、JDK 25、Maven 和 Xcode。
+
+提交统一在仓库根目录按 [项目要求](AGENTS.md) 执行 `sh scripts/commit.sh`，该脚本只提交已暂存内容。UI 专属规范见 [ui/AGENTS.md](ui/AGENTS.md)。
 
 ## 构建与测试
 

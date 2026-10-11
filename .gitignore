@@ -1,5 +1,8 @@
 ### 项目忽略规则
 ### 用户忽略规则
+# macOS 目录元数据
+.DS_Store
+
 # IntelliJ 项目文件
 .idea
 target
