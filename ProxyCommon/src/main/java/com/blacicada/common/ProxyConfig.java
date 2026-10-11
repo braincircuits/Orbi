@@ -49,6 +49,6 @@ public final class ProxyConfig {
     public Path base() { return base; }
 
     public int connectTimeoutMillis() { return integer("connectTimeoutMillis", 10000, 100, 120000); }
-    public int maxStreams() { return integer("maxStreams", 256, 1, 10000); }
+    public int maxStreams() { return integer("maxStreams", 1024, 1, 10000); }
     public long idleTimeoutSeconds() { return integer("idleTimeoutSeconds", 300, 10, 86400); }
 }

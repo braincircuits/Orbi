@@ -64,8 +64,16 @@ class Http2TimeoutDiagnosticsTest {
             properties.setProperty("tls.ca", resource("localhost.crt").toString());
             properties.setProperty("tls.serverName", "localhost");
             properties.setProperty("connectTimeoutMillis", "1000");
+            properties.setProperty("maxStreams", "1");
             try (var session = new Http2Session(group.next(), new ProxyConfig(properties, Path.of(".")), resolver)) {
                 var request = session.open(new Authority("example.test", 443));
+                var excess = session.open(new Authority("dns.test", 53), true);
+                assertTrue(excess.await(6000)); assertFalse(excess.isSuccess());
+                String capacityMessage = excess.cause().getMessage();
+                assertTrue(capacityMessage.contains("HTTP/2 本地并发隧道额度已满"), capacityMessage);
+                assertTrue(capacityMessage.contains("目标=dns.test:53"));
+                assertTrue(capacityMessage.contains("原始协议=UDP"));
+                assertTrue(capacityMessage.contains("占用=1，上限=1，建立中=1"));
                 assertTrue(request.await(6000)); assertFalse(request.isSuccess());
                 String message = request.cause().getMessage();
                 assertTrue(message.startsWith(maximum == 0 ? "等待 HTTP/2 流额度超时" : "等待 HTTP/2 CONNECT 响应超时"), message);
@@ -79,6 +87,8 @@ class Http2TimeoutDiagnosticsTest {
                 else assertTrue(message.matches(".*流 ID=[0-9]+，.*"), message);
                 assertFalse(message.contains("diagnostic-test-secret"));
                 assertEquals("connected", session.connectionState(), "诊断增强不应改变共享连接存活策略");
+                group.next().submit(() -> {}).sync();
+                assertEquals("", session.lastError(), "排队或目标响应超时不应污染共享连接状态");
             }
         } finally {
             if (listener != null) listener.close().syncUninterruptibly();

@@ -20,6 +20,45 @@ void main() {
         .setMockMethodCallHandler(NativeBridge.channel, (_) async => null);
   });
 
+  testWidgets('管理连接点击后的第一帧同步更新侧栏选中态和正文', (tester) async {
+    tester.view.physicalSize = const Size(1120, 780);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final model = _DesktopModel();
+    addTearDown(model.dispose);
+    await tester.pumpWidget(NetworkApp(model: model));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('管理连接'),
+      350,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('overview')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('管理连接'));
+    await tester.pump();
+    expect(model.page, 1);
+    final destination = find.byKey(const ValueKey('navigation-1'));
+    expect(tester.widget<ListTile>(destination).selected, isTrue);
+    final material = tester.widget<Material>(
+      find.ancestor(of: destination, matching: find.byType(Material)).first,
+    );
+    expect(material.color, isNot(Colors.transparent));
+    expect(
+      tester
+          .widget<ListTile>(find.byKey(const ValueKey('navigation-0')))
+          .selected,
+      isFalse,
+    );
+    expect(find.byKey(const PageStorageKey('configuration')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('窄窗口放大文字时页面与可关闭错误提示保持可用', (tester) async {
     tester.view.physicalSize = const Size(720, 540);
     tester.view.devicePixelRatio = 1;

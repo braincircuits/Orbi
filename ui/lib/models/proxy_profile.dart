@@ -65,7 +65,7 @@ class ProxyProfile {
     'connectTimeoutMillis': '10000',
     'local.connectTimeoutMillis': '10000',
     'idleTimeoutSeconds': '300',
-    'maxStreams': '256',
+    'maxStreams': '1024',
   };
   final Map<String, String> values;
   late List<ConnectionProfile> connections;

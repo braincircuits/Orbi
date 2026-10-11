@@ -156,7 +156,7 @@ UI 可提示“应用后立即断开路由变化的连接，其余连接保持�
 
 `GET /tunnels` 的 `data` 是当前全部业务隧道的数组；`/info` 通过 `tunnels` 能力标记提供此功能。`GET /status` 与 SSE 的 `snapshot`、`status` 中也包含同一格式的 `tunnels` 数组，明细变化会触发状态推送。内核每 250 毫秒检查状态变化；短于该间隔的请求可能不会出现在事件快照中，此接口不用于请求审计。
 
-每项包含 `id`（本地连接 ID）、`target`（HTTP/CONNECT 目标）、`source`（本地请求来源）、`route`（resolving/proxy/direct）、`state`（resolving/pending/active）、`profileId`、`profileName`、`protocol`（http2/http3/tcp）以及 `createdAt`（收到请求时的 Unix 毫秒时间）。IPv6 地址使用方括号。DNS 路由解析期间为 resolving，等待 TCP 或代理流建立时为 pending，远端连接建立后为 active；直连的连接配置 ID 和名称为空，协议为 tcp。
+每项包含 `id`（本地连接 ID）、`target`（HTTP/CONNECT 目标）、`source`（本地请求来源）、`route`（resolving/proxy/direct）、`state`（resolving/pending/active）、`profileId`、`profileName`、`originalProtocol`（原始传输协议 tcp/udp）、`protocol`（实际连接协议 http2/http3/tcp/udp）以及 `createdAt`（收到请求时的 Unix 毫秒时间）。IPv6 地址使用方括号。DNS 路由解析期间为 resolving，等待目标套接字或代理流建立时为 pending，建立后为 active；直连的连接配置 ID 和名称为空，协议按目标传输类型为 tcp 或 udp。UDP 关联的 active 不代表目标在线。`originalProtocol` 在代理、直连及路由待确定期间均保留原始 TCP/UDP 类型，不随外层代理协议变化。访问记录通过已有 `method` 判断原始协议：CONNECT-UDP 为 UDP，普通 HTTP 方法和 CONNECT 为 TCP。
 
 列表包括普通 HTTP 转发、CONNECT 隧道和直连 TCP 连接，不包括尚未收到请求的本地空闲套接字、共享 HTTP/2 或 QUIC 主连接、独立诊断会话。连接关闭后自动移除，不保存历史记录。读取不改变配置版本、路由或代理连接；返回信息不包含密码、请求正文或 TLS 隧道内的数据。
 
@@ -261,12 +261,14 @@ python3 scripts/web-smoke-test.py
 `info.capabilities` 增加 `persistentHistory`。历史使用同一个 `kernel.db`，配置更新、删除连接、切换模式、停止或重新启动均不会清理历史。记录从更新后的内核开始运行后产生，不补造之前的访问。
 
 - `GET /traffic/history`：查询全部启动会话的流量采样，支持可选 `sessionId`。
-- `GET /access-records`：查询访问地址，支持可选 `target`（域名/IP/端口的不区分大小写字面子串，不使用 SQL 通配符）。
+- `GET /access-records`：查询访问地址，支持可选 `target`（域名/IP/端口的不区分大小写字面子串，不使用 SQL 通配符）和 `state`（pending/connected/failed/cancelled；省略或空值表示全部）。状态与目标条件在数据库中联合筛选后再分页；下一页需携带相同条件。无效状态返回 400 / INVALID_QUERY。
 - 两者支持 `from`（含）、`to`（不含）的 Unix 毫秒范围、`beforeId` 游标与 `limit`（1～500，默认 100）。省略时间范围查询所有历史，省略游标从最新记录开始。响应 `data` 含 `items`、`hasMore`、`nextBeforeId`。按自增 ID 倒序返回；将 `nextBeforeId` 传入下一页，无更多记录时为 0。
 
 流量历史的每项包含 `id`、`sessionId`、`startedAt` 和原有采样字段。累计字节按启动会话计算，不能跨样本相加。内存只保留实时五分钟窗口，数据库保留所有原始样本。
 
 访问表 `access_records` 按一次本地 HTTP 请求或 CONNECT 隧道记录，包含 `id`、`requestId`、`sessionId`、`createdAt`、`completedAt`、`target`、`source`、`method`、`route`、`protocol`、`profileId`、`profileName`、`state`。请求首先写为 `pending`，连接结果更新同一条记录为 `connected`、`failed` 或 `cancelled`；`connected` 只表示目标连接建立，不代表网站 HTTP 状态成功。未完成记录的 `completedAt` 为 0，异常退出前尚未完成的请求保留 `pending`，不能据此认定仍有活跃隧道。
+
+UDP 本地接入记录为 `method=CONNECT-UDP`，这是项目专用接入的展示标签，实际 HTTP 方法是 `CONNECT`。`connected` 表示 UDP 关联准备好，不保证目标可达。流量只统计报文负载，不包含长度前缀。接入协议与示例见 [UDP 本地接入](../README.md#udp-本地接入与可靠流封装)。
 
 记录覆盖接入本地代理的直连和代理请求，也包含内核通过该入口执行的网络/IP 检测。不记录 URL 路径、查询参数、请求头、密码或正文；HTTPS 隧道内的网页路径不可见。协议解析失败且没有有效目标地址的输入不记录为访问。
 
@@ -280,3 +282,20 @@ Netty 线程仅入队，控制线程每 250 毫秒最多批量提交 2048 条事
 响应 `data` 包含 `buckets`、`sentBytes`、`receivedBytes`、`sampleCount` 和 `lastSampledAt`。每个桶含 `from`、`to`、`sentBytes`、`receivedBytes`、`sampleCount`；整个范围及桶的流量均为字节总量，不是速率。无采样桶返回零计数，界面标为“无采样记录”，与有采样但零流量区分。
 
 在 SQLite 内按启动会话计算累计计数差值，再合并所有会话。范围起点前的最后一个样本作为差分基线，停止前最后一次采样也参与统计，不对累计数或瞬时速率直接求和。增量归入该样本时间所在的桶；跨边界采样和采样空档不推测每字节的实际发生时刻。没有新表、历史迁移或额外副本，原始记录继续长期保留。查询只返回至多 62 个统计桶，不向界面传输逐秒记录。
+
+
+## macOS TUN 生命周期
+
+`info.capabilities` 包含 `macosTun`；桌面 UI 同时检查 macOS 宿主及打包的辅助程序。`status.tun` 包含 `state`、`error`、`interfaceIndex`。状态为 `off`、`authorizing`、`starting`、`running`、`stopping` 或 `failed`。这些运行状态不持久化；以下接口需要 Bearer 认证，无需 `If-Match`。
+
+| POST 路径 | 请求及行为 |
+| --- | --- |
+| `/tun/request` | 代理运行时创建单次 `ticket`，进入 `authorizing`；重复启动返回 409 |
+| `/tun/prepare` | 辅助进程提交 `{"interface":"en0","ticket":"启动标识"}`，验证真实网络接口并重建受保护的 Java 出口；返回 `session` 和本机 `proxy` 地址，进入 `starting`；此时尚未安装系统路由 |
+| `/tun/heartbeat` | 辅助进程提交 `{"session":"会话标识","ready":true}`；仅路由与转发就绪后设置 `ready:true`，进入 `running`；返回 `stop`，为 true 时必须清理并退出 |
+| `/tun/stop` | 授权阶段立即撤销 ticket；其他活动阶段标记 `stopping`，由辅助进程清理；返回当前状态 |
+| `/tun/finish` | 辅助进程先移除路由并关闭 utun，再提交 `{"session":"会话标识","error":""}`；恢复普通内核出口并进入 `off`，非空错误进入 `failed`；旧会话退出不能覆盖新会话 |
+
+辅助进程每两秒续约；授权超时 120 秒、准备阶段超时 30 秒、运行阶段失联 10 秒会使会话失效。授权超时保留普通代理；准备或运行期间失联会停止 Java 代理，避免在状态不明时继续转发。正常关闭 TUN 仍保持普通代理运行；停止代理或关闭内核也会通知或使辅助进程检测到退出条件。TUN 活动期间禁止修改本地监听地址/端口及直接重启代理，规则、模式与节点操作保持可用。
+
+这些管理接口本身不创建 utun。系统路由仅由获得管理员授权的辅助进程管理；不要绕过「先绑定出口，再安装路由；先清理路由，再恢复出口」的顺序。

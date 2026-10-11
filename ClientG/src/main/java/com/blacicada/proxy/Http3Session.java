@@ -4,7 +4,6 @@ import com.blacicada.common.*;
 import com.blacicada.common.h3.*;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
-import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.handler.codec.http3.*;
 import io.netty.handler.codec.quic.*;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
@@ -48,6 +47,9 @@ public final class Http3Session implements ProxySession {
                                  Promise<QuicStreamChannel> promise) { }
 
     public Http3Session(EventLoop loop, ProxyConfig config, DnsAddressResolverGroup resolver) throws Exception {
+        this(loop, config, resolver, OutboundNetwork.DEFAULT);
+    }
+    public Http3Session(EventLoop loop, ProxyConfig config, DnsAddressResolverGroup resolver, OutboundNetwork network) throws Exception {
         this.loop = loop; this.config = config; this.resolver = resolver;
         authorization = ProxyCredentials.clientAuthorization(config);
         server = new Authority(config.required("server.host"), config.integer("server.port", 4433, 1, 65535));
@@ -60,23 +62,28 @@ public final class Http3Session implements ProxySession {
         var codec = Transport.limits(Http3.newQuicClientCodecBuilder(), config)
                 .sslEngineProvider(ch -> ssl.newEngine(ch.alloc(), serverName, server.port()))
                 .sslTaskExecutor(ForkJoinPool.commonPool()).build();
-        udp = new Bootstrap().group(loop).channel(NioDatagramChannel.class).handler(codec)
+        udp = new Bootstrap().group(loop).channelFactory(network::udp).handler(codec)
                 .bind(0).sync().channel();
     }
 
-    public Future<QuicStreamChannel> open(Authority target) {
+    @Override public Future<QuicStreamChannel> open(Authority target, boolean udpTunnel) {
         Promise<QuicStreamChannel> result = loop.newPromise();
         loop.execute(() -> {
             if (result.isDone()) return;
-            if (closed || streams >= config.maxStreams()) {
-                result.tryFailure(new IOException("代理不可用或已达到并发流上限")); return;
+            if (closed) {
+                result.tryFailure(new IOException("代理会话已关闭")); return;
+            }
+            if (streams >= config.maxStreams()) {
+                result.tryFailure(new IOException("HTTP/3 本地并发隧道额度已满：目标=" + target
+                        + "，原始协议=" + (udpTunnel ? "UDP" : "TCP") + "，占用=" + streams
+                        + "，上限=" + config.maxStreams() + "，等待流额度=" + waitingStreams.size())); return;
             }
             streams++;
             acquire().addListener(f -> {
                 if (result.isDone()) { streams--; return; }
                 if (!f.isSuccess()) { streams--; result.tryFailure(f.cause()); return; }
                 QuicChannel parent = (QuicChannel) f.getNow();
-                var response = new ConnectResponse(result, target);
+                var response = new ConnectResponse(result, target, udpTunnel);
                 Future<QuicStreamChannel> creation = createWhenAllowed(parent, response);
                 result.addListener(done -> { if (!done.isSuccess()) creation.cancel(false); });
                 creation.addListener(created -> {
@@ -87,6 +94,7 @@ public final class Http3Session implements ProxySession {
                     var request = new DefaultHttp3HeadersFrame();
                     request.headers().method("CONNECT").authority(target.toString())
                             .set("proxy-authorization", authorization);
+                    if (udpTunnel) request.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
                     stream.writeAndFlush(request).addListener(write -> {
                         if (!write.isSuccess()) result.tryFailure(write.cause());
                     });
@@ -251,10 +259,11 @@ public final class Http3Session implements ProxySession {
         private final Promise<QuicStreamChannel> result;
         private ScheduledFuture<?> timeout;
         private final Authority target;
+        private final boolean udpTunnel;
         private long receivedBefore = -1;
         private long sentBefore = -1;
-        ConnectResponse(Promise<QuicStreamChannel> result, Authority target) {
-            this.result = result; this.target = target;
+        ConnectResponse(Promise<QuicStreamChannel> result, Authority target, boolean udpTunnel) {
+            this.result = result; this.target = target; this.udpTunnel = udpTunnel;
         }
         @Override public void handlerAdded(ChannelHandlerContext ctx) {
             ctx.pipeline().addFirst("streamCleanup", new QuicStreamCleanupHandler());
@@ -278,13 +287,17 @@ public final class Http3Session implements ProxySession {
                 String status = String.valueOf(headers.headers().status());
                 if (status.startsWith("1")) return;
                 if (status.length() == 3 && status.charAt(0) == '2') {
-                    lastError = "";
+                    if (udpTunnel && !UdpTunnel.requested(headers.headers().getAll(UdpTunnel.HEADER))) {
+                        result.tryFailure(new IOException("服务端未确认 UDP 隧道")); ctx.close(); return;
+                    }
+                    if (ctx.channel().parent() == connection) lastError = "";
                     timeout.cancel(false);
                     ctx.channel().config().setAutoRead(false);
                     ctx.pipeline().replace(this, "data", new H3DataCodec());
                     if (!result.trySuccess((QuicStreamChannel) ctx.channel())) ctx.close();
                 } else {
-                    lastError = status.equals("407") ? "代理账号或密码验证失败" : "代理 CONNECT 失败：" + status;
+                    // 认证失败影响整个代理；目标连接失败只属于当前请求。
+                    if (status.equals("407") && ctx.channel().parent() == connection) lastError = "代理账号或密码验证失败";
                     result.tryFailure(new IOException("代理 CONNECT 失败：" + status)); ctx.close();
                 }
             } else if (msg instanceof Http3UnknownFrame) ReferenceCountUtil.release(msg);

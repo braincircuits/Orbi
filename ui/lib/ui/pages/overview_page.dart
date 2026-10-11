@@ -221,7 +221,7 @@ class _OverviewPageState extends State<OverviewPage> {
                 ],
               ),
               Tooltip(
-                message: '路由模式：仅作用于接入本地代理的流量；直连／全局模式覆盖路由规则',
+                message: '路由模式作用于本地代理和虚拟网卡接入的流量；直连／全局模式覆盖路由规则',
                 child: SizedBox(
                   width: DesktopDesign.overviewModeWidth * 3,
                   height: DesktopDesign.overviewControlHeight,
@@ -248,6 +248,54 @@ class _OverviewPageState extends State<OverviewPage> {
               ),
               breakpoint: 480,
               stackedAlignment: Alignment.centerRight,
+            ),
+            const SizedBox(height: 12),
+            Material(
+              type: MaterialType.transparency,
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('虚拟网卡模式'),
+                subtitle: Text(
+                  proxy.tunError.isNotEmpty
+                      ? proxy.tunError
+                      : switch (proxy.tunState) {
+                          'authorizing' => '正在连接系统辅助服务；首次安装或更新时需要授权',
+                          'starting' => '正在准备虚拟网卡和网络路由',
+                          'running' => '正在接管系统 TCP / UDP 流量',
+                          'stopping' => '正在恢复网络路由',
+                          _ =>
+                            proxy.tunSupported
+                                ? '首次安装辅助服务需管理员授权，之后启停无需重复输入密码'
+                                : '仅支持包含虚拟网卡组件的 macOS 内核',
+                        },
+                ),
+                trailing: SizedBox(
+                  width: 40,
+                  height: DesktopDesign.controlHeight,
+                  child: Center(
+                    child: Transform.scale(
+                      scale: DesktopDesign.switchScale,
+                      child: Semantics(
+                        label: '虚拟网卡模式',
+                        child: Switch(
+                          key: const ValueKey('overview-tun'),
+                          value: proxy.tunEnabled,
+                          onChanged:
+                              model.locked ||
+                                  !proxy.running ||
+                                  !proxy.tunSupported ||
+                                  {
+                                    'starting',
+                                    'stopping',
+                                  }.contains(proxy.tunState)
+                              ? null
+                              : model.setTun,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
           ],
         ),

@@ -1,0 +1,8 @@
+本应用使用 github.com/eycorsican/go-tun2socks v1.16.11，并在构建副本应用项目补丁。
+原始 MIT 许可证见 go-tun2socks.txt，lwIP 许可证见 lwip.txt。
+
+修改日期：2026-10-11。
+修改文件：core/lwip.go、core/udp_conn.go。
+修改内容：TCP/UDP 使用双栈协议控制块；支持空 UDP 回包；检查回包错误；
+UDP 回包与协议栈输入和定时器共用互斥锁。
+补丁随项目源码保存在 TunBridge/patches/go-tun2socks-v1.16.11.patch。

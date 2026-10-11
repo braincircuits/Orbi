@@ -4,7 +4,6 @@ import com.blacicada.common.*;
 import com.blacicada.config.KernelConfig;
 import com.blacicada.proxy.*;
 import com.blacicada.config.DirectRoutes;
-import io.netty.channel.nio.NioEventLoopGroup;
 import java.net.InetSocketAddress;
 import java.time.Instant;
 import java.util.*;
@@ -79,6 +78,9 @@ public final class ControlTasks implements AutoCloseable {
     public synchronized void cancelNetwork() {
         for (Job job : jobs.values()) if (!job.context.isEmpty() && !job.terminal()) cancel(job.id);
     }
+    public synchronized void cancelAll() {
+        for (Job job : jobs.values()) if (!job.terminal()) cancel(job.id);
+    }
     public Map<String, Object> websites(InetSocketAddress proxy, Map<String, Object> context) {
         return submit(context, job -> {
             var items = new ArrayList<Map<String, Object>>();
@@ -108,11 +110,14 @@ public final class ControlTasks implements AutoCloseable {
         });
     }
     public Map<String, Object> start(KernelConfig.Profile profile, Authority target) {
+        return start(profile, target, OutboundNetwork.DEFAULT);
+    }
+    public Map<String, Object> start(KernelConfig.Profile profile, Authority target, OutboundNetwork network) {
         return submit(job -> {
-            var group = new NioEventLoopGroup(1);
-            var resolver = Transport.resolver();
+            var group = network.newGroup();
+            var resolver = network.resolver();
             stage(job, "configuration");
-            try (ProxySession session = ProxySessionFactory.create(group.next(), profile.config(), resolver)) {
+            try (ProxySession session = ProxySessionFactory.create(group.next(), profile.config(), resolver, network)) {
                 var opening = session.open(target);
                 long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(profile.config().connectTimeoutMillis() * 3L);
                 try {
@@ -131,6 +136,9 @@ public final class ControlTasks implements AutoCloseable {
         });
     }
     public Map<String, Object> resolve(Authority target, DirectRoutes rules, String defaultId) {
+        return resolve(target, rules, defaultId, OutboundNetwork.DEFAULT);
+    }
+    public Map<String, Object> resolve(Authority target, DirectRoutes rules, String defaultId, OutboundNetwork network) {
         return submit(job -> {
             stage(job, "routing");
             if (!rules.mode().equals("rules")) return Map.of("action", rules.mode(),
@@ -140,7 +148,7 @@ public final class ControlTasks implements AutoCloseable {
                     "profileId", override.equals("proxy") ? defaultId : "", "matchedBy", "target_rule");
             if (rules.matches(target.host())) return Map.of("action", "direct", "matchedBy", "direct_rule");
             if (rules.needsResolution(target.host())) {
-                var group = new NioEventLoopGroup(1); var resolver = Transport.resolver();
+                var group = network.newGroup(); var resolver = network.resolver();
                 try {
                     stage(job, "dns");
                     var result = resolver.getResolver(group.next()).resolveAll(target.unresolved());

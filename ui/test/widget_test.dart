@@ -355,7 +355,16 @@ void main() {
     await tester.tap(find.text('设置…'));
     await tester.pumpAndSettle();
     final runtime = find.byKey(const PageStorageKey('kernel-runtime'));
-    await tester.ensureVisible(runtime);
+    await tester.scrollUntilVisible(
+      runtime,
+      250,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('settings')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     await tester.tap(find.text('内核运行环境'));
     await tester.pumpAndSettle();
     final java = find

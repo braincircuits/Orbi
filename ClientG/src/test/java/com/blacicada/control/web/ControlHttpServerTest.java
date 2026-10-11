@@ -43,6 +43,58 @@ class ControlHttpServerTest {
         if (json.has("revision")) revision = json.get("revision").getAsLong();
         return json;
     }
+    @Test void cancelledTunAuthorizationCannotInstallRoutesLater() throws Exception {
+        Assumptions.assumeTrue(System.getProperty("os.name").startsWith("Mac"));
+        ok("POST", "/tun/request", null, 409);
+        ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
+        ok("PATCH", "/settings", "{\"port\":0}", 200);
+        ok("POST", "/proxy/start", null, 200);
+        String ticket = ok("POST", "/tun/request", null, 200).getAsJsonObject("data").get("ticket").getAsString();
+        ok("POST", "/tun/request", null, 409);
+        ok("POST", "/proxy/restart", null, 409);
+        ok("POST", "/tun/prepare", "{\"interface\":\"lo0\",\"ticket\":\"" + ticket + "\"}", 400);
+        ok("POST", "/tun/stop", null, 200);
+        ok("POST", "/tun/prepare", "{\"interface\":\"en0\",\"ticket\":\"" + ticket + "\"}", 409);
+        ok("POST", "/tun/heartbeat", "{\"session\":\"" + ticket + "\",\"ready\":true}", 409);
+        var status = ok("GET", "/status", null, 200).getAsJsonObject("data");
+        assertTrue(status.get("running").getAsBoolean());
+        assertEquals("off", status.getAsJsonObject("tun").get("state").getAsString());
+        String next = ok("POST", "/tun/request", null, 200).getAsJsonObject("data").get("ticket").getAsString();
+        assertNotEquals(ticket, next);
+        ok("POST", "/tun/finish", "{\"session\":\"" + ticket + "\",\"error\":\"迟到的退出\"}", 200);
+        assertEquals("authorizing", ok("GET", "/status", null, 200).getAsJsonObject("data").getAsJsonObject("tun").get("state").getAsString());
+        ok("POST", "/proxy/stop", null, 200);
+        ok("POST", "/tun/prepare", "{\"interface\":\"en0\",\"ticket\":\"" + next + "\"}", 409);
+    }
+
+    @Test void tunLifecycleRestoresUnboundKernelAfterHelperCleanup() throws Exception {
+        Assumptions.assumeTrue(System.getProperty("os.name").startsWith("Mac"));
+        var network = Collections.list(NetworkInterface.getNetworkInterfaces()).stream().filter(n -> {
+            try { return n.getName().startsWith("en") && n.isUp() && !n.isLoopback() && !n.isPointToPoint(); }
+            catch (SocketException e) { return false; }
+        }).findFirst();
+        Assumptions.assumeTrue(network.isPresent());
+        ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
+        ok("PATCH", "/settings", "{\"port\":0}", 200);
+        ok("POST", "/proxy/start", null, 200);
+        String ticket = ok("POST", "/tun/request", null, 200).getAsJsonObject("data").get("ticket").getAsString();
+        var prepared = ok("POST", "/tun/prepare", "{\"interface\":\"" + network.get().getName() + "\",\"ticket\":\"" + ticket + "\"}", 200).getAsJsonObject("data");
+        assertEquals(ticket, prepared.get("session").getAsString());
+        String heartbeat = "{\"session\":\"" + ticket + "\",\"ready\":true}";
+        assertFalse(ok("POST", "/tun/heartbeat", heartbeat, 200).getAsJsonObject("data").get("stop").getAsBoolean());
+        var tun = ok("GET", "/status", null, 200).getAsJsonObject("data").getAsJsonObject("tun");
+        assertEquals("running", tun.get("state").getAsString());
+        assertEquals(network.get().getIndex(), tun.get("interfaceIndex").getAsInt());
+        ok("PATCH", "/settings", "{\"port\":12345}", 409);
+        ok("POST", "/tun/stop", null, 200);
+        assertTrue(ok("POST", "/tun/heartbeat", heartbeat, 200).getAsJsonObject("data").get("stop").getAsBoolean());
+        ok("POST", "/tun/finish", "{\"session\":\"" + ticket + "\",\"error\":\"\"}", 200);
+        var status = ok("GET", "/status", null, 200).getAsJsonObject("data");
+        assertTrue(status.get("running").getAsBoolean());
+        assertEquals("off", status.getAsJsonObject("tun").get("state").getAsString());
+        assertEquals(0, status.getAsJsonObject("tun").get("interfaceIndex").getAsInt());
+    }
+
     @Test void trafficSummaryValidatesCalendarBoundaries() throws Exception {
         var data = ok("POST", "/traffic/summary", "{\"boundaries\":[0,60000,120000]}", 200).getAsJsonObject("data");
         assertEquals(2, data.getAsJsonArray("buckets").size());
@@ -150,6 +202,9 @@ class ControlHttpServerTest {
         ok("GET", "/traffic/history?limit=501", null, 400);
         ok("GET", "/access-records?from=2&to=1", null, 400);
         ok("GET", "/access-records?beforeId=invalid", null, 400);
+        ok("GET", "/access-records?state=failed", null, 200);
+        ok("GET", "/access-records?state=unknown", null, 400);
+        ok("GET", "/traffic/history?state=failed", null, 400);
     }
     @Test void tunnelApiAndEventsIncludeDirectConnectionsAndClearOnStop() throws Exception {
         assertTrue(ok("GET", "/tunnels", null, 200).getAsJsonArray("data").isEmpty());

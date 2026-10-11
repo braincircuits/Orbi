@@ -6,9 +6,47 @@ import '../widgets/desktop_widgets.dart';
 import '../widgets/desktop_select.dart';
 
 /// 独立设置面板与主窗口共享草稿，关闭面板不会丢弃未应用的编辑。
-class SettingsDialog extends StatelessWidget {
+class SettingsDialog extends StatefulWidget {
   const SettingsDialog({super.key, required this.model});
   final ProxyViewModel model;
+
+  @override
+  State<SettingsDialog> createState() => _SettingsDialogState();
+}
+
+class _SettingsDialogState extends State<SettingsDialog> {
+  ProxyViewModel get model => widget.model;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) model.refreshTunService();
+    });
+  }
+
+  Future<void> _removeTunService() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('卸载系统辅助服务？'),
+        content: const Text(
+          '将请求管理员授权，移除已安装的虚拟网卡辅助服务。配置和访问记录会保留；下次开启虚拟网卡时需要重新安装授权。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('卸载'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) await model.removeTunService();
+  }
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -135,6 +173,44 @@ class SettingsDialog extends StatelessWidget {
       ui.field('port', help: '填 0 时自动分配可用端口'),
       ui.field('local.connectTimeoutMillis'),
     ], footer: '监听地址或端口修改后立即重建监听，已有连接会断开。'),
+    if (model.supportsTunService)
+      ui.section('虚拟网卡辅助服务', [
+        ui.caption(
+          model.checkingTunService
+              ? '正在读取安装状态…'
+              : model.tunServiceError.isNotEmpty
+              ? model.tunServiceError
+              : model.tunServiceInstalled == true
+              ? '已安装 · 日常启停无需重复输入密码'
+              : '未安装 · 开启虚拟网卡时会请求安装授权',
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 12,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              key: const ValueKey('remove-tun-service'),
+              onPressed:
+                  model.locked ||
+                      model.checkingTunService ||
+                      model.tunServiceInstalled != true ||
+                      model.proxy.tunEnabled
+                  ? null
+                  : _removeTunService,
+              icon: const Icon(Icons.delete_outline, size: 16),
+              label: const Text('卸载系统辅助服务'),
+            ),
+            TextButton(
+              onPressed: model.locked || model.checkingTunService
+                  ? null
+                  : model.refreshTunService,
+              child: const Text('刷新状态'),
+            ),
+          ],
+        ),
+        if (model.proxy.tunEnabled) ui.caption('请先关闭虚拟网卡模式，再卸载辅助服务。'),
+      ], footer: '卸载需要管理员授权；不会删除连接配置和访问记录。'),
     ui.section('高级设置', [
       ExpansionTile(
         key: const PageStorageKey('kernel-runtime'),

@@ -41,17 +41,23 @@ class _RoutingModel extends ProxyViewModel {
   }
 }
 
-TunnelStatus _tunnel(String id, String target, String route, String state) =>
-    TunnelStatus(
-      id: id,
-      target: target,
-      source: '[::1]:50123',
-      route: route,
-      state: state,
-      profileName: route == 'proxy' ? '默认连接' : '',
-      protocol: route == 'proxy' ? 'http3' : 'tcp',
-      createdAt: DateTime(2026, 10, 10, 18, 20, 30),
-    );
+TunnelStatus _tunnel(
+  String id,
+  String target,
+  String route,
+  String state, {
+  String originalProtocol = 'tcp',
+}) => TunnelStatus(
+  id: id,
+  target: target,
+  source: '[::1]:50123',
+  route: route,
+  state: state,
+  profileName: route == 'proxy' ? '默认连接' : '',
+  protocol: route == 'proxy' ? 'http3' : originalProtocol,
+  originalProtocol: originalProtocol,
+  createdAt: DateTime(2026, 10, 10, 18, 20, 30),
+);
 
 void main() {
   testWidgets('路由菜单与列表使用一致字体和表面，紧凑布局在明暗主题下可操作', (tester) async {
@@ -309,14 +315,34 @@ void main() {
     addTearDown(model.dispose);
     final tunnels = [
       _tunnel('1', 'api.example.com:443', 'proxy', 'active'),
-      _tunnel('2', '[2001:db8::1]:8080', 'direct', 'active'),
-      _tunnel('3', 'downloads.example.com:443', 'proxy', 'pending'),
+      _tunnel(
+        '2',
+        '[2001:db8::1]:8080',
+        'direct',
+        'active',
+        originalProtocol: 'udp',
+      ),
+      _tunnel(
+        '3',
+        'downloads.example.com:443',
+        'proxy',
+        'pending',
+        originalProtocol: 'udp',
+      ),
     ];
     kernel.publish(tunnels);
     final boundary = GlobalKey();
     final preview = Platform.environment['UI_TUNNELS_PREVIEW_DIR'];
     if (preview != null) {
       await tester.runAsync(() async {
+        // 预览可读取本机系统字体，不将系统字体复制到项目或发布包。
+        final latinFont = Platform.environment['UI_PREVIEW_LATIN_FONT'];
+        if (latinFont != null) {
+          await (FontLoader(DesktopDesign.fontFamily)..addFont(
+                File(latinFont).readAsBytes().then(ByteData.sublistView),
+              ))
+              .load();
+        }
         for (final font in {
           'NotoSansSC': 'assets/fonts/NotoSansSC-Variable.ttf',
           'MaterialIcons': 'fonts/MaterialIcons-Regular.otf',
@@ -368,6 +394,14 @@ void main() {
           expect(find.text('api.example.com:443'), findsOneWidget);
           expect(find.text('[2001:db8::1]:8080'), findsOneWidget);
           expect(find.text('等待连接'), findsOneWidget);
+          if (size.width >= 900) {
+            expect(find.text('原始协议'), findsOneWidget);
+            expect(find.text('TCP'), findsOneWidget);
+            expect(find.text('UDP'), findsNWidgets(3));
+          } else {
+            expect(find.text('原始 TCP'), findsOneWidget);
+            expect(find.text('原始 UDP'), findsNWidgets(2));
+          }
           if (preview != null && platform == TargetPlatform.macOS) {
             final render =
                 boundary.currentContext!.findRenderObject()!

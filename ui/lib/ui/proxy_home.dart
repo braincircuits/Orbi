@@ -377,9 +377,6 @@ class _ProxyHomeState extends State<ProxyHome> {
       child: NavigationDrawer(
         key: const ValueKey('desktop-navigation'),
         backgroundColor: model.sidebarMaterial ? Colors.transparent : null,
-        selectedIndex: navigationOrder.indexOf(model.page),
-        onDestinationSelected: (index) =>
-            model.navigate(navigationOrder[index]),
         tilePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
         header: Padding(
           padding: const EdgeInsets.fromLTRB(22, 72, 12, 8),
@@ -481,12 +478,53 @@ class _ProxyHomeState extends State<ProxyHome> {
                   ),
                 ),
               ),
-            NavigationDrawerDestination(
-              icon: Tooltip(
-                message: '${pages[entry.$2].$2}  Ctrl/⌘+${entry.$1 + 1}',
-                child: Icon(pages[entry.$2].$1),
+            // 内置目的地有固定的半秒选中动画；桌面导航与正文在同一帧更新。
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
+              child: Material(
+                animationDuration: Duration.zero,
+                color: model.page == entry.$2
+                    ? theme.navigationDrawerTheme.indicatorColor
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(
+                  DesktopDesign.controlRadius,
+                ),
+                child: ListTile(
+                  key: ValueKey('navigation-${entry.$2}'),
+                  selected: model.page == entry.$2,
+                  selectedColor: theme.colorScheme.onSurface,
+                  textColor: theme.colorScheme.onSurface,
+                  iconColor: theme.colorScheme.primary,
+                  minTileHeight: 34,
+                  minVerticalPadding: 0,
+                  horizontalTitleGap: 12,
+                  minLeadingWidth: 16,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(
+                      DesktopDesign.controlRadius,
+                    ),
+                  ),
+                  onTap: () => model.navigate(entry.$2),
+                  leading: Tooltip(
+                    message: '${pages[entry.$2].$2}  Ctrl/⌘+${entry.$1 + 1}',
+                    child: Icon(
+                      pages[entry.$2].$1,
+                      size: DesktopDesign.navigationIconSize,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                  title: Text(
+                    pages[entry.$2].$2,
+                    style: TextStyle(
+                      fontSize: DesktopDesign.bodyFontSize,
+                      fontWeight: model.page == entry.$2
+                          ? FontWeight.w500
+                          : FontWeight.w400,
+                    ),
+                  ),
+                ),
               ),
-              label: Text(pages[entry.$2].$2),
             ),
           ],
         ],

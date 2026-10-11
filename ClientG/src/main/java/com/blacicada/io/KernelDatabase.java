@@ -177,9 +177,9 @@ public final class KernelDatabase implements AutoCloseable {
                     "sampleCount", samples, "lastSampledAt", latest);
         }
     }
-    public Map<String, Object> accessHistory(long from, long to, long before, int limit, String target) throws SQLException {
-        try (var query = connection.prepareStatement("SELECT * FROM access_records WHERE visited_at>=? AND visited_at<? AND id<? AND instr(lower(target),lower(?))>0 ORDER BY id DESC LIMIT ?")) {
-            query.setLong(1, from); query.setLong(2, to); query.setLong(3, before); query.setString(4, target); query.setInt(5, limit + 1);
+    public Map<String, Object> accessHistory(long from, long to, long before, int limit, String target, String state) throws SQLException {
+        try (var query = connection.prepareStatement("SELECT * FROM access_records WHERE visited_at>=? AND visited_at<? AND id<? AND instr(lower(target),lower(?))>0 AND (?='' OR state=?) ORDER BY id DESC LIMIT ?")) {
+            query.setLong(1, from); query.setLong(2, to); query.setLong(3, before); query.setString(4, target); query.setString(5, state); query.setString(6, state); query.setInt(7, limit + 1);
             var items = new ArrayList<Map<String, Object>>();
             try (var rows = query.executeQuery()) {
                 while (rows.next()) {

@@ -216,6 +216,8 @@ void main() {
       await capture('${brightness.name}-start-action');
       model.update(() {
         model.proxy.running = true;
+        model.proxy.capabilities = {...model.proxy.capabilities, 'macosTun'};
+        model.proxy.tunState = 'running';
         model.proxy.traffic = TrafficSnapshot.merge(
           null,
           trafficFixture(time: 300000),

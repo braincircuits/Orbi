@@ -8,6 +8,7 @@ abstract final class DesktopDesign {
   static const monoFontFamily = 'RobotoMono';
   static const spacing = 8.0;
   static const controlHeight = 30.0;
+  static const switchScale = .65;
   static const inputPadding = EdgeInsets.symmetric(horizontal: 9, vertical: 5);
   static const inputIconConstraints = BoxConstraints.tightFor(
     width: controlHeight,
@@ -217,6 +218,28 @@ ThemeData desktopTheme(Brightness brightness) {
       ),
     ),
     textButtonTheme: TextButtonThemeData(style: button),
+    switchTheme: SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith(
+        (states) => Colors.white.withValues(
+          alpha: states.contains(WidgetState.disabled) ? .65 : 1,
+        ),
+      ),
+      // 空图标使关闭和开启时的圆形滑块保持同样大小。
+      thumbIcon: const WidgetStatePropertyAll(
+        Icon(Icons.circle, color: Colors.transparent),
+      ),
+      trackColor: WidgetStateProperty.resolveWith((states) {
+        final color = states.contains(WidgetState.selected)
+            ? scheme.primary
+            : scheme.outline;
+        return color.withValues(
+          alpha: states.contains(WidgetState.disabled) ? .35 : 1,
+        );
+      }),
+      trackOutlineWidth: const WidgetStatePropertyAll(0),
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      padding: EdgeInsets.zero,
+    ),
     segmentedButtonTheme: SegmentedButtonThemeData(
       style: button.copyWith(
         backgroundColor: WidgetStateProperty.resolveWith(

@@ -220,6 +220,7 @@ void main() {
             'state': 'active',
             'profileName': '测试',
             'protocol': 'http3',
+            'originalProtocol': 'udp',
             'createdAt': 1000,
           },
       ],

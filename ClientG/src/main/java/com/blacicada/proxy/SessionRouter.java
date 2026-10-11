@@ -1,6 +1,7 @@
 package com.blacicada.proxy;
 
 import com.blacicada.common.Authority;
+import com.blacicada.common.OutboundNetwork;
 import com.blacicada.config.KernelConfig;
 import io.netty.channel.*;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
@@ -12,6 +13,7 @@ import java.util.*;
 public final class SessionRouter implements AutoCloseable {
     private final EventLoop loop;
     private final DnsAddressResolverGroup resolver;
+    private final OutboundNetwork network;
     private final Set<Channel> browsers = new HashSet<>();
     private final Set<Channel> tunnels = new HashSet<>();
     private volatile int activeCount, pendingCount;
@@ -19,7 +21,8 @@ public final class SessionRouter implements AutoCloseable {
     private volatile KernelConfig config;
     private volatile ProxySession session;
     private boolean closed;
-    public SessionRouter(EventLoop loop, DnsAddressResolverGroup resolver, KernelConfig config) throws Exception {
+    public SessionRouter(EventLoop loop, DnsAddressResolverGroup resolver, KernelConfig config, OutboundNetwork network) throws Exception {
+        this.network = network;
         this.loop = loop; this.resolver = resolver; this.config = config;
         session = selectedSession(config);
     }
@@ -27,15 +30,15 @@ public final class SessionRouter implements AutoCloseable {
         return value.routingMode().equals("direct") ? null : create(value.profile(value.defaultConnectionId()));
     }
     private ProxySession create(KernelConfig.Profile profile) throws Exception {
-        return ProxySessionFactory.create(loop, profile.config(), resolver);
+        return ProxySessionFactory.create(loop, profile.config(), resolver, network);
     }
-    public Future<Channel> open(Authority target, Channel browser) {
+    public Future<Channel> open(Authority target, Channel browser, boolean udp) {
         Promise<Channel> result = loop.newPromise();
         loop.execute(() -> {
             if (closed || session == null || !browser.isActive() || result.isDone()) { result.cancel(false); return; }
             if (browsers.add(browser)) browser.closeFuture().addListener(f -> browsers.remove(browser));
             pending.add(result); pendingCount = pending.size();
-            Future<? extends Channel> opening = session.open(target);
+            Future<? extends Channel> opening = session.open(target, udp);
             result.addListener(f -> { pending.remove(result); pendingCount = pending.size(); if (!f.isSuccess()) opening.cancel(false); });
             opening.addListener(f -> {
                 if (f.isSuccess()) {

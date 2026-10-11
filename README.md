@@ -6,7 +6,7 @@ Java 25 + Netty 4.2.18.Final。Flutter UI 称为「代理客户端」，Java Cli
 浏览器/应用 -- 本地 TCP --> ClientG
                               ║ HTTP/3（QUIC/UDP）或 HTTP/2（TLS/TCP）
                               ║ 多个独立 CONNECT 流
-                            Server -- 多个 TCP 连接 --> 目标网站
+                            Server -- TCP 连接 / UDP 报文 --> 目标
 ```
 
 ## 使用入口
@@ -202,11 +202,15 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 
 - `connectTimeoutMillis`：DNS/连接或 CONNECT 握手的等待限制，默认 10000 毫秒。本地初始请求整体等待限制为其两倍。
 - `idleTimeoutSeconds`：共享 QUIC 连接空闲超时，默认 300 秒。
-- `maxStreams`：流并发上限，默认 256。客户端计入正在等待建立的流，超过本地上限的请求直接失败，不影响已有隧道。服务端 QUIC 流额度暂时耗尽时，客户端等待 MAX_STREAMS 更新后继续创建流，等待最长为 `connectTimeoutMillis`，不会为此断开共享连接。
+- `maxStreams`：流并发上限，默认 1024。客户端计入正在等待建立的流，超过本地上限的请求直接失败，不影响已有隧道。服务端 QUIC 流额度暂时耗尽时，客户端等待 MAX_STREAMS 更新后继续创建流，等待最长为 `connectTimeoutMillis`，不会为此断开共享连接。 HTTP/2 同样遵守服务端发布的流额度。TUN 的每个 UDP 关联也占用一条流，双向空闲 60 秒后回收；持续发送的 UDP 流量仍会占用额度。提高容量需要同时检查客户端与服务端的 `maxStreams`，只修改一侧仍受另一侧限制。 HTTP/2 服务端的重置帧限制随并发上限调整（每 30 秒至少 200 次、且不低于 `maxStreams`），允许一批隧道关闭后继续复用主连接。
 
 远程部署需要开放服务端 UDP 端口。自签名部署将服务器证书配置为客户端 `tls.ca`；公开证书使用正常的信任链。程序不会跳过证书或主机名验证，也不启用 TLS 0-RTT。
 
 ## 多客户端与独立账号
+
+UDP 转发先解析目标地址，再创建对应原生 IPv4 或 IPv6 套接字；macOS 直连出口也使用对应地址族的接口绑定选项，避免双栈 UDP 通配端口与 IPv4 应用重叠造成回包丢失。
+
+单个目标的 CONNECT 失败、等待超时或本地额度耗尽只记录在访问结果及运行日志中，不显示为整个代理连接故障。运行日志包含目标、原始 TCP/UDP 协议及直连/代理路由；本地额度耗尽另附占用与上限。概览仍提示服务端连接和认证错误。
 
 一个服务端可以同时接受多个客户端；每个客户端进程各自建立一条 QUIC 连接并复用自己的代理流。`maxStreams` 按连接计算，不是全服务端的总额度。同一账号可在多台机器上使用，当前不限制每账号设备数量。
 
@@ -329,8 +333,71 @@ curl --noproxy "" --proxy http://127.0.0.1:8080 https://example.com/
 - 普通 HTTP：支持各请求方法、Content-Length、chunked 和 `Expect: 100-continue`；请求体分块转发。当前每条本地普通 HTTP 连接只处理一个请求，并向目标发送 `Connection: close`。不支持普通 HTTP 的流水线请求或 WebSocket Upgrade；HTTPS 隧道内的连接复用和 WSS 不受此限制。
 - HTTP/3 流关闭只清理对应目标连接；共享连接中断会使其已有隧道结束，下一次请求按需重新建立共享连接。不会重放请求或假装恢复已中断的 TCP 会话。
 - 每个方向使用手动读取、写完成通知与可写状态传播背压；建立连接期间的应用缓冲有上限。目标 DNS 查询不阻塞网络事件线程。
-- HTTP/2 与 HTTP/3 由连接配置明确选择，不自动降级；没有 SOCKS5、CONNECT-UDP 或 UDP 目标代理。
+- HTTP/2 与 HTTP/3 由连接配置明确选择，不自动降级。UDP 目标通过下述项目专用 CONNECT 封装转发；macOS TUN 接入见下文。尚未实现 SOCKS5、标准 CONNECT-UDP 或 QUIC DATAGRAM。
 - 新旧客户端/服务端的线协议不兼容，必须成对升级。旧的 `key`、序号与字节映射实现已移除。
+
+### UDP 本地接入与可靠流封装
+
+ClientG 和 Server 必须使用本次支持 UDP 的版本。适配器连接现有本地 HTTP 代理端口（默认 `127.0.0.1:8080`），发送：
+
+```http
+CONNECT 目标主机:目标端口 HTTP/1.1
+Host: 目标主机:目标端口
+x-network-transport: udp
+
+```
+
+实际请求行和请求头以 `\r\n` 分隔，以 `\r\n\r\n` 结束。IPv6 目标使用 `[地址]:端口`。一条 CONNECT 关联固定一个目标，不在报文中重复携带地址；不同来源或目标应建立独立关联。
+
+成功响应为 `200`，必须包含唯一的 `x-network-transport: udp`。代理模式下，同一标识在远端 HTTP/2、HTTP/3 CONNECT 请求与成功响应中传递，仍使用现有认证和 TLS 校验。未确认 UDP 的响应视为失败，不切换成 TCP 或其他协议。未知、重复的标识返回 `400`；无此标识的 CONNECT 继续表示 TCP。
+
+握手之后，两端每个 UDP 报文均表示为：
+
+```text
+两字节无符号大端长度 N | N 字节 UDP 负载
+```
+
+- 长度不包含前缀，范围为 `0..65507`，包括真实的空 UDP 报文。IPv4、IPv6 使用相同上限，不支持 UDP jumbogram。
+- 字节流可能拆包或合包；必须按长度读取完整报文，不能将一次读取或一个 HTTP DATA 帧当作一条报文。目标回包使用相同格式，每个关联允许多个回包。
+- Server 为每个关联创建独立 UDP 套接字，固定发送目标，只接受该目标地址和端口的回包。直连时由 ClientG 创建该套接字，沿用当前直连规则及路由模式。
+- 关闭、半关闭、畸形报文或连续 60 秒没有完整报文活动会结束关联。规则导致路由变化或切换代理连接时，沿用现有业务连接清理机制。后续发送需要重新建立关联。
+- UDP 负载经过 HTTP/2 或 HTTP/3 的可靠 DATA 流，因此丢包会等待重传。最终 UDP 网络仍可能丢包；`200` 只表示关联准备好，不表示目标在线或报文已送达。
+- 流量统计只计 UDP 负载，不计两字节前缀；访问记录使用 `CONNECT-UDP` 标签表示此项目专用接入，实际 HTTP 方法仍为 `CONNECT`。直连关联的 `protocol` 为 `udp`，代理关联为 `http2` 或 `http3`。
+
+下面的 Python 3 示例通过已运行的 ClientG 向本机 UDP 回显服务发送报文；先将 `target` 改为实际测试目标：
+
+```python
+import socket
+import struct
+
+target = "127.0.0.1:9999"
+payload = b"hello udp"
+
+with socket.create_connection(("127.0.0.1", 8080), timeout=5) as connection:
+    connection.sendall((f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n"
+                        "x-network-transport: udp\r\n\r\n").encode("ascii"))
+    stream = connection.makefile("rb")
+    status = stream.readline()
+    headers = []
+    while (line := stream.readline()) != b"\r\n":
+        if not line:
+            raise RuntimeError("UDP 握手提前结束")
+        headers.append(line.strip().lower())
+    if not status.startswith(b"HTTP/1.1 200 ") or headers.count(b"x-network-transport: udp") != 1:
+        raise RuntimeError("UDP 握手失败")
+    connection.sendall(struct.pack("!H", len(payload)) + payload)
+    prefix = stream.read(2)
+    if len(prefix) != 2:
+        raise RuntimeError("UDP 关联已关闭")
+    length = struct.unpack("!H", prefix)[0]
+    reply = stream.read(length)
+    if len(reply) != length:
+        raise RuntimeError("UDP 回包不完整")
+    print("UDP 回包：", reply)
+    stream.close()
+```
+
+普通应用仅设置 HTTP 系统代理不会自动接入其 UDP 流量；macOS 客户端可开启下面的虚拟网卡模式。
 
 ## 源码位置
 
@@ -449,3 +516,55 @@ HTTP/2 超时日志按实际阶段分别显示“等待 HTTP/2 流额度”“�
 `GET /api/v1/routing/export` 返回带版本号的路由文档，把响应中的 `data` 保存为 UTF-8 JSON。`POST /api/v1/routing/import` 接收该文档并要求 `If-Match`，完整替换模式、默认连接、直连规则和精确目标规则，校验及保存作为一次修改完成。默认连接 ID 必须已存在，导入不创建连接、不包含凭据。格式、错误和客户端接入说明见 [Web API](docs/web-api.md#sqlite-与路由导入导出)。
 
 数据库包含代理密码且未加密，仅应由当前用户访问。同一数据库只能由一个内核实例打开；损坏或未知版本的数据库不会自动重置。日志、活动连接、事件和诊断结果不入库；`control.json` 继续供客户端发现正在运行的内核。备份前先停止内核，保留数据库及配套证书。
+
+
+### macOS 虚拟网卡模式
+
+概览页的「虚拟网卡模式」开关在代理运行后可用。系统管理员授权后，独立辅助进程创建 `utun`，将经过该接口的 TCP/UDP 报文交给 Outline SDK，再通过本机 CONNECT 交给 Java 内核。TCP 沿用原有隧道；UDP 使用上面的长度前缀封装，远端仍采用配置指定的 HTTP/2 或 HTTP/3 可靠流。
+
+直连流量也经过 Java 内核，继续统计流量与记录访问。TUN 第一版按 IP/CIDR 和全局模式分流；IP 报文不带域名，因此域名规则只对显式 HTTP 代理接入生效。本版不提供 DNS 域名映射或 Fake-IP。
+
+启用前会重建 Java 代理的现有连接，并将内核的 TCP、UDP、DNS 和远端代理连接绑定到真实出口接口，避免再次进入 TUN。接管前为绑定出口准备 IPv4/IPv6 作用域默认路由，复用符合当前网关的已有条目；仅管理本次新增条目。停用时先移除本次添加的路由并关闭 utun，再恢复普通内核出口；启停均可能中断下载等现有连接。TUN 工作期间可以切换规则与代理节点，修改本地监听地址/端口或重启代理前需要先关闭 TUN。
+
+首次开启会请求管理员授权，将辅助程序安装到 `/Library/PrivilegedHelperTools/com.blacicada.network-tun/network-tun`，并注册 `/Library/LaunchDaemons/com.blacicada.network-tun.plist`。以后开关虚拟网卡不再重复输入密码；客户端与已安装程序的 SHA-256 不同时，更新辅助程序需要再次授权。系统服务开机待命，但不会自动开启 TUN，也不保存管理员密码。
+
+服务通过仅限授权用户访问的 Unix 套接字通信，核验系统提供的对端 UID/PID。只允许启动固定的已安装程序，不接受任意命令、环境变量或路由参数。一次安装只授权一个本机用户；辅助程序和服务配置由 root 持有，普通用户不可修改。每次会话单独创建转发进程及路由清理子进程。管理员转发进程退出或被强制结束时，清理子进程撤销本次新增的作用域路由。授权期间关闭开关会撤销本次启动标识，迟到的启动请求不能接管路由。关闭开关、停止代理、客户端进程退出、管理连接丢失或网络出口改变都会触发清理；切换 Wi-Fi、网卡或网关后需手动重新开启。卸载和更新在有活动会话时会被拒绝，需先关闭 TUN。
+
+移除系统辅助服务时，先关闭虚拟网卡，再进入「设置 → 虚拟网卡辅助服务」，点击「卸载系统辅助服务」，确认后完成管理员授权。面板显示安装状态，也可手动刷新；卸载只移除该服务的固定文件，不清理用户配置、证书和访问记录。下次开启虚拟网卡会重新请求安装授权。也可以执行下面的命令：
+
+```sh
+sudo /Library/PrivilegedHelperTools/com.blacicada.network-tun/network-tun --remove-service
+```
+
+
+当前边界：
+
+- 需要 macOS 的可用 IPv4 主网络接口；IPv4 和 IPv6 出站均绑定此接口，暂不支持仅 IPv6 的主网络、多出口或与其他 VPN 叠加。IPv6 访问还需真实出口支持 IPv6。
+- 使用细分默认路由，并细分主网卡直连网段；回环、本机地址、默认网关、链路本地地址、已有更精确的系统路由及应用显式绑定接口的流量可能不进入 TUN。此功能覆盖路由进入虚拟网卡的 TCP/UDP，不是对所有系统报文的强制拦截。
+- 不支持 ICMP、组播或非 TCP/UDP 协议，不修改系统 DNS 设置，也不提供 DNS 防泄漏保证。系统发往普通 DNS 地址的 UDP/TCP 请求进入 TUN 时，沿用同样的转发路径。
+- 退出后恢复正常系统路由，不提供断网保护（kill switch）。不会覆盖已有的同前缀路由；冲突或中途失败会清理本进程已添加的路由并报错。
+
+构建需要 Java 25、Flutter、Go 1.25 或更高版本以及 Xcode Command Line Tools 的 C 编译器。`TunBridge/go.mod` 固定 Outline SDK `v0.0.23`，通过其 `lwip2transport` 接口适配 TCP/UDP；该版本间接依赖 `go-tun2socks v1.16.11` 和 lwIP。仓库在 `TunBridge/patches/` 保留最小补丁：使用双栈协议控制块、修复空 UDP 回包并检查发送错误、将 UDP 回包与协议栈输入串行处理。构建脚本只在临时副本应用补丁，使用临时 Go 模块替换，不修改全局 Go 缓存或项目 `go.mod`；依赖版本变化或补丁不能准确应用时构建失败，需重新复核。第三方许可证位于 `TunBridge/licenses/`，打包时一并复制。
+
+```sh
+# 使用相同补丁运行竞态检查与原始 IPv4/IPv6 TCP、UDP、空报文测试
+sh scripts/build-tun.sh --test
+
+# 单独构建辅助进程（不会执行 Java AOT）
+sh scripts/build-tun.sh
+
+# 开发运行，同时构建 JAR 和辅助进程
+sh ui/scripts/run-dev.sh
+
+# 打包内置 JAR、Java 运行时、辅助进程的 macOS 应用
+sh ui/scripts/package-macos-jar.sh /目标目录/Network-JAR.app
+```
+
+已安装系统服务后，可执行 `python3 scripts/check-tun-service.py /应用路径/Contents/Resources/proxy/network-tun`，校验权限、版本一致性和连续两次无提权调用；验证在启动标识校验处中止，不创建 TUN 或改动路由。
+
+可通过 `GO`、`FLUTTER`、`JDK_HOME` 指定本机工具路径；日常验证使用 JAR。实际 utun 创建、路由接管及恢复需要在本机管理员授权后联调，普通单元测试不会修改系统路由。
+
+
+本轮验证记录（2026-10-11）：Java 全量测试 162 项通过；Flutter 全量测试 98 项通过、14 项按原有环境条件跳过，静态分析通过；Go 在应用依赖补丁后通过竞态检查，覆盖原始 IPv4/IPv6 TCP、UDP 及空 UDP 回包。本机管理员授权联调已验证 utun 接管、IPv4 TCP/HTTPS、UDP/DNS、内核关联记录和正常退出后的路由恢复。强制退出清理子进程随后加入，最后一轮故障联调因系统授权超时而未执行，该异常退出路径仍待实机验证。公网 IPv6 与真实网络切换也尚未逐项联调。
+
+2026-10-12 补充验证：访问记录状态筛选在数据库中先过滤后分页，Java 全量 163 项、Flutter 全量 98 项通过（14 项原有条件跳过），静态分析通过。辅助服务通过真实管理员授权完成安装，校验了 root 所有的安装文件和仅授权用户可访问的套接字，并连续两次通过普通用户启动会话进程；两次均在测试用失效标识处中止，没有接管路由。新版服务模式的真实 TUN 连续开关及服务异常退出恢复仍待实机验证，不能将上述 IPC 检查视为这两项验证完成。

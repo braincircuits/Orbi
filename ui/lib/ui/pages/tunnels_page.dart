@@ -265,12 +265,16 @@ class _TunnelsPageState extends State<TunnelsPage> {
                                   children: [
                                     Expanded(child: _text('目标地址', muted: true)),
                                     SizedBox(
+                                      width: 80,
+                                      child: _text('原始协议', muted: true),
+                                    ),
+                                    SizedBox(
                                       width: 176,
                                       child: _text('来源地址', muted: true),
                                     ),
                                     SizedBox(
                                       width: 156,
-                                      child: _text('路由 / 连接', muted: true),
+                                      child: _text('路由 / 协议', muted: true),
                                     ),
                                     SizedBox(
                                       width: 104,
@@ -316,6 +320,13 @@ class _TunnelsPageState extends State<TunnelsPage> {
                                                   ),
                                                 ),
                                                 SizedBox(
+                                                  width: 80,
+                                                  child: _text(
+                                                    tunnel
+                                                        .originalProtocolLabel,
+                                                  ),
+                                                ),
+                                                SizedBox(
                                                   width: 176,
                                                   child: _text(
                                                     tunnel.source,
@@ -329,20 +340,8 @@ class _TunnelsPageState extends State<TunnelsPage> {
                                                         const EdgeInsets.only(
                                                           right: 12,
                                                         ),
-                                                    child: Column(
-                                                      crossAxisAlignment:
-                                                          CrossAxisAlignment
-                                                              .start,
-                                                      children: [
-                                                        _routeControl(tunnel),
-                                                        if (tunnel
-                                                            .profileName
-                                                            .isNotEmpty)
-                                                          _text(
-                                                            tunnel.profileName,
-                                                            muted: true,
-                                                          ),
-                                                      ],
+                                                    child: _routeControl(
+                                                      tunnel,
                                                     ),
                                                   ),
                                                 ),
@@ -377,9 +376,14 @@ class _TunnelsPageState extends State<TunnelsPage> {
                                                 const SizedBox(height: 6),
                                                 Row(
                                                   children: [
+                                                    _text(
+                                                      '原始 ${tunnel.originalProtocolLabel}',
+                                                      muted: true,
+                                                    ),
+                                                    const SizedBox(width: 12),
                                                     Expanded(
                                                       child: _text(
-                                                        '${tunnel.source}${tunnel.profileName.isEmpty ? '' : ' · ${tunnel.profileName}'}',
+                                                        tunnel.source,
                                                         muted: true,
                                                       ),
                                                     ),

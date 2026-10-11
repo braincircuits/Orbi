@@ -132,6 +132,8 @@ class Http2IntegrationTest {
             send(s, "CONNECT 127.0.0.1:" + unused + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assertTrue(headers(s.getInputStream()).startsWith("HTTP/1.1 502"));
         }
+        assertEquals("connected", client.connectionState());
+        assertEquals("", client.lastError(), "单个目标失败不应显示成全局故障");
         try (Socket s = tunnel(client, echo.port())) { send(s, "ok"); assertEquals("ok", new String(s.getInputStream().readNBytes(2))); }
         assertEquals(1, client.connectionCount());
     }
@@ -140,6 +142,7 @@ class Http2IntegrationTest {
             send(s, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assertTrue(headers(s.getInputStream()).startsWith("HTTP/1.1 502"));
             assertEquals(0, echo.accepted.get());
+            assertEquals("代理账号或密码验证失败", bad.lastError());
         }
     }
     @Test void verifiesCertificateHostname() throws Exception {
@@ -457,6 +460,8 @@ class Http2IntegrationTest {
             send(extra, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assertTrue(headers(extra.getInputStream()).startsWith("HTTP/1.1 502"));
             send(active, "alive"); assertEquals("alive", new String(active.getInputStream().readNBytes(5)));
+            assertEquals("connected", limited.connectionState());
+            assertEquals("", limited.lastError(), "并发额度耗尽不代表服务端连接断开");
         }
     }
 

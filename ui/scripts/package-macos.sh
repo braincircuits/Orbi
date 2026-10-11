@@ -24,6 +24,9 @@ mkdir -p "$(dirname "$OUTPUT")"
 ditto "$UI_ROOT/build/macos/Build/Products/Release/network_ui.app" "$OUTPUT"
 ASSETS="$OUTPUT/Contents/Resources/proxy"
 mkdir -p "$ASSETS"
+sh "$CORE_ROOT/scripts/build-tun.sh"
+cp "$CORE_ROOT/target/network-tun" "$ASSETS/network-tun"
+ditto "$CORE_ROOT/TunBridge/licenses" "$ASSETS/tun-licenses"
 cp "$NATIVE_CORE" "$ASSETS/network-core"
 # GraalVM 可能在程序旁输出所需的动态库，一并打包并参与签名。
 for library in "$(dirname "$NATIVE_CORE")"/*.dylib; do

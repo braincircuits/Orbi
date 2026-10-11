@@ -65,6 +65,11 @@ class ProxyController extends ChangeNotifier {
   Timer? _retry;
   int _retrySeconds = 1;
   bool busy = false, running = false, connected = false, streaming = false;
+  String tunState = 'off', tunError = '';
+  bool get tunEnabled =>
+      {'authorizing', 'starting', 'running', 'stopping'}.contains(tunState);
+  bool get tunSupported =>
+      Platform.isMacOS && capabilities.contains('macosTun');
   bool configurationChanged = false;
   int revision = 0, configurationRevision = 0;
   int kernelGeneration = 0, networkGeneration = 0;
@@ -127,11 +132,13 @@ class ProxyController extends ChangeNotifier {
 
   Future<AccessRecordPage> accessHistory({
     String target = '',
+    String state = '',
     int? beforeId,
   }) async {
     final query = Uri(
       queryParameters: {
         'target': target,
+        if (state.isNotEmpty) 'state': state,
         'limit': '100',
         if (beforeId != null) 'beforeId': '$beforeId',
       },
@@ -222,6 +229,9 @@ class ProxyController extends ChangeNotifier {
     networkGeneration = generation;
     routingMode = '${status['routingMode'] ?? 'rules'}';
     running = status['running'] == true;
+    final tun = status['tun'] as Map<String, dynamic>?;
+    tunState = tun?['state'] as String? ?? 'off';
+    tunError = tun?['error'] as String? ?? '';
     connection = '${status['connection'] ?? 'idle'}';
     address = '${status['address'] ?? ''}';
     defaultConnectionId = '${status['defaultConnectionId'] ?? ''}';
@@ -689,6 +699,18 @@ class ProxyController extends ChangeNotifier {
   Future<void> stop() => _operate(() async {
     _status(
       (await _request('POST', 'proxy/stop'))['data'] as Map<String, dynamic>,
+    );
+  });
+  Future<String> requestTun() => _operate(() async {
+    final result = await _request('POST', 'tun/request');
+    tunState = 'authorizing';
+    tunError = '';
+    _notify();
+    return (result['data'] as Map<String, dynamic>)['ticket'] as String;
+  });
+  Future<void> stopTun() => _operate(() async {
+    _status(
+      (await _request('POST', 'tun/stop'))['data'] as Map<String, dynamic>,
     );
   });
   Future<int> selectConnection(String id, {int? expectedRevision}) =>

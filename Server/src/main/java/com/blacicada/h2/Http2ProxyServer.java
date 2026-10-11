@@ -64,7 +64,10 @@ public final class Http2ProxyServer implements AutoCloseable {
                                             if (e instanceof IdleStateEvent) c.close(); else c.fireUserEventTriggered(e);
                                         }
                                     });
-                                    ctx.pipeline().addLast(Http2FrameCodecBuilder.forServer().initialSettings(new Http2Settings()
+                                    // 允许一批已建立隧道集中回收，同时保留有限的重置帧速率保护。
+                                    ctx.pipeline().addLast(Http2FrameCodecBuilder.forServer()
+                                            .decoderEnforceMaxRstFramesPerWindow(Math.max(200, config.maxStreams()), 30)
+                                            .initialSettings(new Http2Settings()
                                             .maxConcurrentStreams(config.maxStreams()).maxHeaderListSize(Transport.MAX_HEADER_SIZE)
                                             .initialWindowSize(256 * 1024)).build());
                                     ctx.pipeline().addLast(new Http2MultiplexHandler(new ChannelInitializer<Http2StreamChannel>() {

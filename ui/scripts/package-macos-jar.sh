@@ -16,6 +16,7 @@ if [ ! -x "$JDK_HOME/bin/jlink" ]; then
 fi
 printf '%s\n' '正在构建 JAR 代理内核…'
 (cd "$CORE_ROOT" && JAVA_HOME="$JDK_HOME" mvn -q -pl ClientG -am -DskipTests package)
+sh "$CORE_ROOT/scripts/build-tun.sh"
 printf '%s\n' '正在构建 macOS 界面…'
 (cd "$UI_ROOT" && "$FLUTTER" build macos --release -t lib/main.dart)
 mkdir -p "$(dirname "$OUTPUT")"
@@ -23,6 +24,8 @@ ditto "$UI_ROOT/build/macos/Build/Products/Release/network_ui.app" "$OUTPUT"
 ASSETS="$OUTPUT/Contents/Resources/proxy"
 mkdir -p "$ASSETS"
 cp "$CORE_ROOT/ClientG/target/clientG-1.0-SNAPSHOT.jar" "$ASSETS/client.jar"
+cp "$CORE_ROOT/target/network-tun" "$ASSETS/network-tun"
+ditto "$CORE_ROOT/TunBridge/licenses" "$ASSETS/tun-licenses"
 printf '%s\n' '正在生成内置 Java 运行时…'
 "$JDK_HOME/bin/jlink" --add-modules java.se,jdk.httpserver,jdk.jfr,jdk.unsupported,jdk.crypto.ec,jdk.naming.dns \
   --strip-debug --no-header-files --no-man-pages --output "$ASSETS/runtime"

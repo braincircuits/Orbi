@@ -1,0 +1,2 @@
+# 补丁上下文行必须保留原始缩进和空行，不按普通源码检查空白。
+TunBridge/patches/*.patch -whitespace

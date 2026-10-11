@@ -180,7 +180,7 @@ curl --noproxy "" --proxy http://127.0.0.1:8080 https://example.com/
 
 升级时停止两端，分别替换 `server/server.jar` 和 `client/client.jar`，保留 SQLite 数据库、服务端配置与证书，再重新启动。不同次打包会生成不同密码和证书，不要混用；证书到期需要手动更新，并同步客户端信任配置。
 
-两端默认 `connectTimeoutMillis=10000`、`idleTimeoutSeconds=300`、`maxStreams=256`。配置在启动时读取；内核通过 Web 接口修改后自动保存，服务端修改后重启。服务端更改端口、密码或证书时，需要同步客户端相关配置。
+两端默认 `connectTimeoutMillis=10000`、`idleTimeoutSeconds=300`、`maxStreams=1024`。配置在启动时读取；内核通过 Web 接口修改后自动保存，服务端修改后重启。服务端更改端口、密码或证书时，需要同步客户端相关配置。
 
 客户端入口为 HTTP/1.1 代理；HTTPS 使用 CONNECT 隧道。客户端到服务端使用单条 QUIC/HTTP/3 连接复用多个流，服务端到目标使用 TCP。连接配置也可显式选择 HTTP/2（TCP + TLS），服务端需设置 `protocols=http3,http2` 并放行相应 TCP 端口。两种协议不会自动回退。不支持 SOCKS5 或 UDP 目标。共享连接断开会结束现有隧道，后续请求按需重新连接，不会恢复已中断的 TCP 会话。
 

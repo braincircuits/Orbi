@@ -21,6 +21,11 @@ final class ControlApi {
                 case "GET /api/v1/info" -> data = control.info();
                 case "GET /api/v1/health" -> data = Map.of("ready", true);
                 case "GET /api/v1/status" -> data = control.status();
+                case "POST /api/v1/tun/request" -> data = control.requestTun();
+                case "POST /api/v1/tun/prepare" -> data = control.prepareTun(string(body, "interface"), string(body, "ticket"));
+                case "POST /api/v1/tun/heartbeat" -> data = control.heartbeatTun(string(body, "session"), bool(body, "ready"));
+                case "POST /api/v1/tun/stop" -> { control.stopTun(); data = control.status(); }
+                case "POST /api/v1/tun/finish" -> { control.finishTun(string(body, "session"), string(body, "error")); data = control.status(); }
                 case "GET /api/v1/traffic" -> data = control.traffic();
                 case "POST /api/v1/traffic/summary" -> data = control.trafficSummary(body);
                 case "GET /api/v1/traffic/history", "GET /api/v1/access-records" -> {
@@ -29,7 +34,7 @@ final class ControlApi {
                     data = control.history(traffic, Long.parseLong(query.getOrDefault("from", "0")),
                             Long.parseLong(query.getOrDefault("to", Long.toString(Long.MAX_VALUE))),
                             Long.parseLong(query.getOrDefault("beforeId", Long.toString(Long.MAX_VALUE))),
-                            Integer.parseInt(query.getOrDefault("limit", "100")), query.getOrDefault(traffic ? "sessionId" : "target", ""));
+                            Integer.parseInt(query.getOrDefault("limit", "100")), query.getOrDefault(traffic ? "sessionId" : "target", ""), query.getOrDefault("state", ""));
                 }
                 case "GET /api/v1/tunnels" -> data = control.tunnels();
                 case "POST /api/v1/proxy/start" -> { control.start(); data = control.status(); }
@@ -91,6 +96,11 @@ final class ControlApi {
         if (!body.has(name) || !body.get(name).isJsonPrimitive() || !body.get(name).getAsJsonPrimitive().isString())
             throw new ControlException(400, "MISSING_FIELD", "缺少有效的字符串字段", name);
         return body.get(name).getAsString();
+    }
+    private static boolean bool(JsonObject body, String name) {
+        if (!body.has(name) || !body.get(name).isJsonPrimitive() || !body.get(name).getAsJsonPrimitive().isBoolean())
+            throw new ControlException(400, "MISSING_FIELD", "缺少有效的布尔字段", name);
+        return body.get(name).getAsBoolean();
     }
     private static long revision(String value) {
         if (value == null) throw new ControlException(428, "REVISION_REQUIRED", "修改配置需要通过 If-Match 提交当前版本号");

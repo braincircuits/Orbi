@@ -29,6 +29,9 @@ final class LocalSession {
     private Future<List<InetSocketAddress>> lookup;
     private Channel remote;
     private boolean closed;
+    private boolean udp;
+
+    void udp(boolean value) { udp = value; }
 
     /** 首次决定路由时回调一次；地址为 null 表示走代理。 */
     LocalSession(Channel browser, Authority target, AddressResolver<InetSocketAddress> resolver,
@@ -59,7 +62,8 @@ final class LocalSession {
                 "route", direct == null ? "resolving" : direct ? "direct" : "proxy",
                 "state", direct == null ? "resolving" : remote != null && remote.isActive() ? "active" : "pending",
                 "profileId", profile == null ? "" : profile.id(), "profileName", profile == null ? "" : profile.name(),
-                "protocol", profile == null ? "tcp" : profile.config().get("protocol", "http3"), "createdAt", createdAt);
+                "originalProtocol", udp ? "udp" : "tcp",
+                "protocol", profile == null ? (udp ? "udp" : "tcp") : profile.config().get("protocol", "http3"), "createdAt", createdAt);
     }
 
     /** 记录实际连接地址，防止 DNS 多地址中另一个地址命中规则却保留错误的直连。 */
@@ -108,7 +112,7 @@ final class LocalSession {
             LogManager.getLogger(LocalSession.class).info("直连规则已变化，关闭受影响的业务连接：目标={}，路由={} → {}",
                     target, direct ? "直连" : "代理", nextDirect ? "直连" : "代理");
             cancelLookup();
-            // 只取消本次业务对应的 TCP 连接或协议流，共享主连接保持不变。
+            // 只取消本次业务对应的目标套接字或协议流，共享主连接保持不变。
             if (remote != null) Transport.abort(remote);
             browser.close();
         }

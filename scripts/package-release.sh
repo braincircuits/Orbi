@@ -41,7 +41,7 @@ tls.cert=../certs/server.crt
 tls.key=../certs/server.key
 connectTimeoutMillis=10000
 idleTimeoutSeconds=300
-maxStreams=256
+maxStreams=1024
 CONFIG
 printf '%s\n' "$secret" | python3 "$project_dir/scripts/initialize-kernel.py" \
     --jar "$release_dir/client/client.jar" --db "$release_dir/client/kernel.db" \

@@ -20,6 +20,17 @@ class NativeBridge {
     'canApply': canApply,
   });
   Future<void> showWindow() => channel.invokeMethod('showWindow');
+  Future<bool> tunServiceInstalled() async =>
+      await channel.invokeMethod<bool>('tunServiceInstalled') == true;
+  Future<void> removeTunService() => channel.invokeMethod('removeTunService', {
+    'helper': const String.fromEnvironment('PROXY_TUN'),
+  });
+  Future<void> startTun(String endpoint, String ticket) =>
+      channel.invokeMethod('startTun', {
+        'endpoint': endpoint,
+        'ticket': ticket,
+        'helper': const String.fromEnvironment('PROXY_TUN'),
+      });
   Future<void> configureTitlebar({
     required double right,
     required double top,

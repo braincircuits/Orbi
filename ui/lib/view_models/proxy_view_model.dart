@@ -36,6 +36,11 @@ class ProxyViewModel extends ChangeNotifier {
     this.proxy.addListener(_proxyChanged);
     this.proxy.logChanges.addListener(_logsChanged);
   }
+  String _tunTicket = '';
+  bool? tunServiceInstalled;
+  bool checkingTunService = false;
+  String tunServiceError = '';
+  bool get supportsTunService => Platform.isMacOS;
   final NativeBridge native;
   final ProxyController proxy;
   final RuntimePreferences preferences;
@@ -539,6 +544,46 @@ class ProxyViewModel extends ChangeNotifier {
   });
 
   Future<void> stop() => action(proxy.stop);
+  Future<void> refreshTunService() async {
+    if (!supportsTunService || !active || checkingTunService) return;
+    update(() {
+      checkingTunService = true;
+      tunServiceError = '';
+    });
+    try {
+      final installed = await native.tunServiceInstalled();
+      if (active) update(() => tunServiceInstalled = installed);
+    } catch (error) {
+      if (active) update(() => tunServiceError = '读取辅助服务状态失败：$error');
+    } finally {
+      if (active) update(() => checkingTunService = false);
+    }
+  }
+
+  Future<void> removeTunService() => action(() async {
+    if (proxy.tunEnabled) throw StateError('请先关闭虚拟网卡模式，再卸载辅助服务');
+    await native.removeTunService();
+    await refreshTunService();
+    if (tunServiceInstalled != false || tunServiceError.isNotEmpty) {
+      throw StateError('尚未确认辅助服务已卸载，请刷新状态后重试');
+    }
+    message('系统辅助服务已卸载，配置和访问记录已保留');
+  });
+
+  Future<void> setTun(bool enabled) => action(() async {
+    if (!enabled) {
+      await proxy.stopTun();
+      return;
+    }
+    final ticket = await proxy.requestTun();
+    _tunTicket = ticket;
+    try {
+      await native.startTun(proxy.endpointFile.path, ticket);
+    } catch (_) {
+      await proxy.stopTun();
+      rethrow;
+    }
+  });
 
   Future<void> restart() => action(proxy.restart);
   Future<void> disconnect() => action(proxy.disconnect);
@@ -646,6 +691,15 @@ class ProxyViewModel extends ChangeNotifier {
   }
 
   Future<void> handleNativeCall(MethodCall call) async {
+    if (call.method == 'tunExited' && active) {
+      final result = Map<String, dynamic>.from(call.arguments as Map);
+      if (result['ticket'] != _tunTicket) return;
+      if (proxy.tunState == 'authorizing') await proxy.stopTun();
+      final error = result['error'] as String;
+      if (error.isNotEmpty && active) {
+        messages.add(UiMessage(error, failure: true));
+      }
+    }
     if (call.method == 'showSettings') navigate(1);
     if (call.method == 'navigate') navigate(call.arguments as int);
     if (call.method == 'applyConfiguration' && canApply) await apply();

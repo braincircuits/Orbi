@@ -34,7 +34,7 @@ public final class TrafficStatistics {
         return Map.of("sampledAt", time, "sentBytes", send, "receivedBytes", receive,
                 "sendBytesPerSecond", upload, "receiveBytesPerSecond", download);
     }
-    /** 在目标 TCP 连接或解码后的代理业务流上安装，每个业务连接仅安装一次。 */
+    /** 在目标套接字或解码后的代理业务流上安装，每个业务连接仅安装一次。 */
     ChannelHandler handler() {
         return new ChannelDuplexHandler() {
             @Override public void channelRead(ChannelHandlerContext ctx, Object message) throws Exception {

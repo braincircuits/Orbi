@@ -30,6 +30,8 @@ class ReadyOverviewModel extends ProxyViewModel {
 class OverviewApi extends KernelApiClient {
   int revision = 1, generation = 1, sequence = 0;
   String mode = 'proxy';
+  String tunState = 'off', tunError = '';
+  int tunRequests = 0;
   String provider = '测试网络';
   bool running = true, failWrite = false;
   Completer<Map<String, dynamic>>? delayed;
@@ -64,8 +66,15 @@ class OverviewApi extends KernelApiClient {
           'overviewTests',
           'traffic',
           'persistentHistory',
+          'macosTun',
         ],
       };
+    } else if (path == 'tun/request') {
+      tunState = 'authorizing';
+      data = {'ticket': '启动标识-${++tunRequests}'};
+    } else if (path == 'tun/stop') {
+      tunState = 'off';
+      return request(base, token, 'GET', 'status');
     } else if (path == 'traffic') {
       data = trafficFixture();
     } else if (path == 'config') {
@@ -73,6 +82,7 @@ class OverviewApi extends KernelApiClient {
     } else if (path == 'status') {
       data = {
         'running': running,
+        'tun': {'state': tunState, 'error': tunError},
         'traffic': trafficFixture(),
         'historyStorage': {
           'pendingRecords': 0,

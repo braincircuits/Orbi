@@ -87,6 +87,8 @@ class AccessRecord {
   final int id;
   final DateTime createdAt;
   final String target, source, method, route, protocol, profileName, state;
+  String get originalProtocolLabel => method == 'CONNECT-UDP' ? 'UDP' : 'TCP';
+  String get protocolLabel => _protocolLabel(protocol);
   String get stateLabel => switch (state) {
     'connected' => '已建立连接',
     'failed' => '连接失败',
@@ -150,6 +152,7 @@ class TunnelStatus {
     required this.state,
     required this.profileName,
     required this.protocol,
+    required this.originalProtocol,
     required this.createdAt,
   });
 
@@ -161,11 +164,14 @@ class TunnelStatus {
     state: json['state'] as String,
     profileName: json['profileName'] as String,
     protocol: json['protocol'] as String,
+    originalProtocol: json['originalProtocol'] as String,
     createdAt: DateTime.fromMillisecondsSinceEpoch(json['createdAt'] as int),
   );
 
   final String id, target, source, route, state, profileName, protocol;
+  final String originalProtocol;
   final DateTime createdAt;
+  String get originalProtocolLabel => originalProtocol.toUpperCase();
   String get stateLabel => switch (state) {
     'active' => '活跃',
     'pending' => '等待连接',
@@ -178,13 +184,16 @@ class TunnelStatus {
     'resolving' => '待确定',
     _ => route,
   };
-  String get protocolLabel => switch (protocol) {
-    'http2' => 'HTTP/2',
-    'http3' => 'HTTP/3',
-    'tcp' => 'TCP',
-    _ => protocol,
-  };
+  String get protocolLabel => _protocolLabel(protocol);
 }
+
+String _protocolLabel(String protocol) => switch (protocol) {
+  'http2' => 'HTTP/2',
+  'http3' => 'HTTP/3',
+  'tcp' => 'TCP',
+  'udp' => 'UDP',
+  _ => protocol,
+};
 
 class ConnectionStatus {
   const ConnectionStatus({

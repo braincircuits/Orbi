@@ -46,33 +46,27 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
             if (!"CONNECT".contentEquals(frame.headers().method()) || frame.headers().scheme() != null
                     || frame.headers().path() != null) { fail(ctx, "400"); return; }
             final Authority authority;
-            try { authority = Authority.parse(frame.headers().authority().toString(), -1); }
+            final boolean udp;
+            try {
+                authority = Authority.parse(frame.headers().authority().toString(), -1);
+                udp = UdpTunnel.requested(frame.headers().getAll(UdpTunnel.HEADER));
+            }
             catch (RuntimeException e) { fail(ctx, "400"); return; }
             requestedTarget = authority;
             ctx.channel().config().setAutoRead(false);
+            if (udp) {
+                var opening = UdpTunnel.connect(ctx.channel().eventLoop(), resolver, authority.unresolved());
+                ctx.channel().closeFuture().addListener(ignored -> opening.cancel(false));
+                opening.addListener(f -> connected(ctx, f.isSuccess() ? (Channel) f.getNow() : null, f.cause(), true));
+                return;
+            }
             var connecting = new Bootstrap().group(ctx.channel().eventLoop()).channel(NioSocketChannel.class)
                     .resolver(resolver).option(ChannelOption.CONNECT_TIMEOUT_MILLIS, config.connectTimeoutMillis())
                     .option(ChannelOption.AUTO_READ, false).option(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     .option(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK)
-                    .handler(new RelayHandler(ctx.channel())).connect(authority.unresolved());
+                    .handler(new ChannelInboundHandlerAdapter()).connect(authority.unresolved());
             target = connecting.channel();
-            connecting.addListener((ChannelFutureListener) f -> {
-                if (finished || !ctx.channel().isActive()) { f.channel().close(); return; }
-                if (!f.isSuccess()) { fail(ctx, "502"); return; }
-                var response = new DefaultHttp3HeadersFrame(); response.headers().status("200");
-                ctx.writeAndFlush(response).addListener(write -> {
-                    if (!write.isSuccess() || !ctx.channel().isActive()) { fail(ctx, "502"); return; }
-                    finished = true;
-                    timeout.cancel(false);
-                    ctx.pipeline().addAfter(ctx.name(), "data", new H3DataCodec());
-                    ctx.pipeline().addAfter("data", "relay", new RelayHandler(target));
-                    while (!pending.isEmpty()) target.write(pending.remove());
-                    target.flush();
-                    ctx.pipeline().remove(this);
-                    target.read();
-                    ctx.channel().read();
-                });
-            });
+            connecting.addListener((ChannelFutureListener) f -> connected(ctx, f.isSuccess() ? f.channel() : null, f.cause(), false));
         } else if (msg instanceof Http3DataFrame frame && receivedHeaders) {
             pendingBytes += frame.content().readableBytes();
             if (pendingBytes > Transport.MAX_PENDING_BYTES) { frame.release(); fail(ctx, "413"); }
@@ -80,6 +74,29 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
         } else if (msg instanceof Http3UnknownFrame) {
             ReferenceCountUtil.release(msg);
         } else { ReferenceCountUtil.release(msg); fail(ctx, "400"); }
+    }
+
+    private void connected(ChannelHandlerContext ctx, Channel connected, Throwable failure, boolean udp) {
+        if (connected != null) target = connected;
+        if (finished || !ctx.channel().isActive()) { if (connected != null) connected.close(); return; }
+        if (failure != null) { fail(ctx, "502"); return; }
+        var response = new DefaultHttp3HeadersFrame(); response.headers().status("200");
+        if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
+        ctx.writeAndFlush(response).addListener(write -> {
+            if (finished) { target.close(); ctx.close(); return; }
+            if (!write.isSuccess() || !ctx.channel().isActive()) { fail(ctx, "502"); return; }
+            finished = true;
+            timeout.cancel(false);
+            ctx.pipeline().addAfter(ctx.name(), "data", new H3DataCodec());
+            if (udp) UdpTunnel.addFraming(ctx.pipeline());
+            ctx.pipeline().addLast("relay", udp ? UdpTunnel.relay(target) : new RelayHandler(target));
+            target.pipeline().addLast("relay", udp ? UdpTunnel.relay(ctx.channel()) : new RelayHandler(ctx.channel()));
+            // 排队的 DATA 已拆去 HTTP 帧，从字节流解码入口继续处理，保留 UDP 边界。
+            while (!pending.isEmpty()) ctx.pipeline().context("data").fireChannelRead(pending.remove());
+            ctx.pipeline().remove(this);
+            target.read();
+            ctx.channel().read();
+        });
     }
 
     private void fail(ChannelHandlerContext ctx, String status) {

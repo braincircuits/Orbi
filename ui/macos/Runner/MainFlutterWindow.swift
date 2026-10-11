@@ -2,6 +2,7 @@ import Cocoa
 import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
+  private let tunLauncher = TunLauncher()
   private var desktopChannel: FlutterMethodChannel?
   private let sidebarMaterial = NSVisualEffectView()
   private let titleDragView = WindowTitleDragView()
@@ -65,6 +66,27 @@ class MainFlutterWindow: NSWindow {
         case "showWindow":
           self.showMainWindow()
           result(nil)
+        case "tunServiceInstalled":
+          result(self.tunLauncher.serviceInstalled)
+        case "removeTunService":
+          let arguments = call.arguments as? [String: String] ?? [:]
+          try self.tunLauncher.remove(developmentHelper: arguments["helper"] ?? "") { error in
+            if let error = error { result(FlutterError(code: "tun", message: error, details: nil)) }
+            else { result(nil) }
+          }
+        case "startTun":
+          guard let arguments = call.arguments as? [String: String],
+                let endpoint = arguments["endpoint"], let ticket = arguments["ticket"] else {
+            result(FlutterError(code: "tun", message: "虚拟网卡启动参数不完整", details: nil)); return
+          }
+          do {
+            try self.tunLauncher.start(endpoint: endpoint, ticket: ticket, developmentHelper: arguments["helper"] ?? "") { error in
+              self.desktopChannel?.invokeMethod("tunExited", arguments: ["ticket": ticket, "error": error ?? ""])
+            }
+            result(nil)
+          } catch {
+            result(FlutterError(code: "tun", message: error.localizedDescription, details: nil))
+          }
         case "configureTitlebar":
           if let geometry = call.arguments as? [String: Any],
              let right = geometry["right"] as? Double,

@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../desktop_theme.dart';
+import '../widgets/desktop_select.dart';
 
 import '../../models/kernel_status.dart';
 import '../../services/proxy_controller.dart';
 
-/// 手动查询已落盘记录，分页使用数据库游标，新增访问不会挤动当前列表。
+/// 按数据库游标加载历史，滚动接近底部时自动加载下一页。
 class AccessRecordsPage extends StatefulWidget {
   const AccessRecordsPage({super.key, required this.proxy});
   final ProxyController proxy;
@@ -15,14 +16,17 @@ class AccessRecordsPage extends StatefulWidget {
 
 class _AccessRecordsPageState extends State<AccessRecordsPage> {
   final search = TextEditingController();
+  final scroll = ScrollController();
   List<AccessRecord> records = [];
   String filter = '', error = '';
+  String stateFilter = '';
   int cursor = 0, request = 0, generation = 0;
   bool loading = false;
   @override
   void initState() {
     super.initState();
     generation = widget.proxy.kernelGeneration;
+    scroll.addListener(_loadNearBottom);
     _load();
   }
 
@@ -42,11 +46,21 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
   @override
   void dispose() {
     search.dispose();
+    scroll.dispose();
     super.dispose();
+  }
+
+  void _loadNearBottom() {
+    if (scroll.hasClients &&
+        scroll.position.extentAfter < 120 &&
+        error.isEmpty) {
+      _load(more: true);
+    }
   }
 
   Future<void> _load({bool more = false}) async {
     if (!widget.proxy.connected) return;
+    if (more && (loading || cursor == 0)) return;
     final current = ++request;
     setState(() {
       loading = true;
@@ -57,9 +71,11 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
         cursor = 0;
       }
     });
+    if (!more && scroll.hasClients) scroll.jumpTo(0);
     try {
       final page = await widget.proxy.accessHistory(
         target: filter,
+        state: stateFilter,
         beforeId: more ? cursor : null,
       );
       if (!mounted || current != request) return;
@@ -67,6 +83,9 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
         records = [...records, ...page.items];
         cursor = page.nextBeforeId;
         loading = false;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadNearBottom();
       });
     } catch (failure) {
       if (!mounted || current != request) return;
@@ -109,6 +128,36 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
           ],
         ),
         const SizedBox(height: 10),
+        Wrap(
+          spacing: 12,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            const Text('连接状态'),
+            SizedBox(
+              width: 168,
+              child: DesktopSelect<String>(
+                key: const ValueKey('access-state-filter'),
+                value: stateFilter,
+                options: const [
+                  ('', '全部状态'),
+                  ('failed', '连接失败'),
+                  ('connected', '已建立连接'),
+                  ('cancelled', '已取消'),
+                  ('pending', '未完成'),
+                ],
+                onSelected: available
+                    ? (value) {
+                        if (value == null || value == stateFilter) return;
+                        stateFilter = value;
+                        _load();
+                      }
+                    : null,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
         Text(
           '长期保存在 SQLite · 已显示 ${records.length} 条 · 最新访问在前',
           style: theme.textTheme.bodySmall,
@@ -139,10 +188,18 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
           ),
         if (loading) const LinearProgressIndicator(),
         Expanded(
+          key: const ValueKey('access-record-list'),
           child: records.isEmpty && !loading
-              ? const Center(child: Text('暂无访问记录'))
+              ? Center(
+                  child: Text(
+                    stateFilter.isEmpty && filter.isEmpty
+                        ? '暂无访问记录'
+                        : '没有符合筛选条件的访问记录',
+                  ),
+                )
               : SelectionArea(
                   child: ListView.separated(
+                    controller: scroll,
                     key: const PageStorageKey('access-records'),
                     itemCount: records.length,
                     separatorBuilder: (context, index) =>
@@ -171,7 +228,11 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
                                   style: theme.textTheme.bodySmall,
                                 ),
                                 Text(
-                                  '${entry.method} · ${entry.routeLabel} · ${entry.protocol.toUpperCase()}',
+                                  '原始 ${entry.originalProtocolLabel}',
+                                  style: theme.textTheme.bodySmall,
+                                ),
+                                Text(
+                                  '${entry.method} · ${entry.routeLabel} · ${entry.protocolLabel}',
                                   style: theme.textTheme.bodySmall,
                                 ),
                                 Text(
@@ -181,7 +242,7 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
                               ],
                             ),
                             Text(
-                              '来源 ${entry.source}${entry.profileName.isEmpty ? '' : ' · ${entry.profileName}'}',
+                              '来源 ${entry.source}',
                               style: theme.textTheme.bodySmall,
                             ),
                           ],
@@ -191,12 +252,12 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
                   ),
                 ),
         ),
-        if (cursor > 0)
+        if (cursor > 0 && error.isNotEmpty)
           Align(
             alignment: Alignment.center,
             child: TextButton(
               onPressed: available ? () => _load(more: true) : null,
-              child: const Text('加载更早记录'),
+              child: const Text('重试加载'),
             ),
           ),
       ],

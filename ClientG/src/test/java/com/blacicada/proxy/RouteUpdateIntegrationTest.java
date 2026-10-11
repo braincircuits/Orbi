@@ -180,6 +180,7 @@ class RouteUpdateIntegrationTest {
             for (var item : initial) {
                 assertEquals("active", item.get("state")); assertEquals("proxy", item.get("route"));
                 assertEquals(protocol, item.get("protocol")); assertEquals("test", item.get("profileId"));
+                assertEquals("tcp", item.get("originalProtocol"));
                 assertTrue(((String) item.get("source")).startsWith("127.0.0.1:"));
                 assertTrue((Long) item.get("createdAt") > 0);
             }
@@ -191,6 +192,7 @@ class RouteUpdateIntegrationTest {
                 var mixed = fixture.proxy.tunnels(); assertEquals(2, mixed.size());
                 var directItem = mixed.stream().filter(item -> item.get("route").equals("direct")).findFirst().orElseThrow();
                 assertEquals("tcp", directItem.get("protocol")); assertEquals("", directItem.get("profileId"));
+                assertEquals("tcp", directItem.get("originalProtocol"));
                 assertEquals("localhost:" + fixture.origin.getLocalPort(), directItem.get("target"));
                 var oldId = initial.stream().filter(item -> item.get("target").equals("localhost:" + fixture.origin.getLocalPort()))
                         .findFirst().orElseThrow().get("id");

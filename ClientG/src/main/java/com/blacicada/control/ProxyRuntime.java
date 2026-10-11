@@ -9,6 +9,12 @@ import java.io.IOException;
 /** 只管理本地代理生命周期；调用方通过 KernelControl 的锁串行访问。 */
 final class ProxyRuntime implements AutoCloseable {
     private LocalProxyServer proxy;
+    private int interfaceIndex;
+    int interfaceIndex() { return interfaceIndex; }
+    void bindInterface(int index, KernelConfig config) throws Exception {
+        boolean running = isRunning(); stop(); interfaceIndex = index;
+        if (running) start(config);
+    }
     private com.blacicada.proxy.TrafficStatistics lastTraffic;
     private final HistoryRecorder history;
     private final java.util.Map<String, Object> restoredTraffic;
@@ -53,7 +59,7 @@ final class ProxyRuntime implements AutoCloseable {
     void start(KernelConfig config) throws Exception {
         if (proxy != null) return;
         if (config.connections().isEmpty() && !config.routingMode().equals("direct")) throw new ControlException(409, "NO_DEFAULT_PROFILE", "请先添加连接配置");
-        proxy = new LocalProxyServer(config, history::traffic, history::access).start();
+        proxy = new LocalProxyServer(config, history::traffic, history::access, interfaceIndex).start();
         lastTraffic = proxy.traffic();
     }
     void stop() {

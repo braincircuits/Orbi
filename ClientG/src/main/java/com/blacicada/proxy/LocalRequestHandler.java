@@ -5,7 +5,6 @@ import com.blacicada.config.DirectRoutes;
 import com.blacicada.common.*;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
-import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.util.ReferenceCountUtil;
@@ -22,9 +21,11 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private final DnsAddressResolverGroup resolver;
     private final java.util.function.Supplier<DirectRoutes> routeSource;
     private final TrafficStatistics traffic;
+    private final OutboundNetwork network;
     private final java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder;
     private com.blacicada.config.KernelConfig requestConfig;
     private String requestMethod;
+    private Authority requestTarget;
     private boolean accessCompleted;
     private final ArrayDeque<HttpContent> pending = new ArrayDeque<>();
     private int pendingBytes;
@@ -33,12 +34,15 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private LocalSession localSession;
     private io.netty.util.concurrent.Future<?> opening;
     private boolean tunnel;
+    private boolean udp;
+    private boolean direct;
     private boolean ready;
     private boolean failed;
     private ScheduledFuture<?> timeout;
 
     LocalRequestHandler(ProxyConfig config, SessionRouter session, DnsAddressResolverGroup resolver, java.util.function.Supplier<DirectRoutes> routes, TrafficStatistics traffic,
-                        java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder) {
+                        java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder, OutboundNetwork network) {
+        this.network = network;
         this.config = config; this.session = session; this.resolver = resolver; this.routeSource = routes;
         this.traffic = traffic;
         this.accessRecorder = accessRecorder;
@@ -55,7 +59,11 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
             request = incoming;
             tunnel = HttpMethod.CONNECT.equals(request.method());
             final Authority target;
-            try { target = target(request, tunnel); }
+            try {
+                udp = UdpTunnel.requested(request.headers().getAll(UdpTunnel.HEADER));
+                if (udp && !tunnel) throw new IllegalArgumentException("UDP 接入必须使用 CONNECT");
+                target = target(request, tunnel);
+            }
             catch (RuntimeException e) { fail(ctx, HttpResponseStatus.BAD_REQUEST); return; }
             ctx.channel().config().setAutoRead(false);
             if (!tunnel) {
@@ -80,12 +88,14 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void route(ChannelHandlerContext ctx, Authority target) {
-        requestConfig = session.config(); requestMethod = request.method().name();
+        requestTarget = target;
+        requestConfig = session.config(); requestMethod = udp ? "CONNECT-UDP" : request.method().name();
         localSession = new LocalSession(ctx.channel(), target, resolver.getResolver(ctx.executor()), address -> {
             if (failed || !ctx.channel().isActive()) return;
             if (address == null) connectProxy(ctx, target);
             else connectDirect(ctx, address);
         });
+        localSession.udp(udp);
         recordAccess("pending");
         ctx.channel().closeFuture().addListener(ignored -> recordAccess("cancelled"));
         localSession.apply(routeSource.get());
@@ -103,7 +113,13 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void connectDirect(ChannelHandlerContext ctx, InetSocketAddress address) {
-        var connecting = new Bootstrap().group(ctx.channel().eventLoop()).channel(NioSocketChannel.class)
+        direct = true;
+        if (udp) {
+            opening = UdpTunnel.connect(ctx.channel().eventLoop(), resolver, address, network);
+            opening.addListener(f -> connected(ctx, f.isSuccess() ? (Channel) f.getNow() : null, f.cause()));
+            return;
+        }
+        var connecting = new Bootstrap().group(ctx.channel().eventLoop()).channelFactory(network::tcp)
                 .resolver(resolver).option(ChannelOption.CONNECT_TIMEOUT_MILLIS, config.connectTimeoutMillis())
                 .option(ChannelOption.AUTO_READ, false).option(ChannelOption.ALLOW_HALF_CLOSURE, true)
                 .option(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK)
@@ -114,7 +130,7 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void connectProxy(ChannelHandlerContext ctx, Authority target) {
-        opening = session.open(target, ctx.channel());
+        opening = session.open(target, ctx.channel(), udp);
         opening.addListener(f -> connected(ctx, f.isSuccess() ? (Channel) f.getNow() : null, f.cause()));
     }
 
@@ -143,7 +159,9 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
             return;
         }
         if (channel == null) {
-            if (error != null) LogManager.getLogger(LocalRequestHandler.class).warn("代理连接失败：{}", error.toString());
+            if (error != null) LogManager.getLogger(LocalRequestHandler.class).warn(
+                    "目标连接失败：目标={}，原始协议={}，路由={}，原因={}",
+                    requestTarget, udp ? "UDP" : "TCP", direct ? "直连" : "代理", error.toString());
             fail(ctx, HttpResponseStatus.BAD_GATEWAY); return;
         }
         remote = channel;
@@ -152,13 +170,20 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
         ready = true;
         timeout.cancel(false);
         remote.config().setAutoRead(false);
+        if (udp && !direct) UdpTunnel.addFraming(remote.pipeline());
         remote.pipeline().addLast("traffic", traffic.handler());
-        remote.pipeline().addLast("relay", new RelayHandler(ctx.channel()));
+        remote.pipeline().addLast("relay", udp ? UdpTunnel.relay(ctx.channel()) : new RelayHandler(ctx.channel()));
         if (tunnel) {
-            ctx.writeAndFlush(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK))
+            var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+            if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
+            ctx.writeAndFlush(response)
                     .addListener(f -> {
                         if (!f.isSuccess() || !ctx.channel().isActive()) { remote.close(); return; }
-                        ctx.pipeline().replace(this, "relay", new RelayHandler(remote));
+                        if (udp) {
+                            UdpTunnel.addFraming(ctx.pipeline());
+                            ctx.pipeline().addLast("relay", UdpTunnel.relay(remote));
+                            ctx.pipeline().remove(this);
+                        } else ctx.pipeline().replace(this, "relay", new RelayHandler(remote));
                         ctx.pipeline().remove("responseEncoder");
                         // 移除 ByteToMessageDecoder 时，合并接收的隧道数据只转发一次。
                         ctx.pipeline().remove("requestDecoder");

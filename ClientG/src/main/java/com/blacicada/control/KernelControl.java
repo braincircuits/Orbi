@@ -26,6 +26,8 @@ public final class KernelControl implements AutoCloseable {
     private String previousState = "";
     private volatile List<String> secrets = List.of();
     private boolean closed, storageFailed;
+    private String tunSession = "", tunState = "off", tunError = "";
+    private long tunHeartbeat;
     private static final Gson JSON = new Gson();
 
     public KernelControl(Path file) throws IOException {
@@ -56,7 +58,7 @@ public final class KernelControl implements AutoCloseable {
     }
     public synchronized Map<String, Object> info() {
         return Map.of("name", "network", "version", "1.0-SNAPSHOT", "apiVersion", 1,
-                "capabilities", List.of("http2", "http3", "multiConnection", "immediateSwitch", "hotSettings", "hotRoutes", "hotProfiles", "events", "logs", "asyncTests", "tunnels", "targetRoutes", "routingMode", "overviewTests", "sqlite", "routingImportExport", "traffic", "persistentHistory"));
+                "capabilities", List.of("http2", "http3", "multiConnection", "immediateSwitch", "hotSettings", "hotRoutes", "hotProfiles", "events", "logs", "asyncTests", "tunnels", "targetRoutes", "routingMode", "overviewTests", "sqlite", "routingImportExport", "traffic", "persistentHistory", "macosTun"));
     }
     public synchronized Map<String, Object> metadata() {
         return Map.of("revision", revision,
@@ -70,6 +72,7 @@ public final class KernelControl implements AutoCloseable {
         result.put("connection", runtime.state());
         result.put("error", redact(runtime.lastError()));
         result.put("address", runtime.address());
+        result.put("tun", Map.of("state", tunState, "error", tunError, "interfaceIndex", runtime.interfaceIndex()));
         result.put("defaultConnectionId", config.defaultConnectionId());
         result.put("tunnels", tunnels());
         result.put("traffic", runtime.traffic(false));
@@ -107,13 +110,15 @@ public final class KernelControl implements AutoCloseable {
         history.flush();
         return database.trafficSummary(boundaries);
     }
-    public synchronized Map<String, Object> history(boolean traffic, long from, long to, long before, int limit, String filter) throws SQLException {
+    public synchronized Map<String, Object> history(boolean traffic, long from, long to, long before, int limit, String filter, String state) throws SQLException {
         ensureOpen();
         if (from < 0 || to <= from || before <= 0 || limit < 1 || limit > 500 || filter.length() > 255)
             throw new ControlException(400, "INVALID_QUERY", "历史查询范围、游标或数量无效");
+        if (!Set.of("", "pending", "connected", "failed", "cancelled").contains(state) || traffic && !state.isEmpty())
+            throw new ControlException(400, "INVALID_QUERY", "访问记录状态筛选无效");
         history.flush();
         return traffic ? database.trafficHistory(from, to, before, limit, filter)
-                : database.accessHistory(from, to, before, limit, filter);
+                : database.accessHistory(from, to, before, limit, filter, state);
     }
     /** 订阅快照携带完整窗口，后续状态事件只携带最新采样。 */
     public synchronized Map<String, Object> snapshot() {
@@ -148,6 +153,8 @@ public final class KernelControl implements AutoCloseable {
         checkRevision(expected); apply(editor.parse(input, config));
     }
     private void apply(KernelConfig next) throws Exception {
+        if (!tunSession.isEmpty() && runtime.requiresRestart(next))
+            throw new ControlException(409, "TUN_ACTIVE", "请先关闭虚拟网卡，再修改本地监听地址或端口");
         boolean applied = false;
         try {
             database.stage(next, revision);
@@ -260,19 +267,33 @@ public final class KernelControl implements AutoCloseable {
     }
     public synchronized Map<String, Object> resolve(String target) throws Exception {
         Authority address = Authority.parse(target, -1);
-        return tasks.resolve(address, runtime.routes(config), config.defaultConnectionId());
+        return tasks.resolve(address, runtime.routes(config), config.defaultConnectionId(), new OutboundNetwork(runtime.interfaceIndex()));
     }
     public synchronized Map<String, Object> test(String id, String target) {
-        return tasks.start(find(id), Authority.parse(target, -1));
+        return tasks.start(find(id), Authority.parse(target, -1), new OutboundNetwork(runtime.interfaceIndex()));
     }
     public synchronized void start() throws Exception {
         ensureOpen();
+        if (tunState.equals("stopping")) throw new ControlException(409, "TUN_STOPPING", "请等待虚拟网卡清理完成");
         if (!runtime.isRunning()) { invalidateNetwork(); runtime.start(config); } publishStatus();
     }
-    public synchronized void stop() { invalidateNetwork(); runtime.stop(); publishStatus(); }
-    public synchronized void restart() throws Exception { stop(); start(); }
+    public synchronized void stop() { stopTun(); invalidateNetwork(); runtime.stop(); publishStatus(); }
+    public synchronized void restart() throws Exception {
+        if (!tunSession.isEmpty()) throw new ControlException(409, "TUN_ACTIVE", "请先关闭虚拟网卡，再重启代理");
+        stop(); start();
+    }
     private synchronized void publishStatus() {
         if (closed) return;
+        if (!tunSession.isEmpty() && System.nanoTime() - tunHeartbeat > TimeUnit.SECONDS.toNanos(tunState.equals("authorizing") ? 120 : tunState.equals("starting") ? 30 : 10)) {
+            if (tunState.equals("authorizing")) {
+                tunError = "虚拟网卡授权已超时，请重新开启";
+            } else {
+                runtime.stop();
+                try { runtime.bindInterface(0, config); } catch (Exception ignored) { }
+                tunError = "虚拟网卡辅助进程已失联，代理已停止，请重新开启";
+            }
+            tunSession = ""; tunState = "failed";
+        }
         if (!storageFailed) history.flush();
         Map<String, Object> state = status(); String encoded = JSON.toJson(state);
         if (!encoded.equals(previousState)) { previousState = encoded; events.emit("status", state); }
@@ -283,5 +304,51 @@ public final class KernelControl implements AutoCloseable {
         runtime.close();
         history.finish();
         logs.close(); events.close(); database.close();
+    }
+
+    /** 辅助进程先绑定内核出口，成功后才允许安装接管路由。 */
+    public synchronized Map<String, Object> requestTun() {
+        ensureOpen();
+        if (!System.getProperty("os.name").startsWith("Mac")) throw new ControlException(400, "UNSUPPORTED_PLATFORM", "虚拟网卡仅支持 macOS");
+        if (!tunSession.isEmpty()) throw new ControlException(409, "TUN_ACTIVE", "虚拟网卡正在运行或清理");
+        if (!runtime.isRunning()) throw new ControlException(409, "PROXY_STOPPED", "请先开启代理");
+        tunSession = UUID.randomUUID().toString(); tunState = "authorizing"; tunError = ""; tunHeartbeat = System.nanoTime();
+        publishStatus();
+        return Map.of("ticket", tunSession);
+    }
+    public synchronized Map<String, Object> prepareTun(String interfaceName, String ticket) throws Exception {
+        ensureOpen();
+        if (!tunState.equals("authorizing") || !tunSession.equals(ticket)) throw new ControlException(409, "TUN_CANCELLED", "虚拟网卡启动已取消或失效");
+        if (!runtime.isRunning()) throw new ControlException(409, "PROXY_STOPPED", "请先开启代理");
+        var network = java.net.NetworkInterface.getByName(interfaceName);
+        if (network == null || !network.isUp() || network.isLoopback() || network.isPointToPoint() || interfaceName.startsWith("utun"))
+            throw new ControlException(400, "INVALID_INTERFACE", "需要可用的真实网络接口");
+        if (!runtime.probeAddress().getAddress().isLoopbackAddress())
+            throw new ControlException(400, "INVALID_LISTENER", "虚拟网卡需要本地代理监听回环地址或通配地址");
+        new OutboundNetwork(network.getIndex());
+        tasks.cancelAll();
+        invalidateNetwork();
+        try { runtime.bindInterface(network.getIndex(), config); }
+        catch (Exception e) { runtime.bindInterface(0, config); throw e; }
+        tunState = "starting"; tunError = ""; tunHeartbeat = System.nanoTime();
+        var address = runtime.probeAddress();
+        return Map.of("session", tunSession, "proxy", new Authority(address.getHostString(), address.getPort()).toString());
+    }
+    public synchronized Map<String, Object> heartbeatTun(String session, boolean ready) {
+        if (tunSession.isEmpty() || !tunSession.equals(session)) throw new ControlException(409, "TUN_SESSION_CHANGED", "虚拟网卡会话已失效");
+        tunHeartbeat = System.nanoTime();
+        if (ready && tunState.equals("starting")) tunState = "running";
+        return Map.of("stop", tunState.equals("stopping") || !runtime.isRunning());
+    }
+    public synchronized void stopTun() {
+        if (tunState.equals("authorizing")) { tunSession = ""; tunState = "off"; }
+        else if (!tunSession.isEmpty()) tunState = "stopping";
+    }
+    public synchronized void finishTun(String session, String error) throws Exception {
+        if (tunSession.isEmpty() || !tunSession.equals(session)) return;
+        // 辅助进程只有在关闭 utun、移除路由后才能调用此方法。
+        tasks.cancelAll(); invalidateNetwork(); runtime.bindInterface(0, config);
+        tunSession = ""; tunState = error.isEmpty() ? "off" : "failed"; tunError = error;
+        publishStatus();
     }
 }

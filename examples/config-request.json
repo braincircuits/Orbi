@@ -19,7 +19,7 @@
         "password": "replace-with-a-long-random-secret",
         "tls.serverName": "proxy.example.com",
         "connectTimeoutMillis": 10000,
-        "maxStreams": 256
+        "maxStreams": 1024
       }
     },
     {
@@ -33,7 +33,7 @@
         "password": "replace-with-a-long-random-secret",
         "tls.serverName": "proxy.example.com",
         "connectTimeoutMillis": 10000,
-        "maxStreams": 256
+        "maxStreams": 1024
       }
     }
   ]

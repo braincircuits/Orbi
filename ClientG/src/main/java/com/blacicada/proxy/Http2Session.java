@@ -6,7 +6,6 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
 import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.socket.SocketChannel;
-import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http2.*;
 import io.netty.handler.ssl.*;
 import io.netty.handler.timeout.*;
@@ -23,6 +22,7 @@ public final class Http2Session implements ProxySession {
     private final EventLoop loop;
     private final ProxyConfig config;
     private final DnsAddressResolverGroup resolver;
+    private final OutboundNetwork network;
     private final Authority server;
     private final String authorization;
     private final SslContext ssl;
@@ -43,6 +43,7 @@ public final class Http2Session implements ProxySession {
     private static final io.netty.util.AttributeKey<Capacity> CAPACITY = io.netty.util.AttributeKey.valueOf("h2.capacity");
     private final class Request {
         final Authority target;
+        final boolean udp;
         final Promise<Channel> result = loop.newPromise();
         Channel parent;
         Http2StreamChannel stream;
@@ -50,9 +51,13 @@ public final class Http2Session implements ProxySession {
         String phase = "等待 HTTP/2 流额度";
         long waitingSince, phaseSince;
         ScheduledFuture<?> timeout;
-        Request(Authority target) { this.target = target; }
+        Request(Authority target, boolean udp) { this.target = target; this.udp = udp; }
     }
     public Http2Session(EventLoop loop, ProxyConfig config, DnsAddressResolverGroup resolver) throws Exception {
+        this(loop, config, resolver, OutboundNetwork.DEFAULT);
+    }
+    public Http2Session(EventLoop loop, ProxyConfig config, DnsAddressResolverGroup resolver, OutboundNetwork network) throws Exception {
+        this.network = network;
         this.loop = loop; this.config = config; this.resolver = resolver;
         parents = new DefaultChannelGroup(loop);
         server = new Authority(config.required("server.host"), config.integer("server.port", 4433, 1, 65535));
@@ -65,12 +70,18 @@ public final class Http2Session implements ProxySession {
         if (!config.get("tls.ca", "").isEmpty()) builder.trustManager(config.path("tls.ca", "").toFile());
         ssl = builder.build();
     }
-    @Override public Future<Channel> open(Authority target) {
-        Request r = new Request(target);
+    @Override public Future<Channel> open(Authority target, boolean udp) {
+        Request r = new Request(target, udp);
         loop.execute(() -> {
             if (r.result.isDone()) return;
-            if (closed || requests.size() >= config.maxStreams()) {
-                r.result.tryFailure(new IOException("代理不可用或已达到并发流上限")); return;
+            if (closed) {
+                r.result.tryFailure(new IOException("代理会话已关闭")); return;
+            }
+            if (requests.size() >= config.maxStreams()) {
+                long pending = requests.stream().filter(item -> !item.result.isDone()).count();
+                r.result.tryFailure(new IOException("HTTP/2 本地并发隧道额度已满：目标=" + target
+                        + "，原始协议=" + (udp ? "UDP" : "TCP") + "，占用=" + requests.size()
+                        + "，上限=" + config.maxStreams() + "，建立中=" + pending)); return;
             }
             requests.add(r);
             r.result.addListener(f -> {
@@ -78,7 +89,7 @@ public final class Http2Session implements ProxySession {
                 if (!f.isSuccess()) {
                     requests.remove(r);
                     if (r.stream != null) r.stream.close();
-                    if (!f.isCancelled()) error = "HTTP/2 隧道建立失败：" + f.cause().getClass().getSimpleName();
+                    // 单个目标的失败由请求日志记录，不覆盖共享服务端连接的状态。
                 }
             });
             acquire().addListener(f -> {
@@ -132,8 +143,10 @@ public final class Http2Session implements ProxySession {
                             if (r.result.isDone()) r.stream.close();
                             else {
                                 phase(r, "发送 HTTP/2 CONNECT");
-                                r.stream.writeAndFlush(new DefaultHttp2HeadersFrame(new DefaultHttp2Headers()
-                                    .method("CONNECT").authority(r.target.toString()).set("proxy-authorization", authorization)))
+                                var headers = new DefaultHttp2Headers().method("CONNECT").authority(r.target.toString())
+                                        .set("proxy-authorization", authorization);
+                                if (r.udp) headers.set(UdpTunnel.HEADER, UdpTunnel.VALUE);
+                                r.stream.writeAndFlush(new DefaultHttp2HeadersFrame(headers))
                                     .addListener(w -> {
                                         if (!w.isSuccess()) r.result.tryFailure(w.cause());
                                         else if (!r.result.isDone()) phase(r, "等待 HTTP/2 CONNECT 响应");
@@ -151,7 +164,7 @@ public final class Http2Session implements ProxySession {
         if (connecting != null) return connecting;
         Promise<Channel> attempt = loop.newPromise(); connecting = attempt; state = "connecting"; error = ""; stage = "dns";
         var timer = loop.schedule(() -> attempt.tryFailure(new IOException("HTTP/2 连接超时：阶段=" + stage)), config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
-        var tcp = new Bootstrap().group(loop).channel(NioSocketChannel.class).resolver(resolver)
+        var tcp = new Bootstrap().group(loop).channelFactory(network::tcp).resolver(resolver)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, config.connectTimeoutMillis())
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override protected void initChannel(SocketChannel ch) {
@@ -235,10 +248,17 @@ public final class Http2Session implements ProxySession {
                 String status = String.valueOf(headers.headers().status());
                 if (status.startsWith("1") && !headers.isEndStream()) return;
                 if (status.matches("2[0-9]{2}") && !headers.isEndStream()) {
+                    if (request.udp && !UdpTunnel.requested(headers.headers().getAll(UdpTunnel.HEADER))) {
+                        request.result.tryFailure(new IOException("服务端未确认 UDP 隧道")); ctx.close(); return;
+                    }
+                    if (request.parent == connection) error = "";
                     ctx.channel().config().setAutoRead(false);
                     ctx.pipeline().replace(this, "data", new H2DataCodec());
                     if (!request.result.trySuccess(ctx.channel())) ctx.close();
-                } else request.result.tryFailure(new IOException("代理 CONNECT 失败：" + status));
+                } else {
+                    if (status.equals("407") && request.parent == connection) error = "代理账号或密码验证失败";
+                    request.result.tryFailure(new IOException("代理 CONNECT 失败：" + status));
+                }
             } else { ReferenceCountUtil.release(msg); request.result.tryFailure(new IOException("HTTP/2 CONNECT 响应无效")); }
         }
         @Override public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
