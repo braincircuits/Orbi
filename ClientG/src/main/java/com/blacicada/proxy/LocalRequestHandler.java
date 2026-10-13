@@ -22,6 +22,8 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private final java.util.function.Supplier<DirectRoutes> routeSource;
     private final TrafficStatistics traffic;
     private final OutboundNetwork network;
+    private final KernelDns dns;
+    private boolean fromTun;
     private final java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder;
     private com.blacicada.config.KernelConfig requestConfig;
     private String requestMethod;
@@ -41,7 +43,8 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private ScheduledFuture<?> timeout;
 
     LocalRequestHandler(ProxyConfig config, SessionRouter session, DnsAddressResolverGroup resolver, java.util.function.Supplier<DirectRoutes> routes, TrafficStatistics traffic,
-                        java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder, OutboundNetwork network) {
+                        java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder, OutboundNetwork network, KernelDns dns) {
+        this.dns = dns;
         this.network = network;
         this.config = config; this.session = session; this.resolver = resolver; this.routeSource = routes;
         this.traffic = traffic;
@@ -63,6 +66,12 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
                 udp = UdpTunnel.requested(request.headers().getAll(UdpTunnel.HEADER));
                 if (udp && !tunnel) throw new IllegalArgumentException("UDP 接入必须使用 CONNECT");
                 target = target(request, tunnel);
+                var sources = request.headers().getAll(KernelDns.SOURCE_HEADER);
+                fromTun = !sources.isEmpty();
+                if (fromTun && (sources.size() != 1 || !sources.getFirst().equals("tun") || !tunnel
+                        || !(ctx.channel().remoteAddress() instanceof InetSocketAddress source)
+                        || !source.getAddress().isLoopbackAddress()))
+                    throw new IllegalArgumentException("TUN 来源标识无效");
             }
             catch (RuntimeException e) { fail(ctx, HttpResponseStatus.BAD_REQUEST); return; }
             ctx.channel().config().setAutoRead(false);
@@ -77,7 +86,8 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
                     request.headers().remove(HttpHeaderNames.EXPECT);
                 }
             }
-            route(ctx, target);
+            if (fromTun && target.port() == 53) acceptDns(ctx);
+            else route(ctx, target);
         } else if (msg instanceof HttpContent content && request != null) {
             if (!content.decoderResult().isSuccess()) { content.release(); fail(ctx, HttpResponseStatus.BAD_REQUEST); return; }
             if (tunnel) { content.release(); return; }
@@ -87,10 +97,31 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
         } else { ReferenceCountUtil.release(msg); fail(ctx, HttpResponseStatus.BAD_REQUEST); }
     }
 
+    /** 在普通分流之前接管 DNS，复用 CONNECT 通道，不另开系统监听端口。 */
+    private void acceptDns(ChannelHandlerContext ctx) {
+        ready = true; timeout.cancel(false);
+        var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+        if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
+        ctx.writeAndFlush(response).addListener(f -> {
+            if (!f.isSuccess() || !ctx.channel().isActive()) { ctx.close(); return; }
+            if (udp) UdpTunnel.addFraming(ctx.pipeline());
+            else {
+                KernelDns.framing(ctx.pipeline());
+                ctx.pipeline().addLast(new io.netty.handler.timeout.IdleStateHandler(0, 0, UdpTunnel.IDLE_SECONDS));
+            }
+            ctx.pipeline().addLast("dnsTraffic", traffic.handler());
+            ctx.pipeline().addLast("dns", dns.handler(udp));
+            ctx.pipeline().remove(this);
+            ctx.pipeline().remove("responseEncoder");
+            ctx.pipeline().remove("requestDecoder");
+            ctx.channel().config().setAutoRead(true);
+        });
+    }
+
     private void route(ChannelHandlerContext ctx, Authority target) {
         requestTarget = target;
         requestConfig = session.config(); requestMethod = udp ? "CONNECT-UDP" : request.method().name();
-        localSession = new LocalSession(ctx.channel(), target, resolver.getResolver(ctx.executor()), address -> {
+        localSession = new LocalSession(ctx.channel(), target, fromTun ? dns.domain(target.host()) : null, resolver.getResolver(ctx.executor()), address -> {
             if (failed || !ctx.channel().isActive()) return;
             if (address == null) connectProxy(ctx, target);
             else connectDirect(ctx, address);

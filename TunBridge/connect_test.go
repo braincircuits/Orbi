@@ -43,6 +43,10 @@ func echoKernel(t *testing.T) (localDialer, <-chan string) {
 				if err != nil {
 					return
 				}
+				if request.Header.Get("X-Network-Source") != "tun" {
+					t.Error("缺少 TUN 来源标识")
+					return
+				}
 				requests <- request.Host
 				if request.Header.Get(udpHeader) == "udp" {
 					io.WriteString(conn, "HTTP/1.1 200 OK\r\nx-network-transport: udp\r\n\r\n")

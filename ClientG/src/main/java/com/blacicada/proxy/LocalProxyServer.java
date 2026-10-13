@@ -21,6 +21,7 @@ public final class LocalProxyServer implements AutoCloseable {
     private final OutboundNetwork network;
     private final EventLoopGroup group;
     private final DnsAddressResolverGroup resolver;
+    private final KernelDns dns;
     private final DefaultChannelGroup clients = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
     private SessionRouter session;
     private final KernelConfig initial;
@@ -37,7 +38,14 @@ public final class LocalProxyServer implements AutoCloseable {
     }
     public LocalProxyServer(KernelConfig config, java.util.function.Consumer<java.util.Map<String, Object>> trafficRecorder,
                             java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder, int interfaceIndex) {
+        this(config, trafficRecorder, accessRecorder, interfaceIndex,
+                io.netty.resolver.dns.DnsServerAddressStreamProviders.platformDefault());
+    }
+    LocalProxyServer(KernelConfig config, java.util.function.Consumer<java.util.Map<String, Object>> trafficRecorder,
+                     java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder, int interfaceIndex,
+                     io.netty.resolver.dns.DnsServerAddressStreamProvider dnsServers) {
         network = new OutboundNetwork(interfaceIndex); group = network.newGroup(); resolver = network.resolver();
+        dns = new KernelDns(network, resolver, dnsServers);
         this.initial = config; this.config = config.local();
         this.trafficRecorder = trafficRecorder; this.accessRecorder = accessRecorder;
     }
@@ -74,7 +82,7 @@ public final class LocalProxyServer implements AutoCloseable {
                             decoder.setSingleDecode(true);
                             ch.pipeline().addLast("responseEncoder", new HttpResponseEncoder());
                             ch.pipeline().addLast("requestDecoder", decoder);
-                            ch.pipeline().addLast("proxy", new LocalRequestHandler(config, session, resolver, () -> routes, traffic, accessRecorder, network));
+                            ch.pipeline().addLast("proxy", new LocalRequestHandler(config, session, resolver, () -> routes, traffic, accessRecorder, network, dns));
                         }
                     }).bind(new InetSocketAddress(config.get("bind", "127.0.0.1"),
                             config.integer("port", 8080, 0, 65535))).sync().channel();

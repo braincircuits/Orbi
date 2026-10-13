@@ -65,9 +65,9 @@ func (d localDialer) connect(ctx context.Context, target string, udp bool) (tran
 			<-cancelDone
 		}
 	}()
-	header := ""
+	header := "X-Network-Source: tun\r\n"
 	if udp {
-		header = udpHeader + ": udp\r\n"
+		header += udpHeader + ": udp\r\n"
 	}
 	if _, err = io.WriteString(tcp, "CONNECT "+target+" HTTP/1.1\r\nHost: "+target+"\r\n"+header+"\r\n"); err != nil {
 		return nil, err

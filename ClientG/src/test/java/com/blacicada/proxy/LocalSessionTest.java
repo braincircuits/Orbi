@@ -37,6 +37,42 @@ class LocalSessionTest {
             } finally { browser.finishAndReleaseAll(); remote.finishAndReleaseAll(); }
         }
     }
+    @Test void associatedDomainRoutesOriginalIpWithoutResolvingAgain() throws Exception {
+        for (String rules : List.of("latest.example", "192.0.2.0/24")) {
+            var browser = new EmbeddedChannel();
+            try (var resolver = new Resolver()) {
+                var decisions = new ArrayList<InetSocketAddress>();
+                var session = new LocalSession(browser, new Authority("192.0.2.10", 443), "latest.example", resolver, decisions::add);
+                session.apply(new DirectRoutes(rules));
+                assertEquals(List.of(new InetSocketAddress("192.0.2.10", 443)), decisions);
+                assertTrue(resolver.requests.isEmpty(), "关联域名不能触发重新解析或改变连接 IP");
+                session.apply(new DirectRoutes("other.example"));
+                assertFalse(browser.isActive());
+            } finally { browser.finishAndReleaseAll(); }
+        }
+    }
+
+    @Test void associatedDomainHonorsGlobalAndExactIpOverrides() throws Exception {
+        for (String[] policy : new String[][]{
+                {"rules", "proxy latest.example", "proxy"},
+                {"rules", "direct latest.example", "direct"},
+                {"rules", "proxy latest.example\ndirect 192.0.2.10", "direct"},
+                {"rules", "direct latest.example\nproxy 192.0.2.10", "proxy"},
+                {"proxy", "direct latest.example", "proxy"},
+                {"direct", "proxy latest.example", "direct"}}) {
+            var browser = new EmbeddedChannel();
+            try (var resolver = new Resolver()) {
+                var decisions = new ArrayList<InetSocketAddress>();
+                var session = new LocalSession(browser, new Authority("192.0.2.10", 443), "latest.example", resolver, decisions::add);
+                var values = new java.util.Properties(); values.setProperty("routingMode", policy[0]);
+                values.setProperty("routesInline", "latest.example\n192.0.2.0/24"); values.setProperty("routesOverrides", policy[1]);
+                session.apply(DirectRoutes.load(new ProxyConfig(values, java.nio.file.Path.of("."))));
+                assertEquals(1, decisions.size()); assertEquals(policy[2].equals("direct"), decisions.getFirst() != null);
+                assertTrue(resolver.requests.isEmpty());
+            } finally { browser.finishAndReleaseAll(); }
+        }
+    }
+
     /** 可控制 DNS 返回时机，验证真实异步回调不会沿用过期规则。 */
     private static final class Resolver extends AbstractAddressResolver<InetSocketAddress> {
         final List<Promise<List<InetSocketAddress>>> requests = new ArrayList<>();

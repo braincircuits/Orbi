@@ -19,6 +19,8 @@ final class LocalSession {
     static final AttributeKey<LocalSession> KEY = AttributeKey.valueOf(LocalSession.class, "session");
     private final Channel browser;
     private final Authority target;
+    private final Authority displayTarget;
+    private final InetSocketAddress originalAddress;
     private final long createdAt = System.currentTimeMillis();
     private final AddressResolver<InetSocketAddress> resolver;
     private Consumer<InetSocketAddress> start;
@@ -36,7 +38,15 @@ final class LocalSession {
     /** 首次决定路由时回调一次；地址为 null 表示走代理。 */
     LocalSession(Channel browser, Authority target, AddressResolver<InetSocketAddress> resolver,
                  Consumer<InetSocketAddress> start) {
+        this(browser, target, null, resolver, start);
+    }
+
+    LocalSession(Channel browser, Authority target, String associatedDomain, AddressResolver<InetSocketAddress> resolver,
+                 Consumer<InetSocketAddress> start) {
         this.browser = browser; this.target = target; this.resolver = resolver; this.start = start;
+        displayTarget = associatedDomain == null ? target : new Authority(associatedDomain, target.port());
+        originalAddress = associatedDomain == null ? null
+                : new InetSocketAddress(java.net.InetAddress.ofLiteral(target.host()), target.port());
         browser.attr(KEY).set(this);
         browser.closeFuture().addListener(ignored -> {
             closed = true; this.start = null; cancelLookup(); browser.attr(KEY).set(null);
@@ -58,7 +68,7 @@ final class LocalSession {
         String sourceText = source instanceof InetSocketAddress address
                 ? (address.getHostString().contains(":") ? "[" + address.getHostString() + "]" : address.getHostString()) + ":" + address.getPort()
                 : String.valueOf(source);
-        return Map.of("id", browser.id().asLongText(), "target", target.toString(), "source", sourceText,
+        return Map.of("id", browser.id().asLongText(), "target", displayTarget.toString(), "source", sourceText,
                 "route", direct == null ? "resolving" : direct ? "direct" : "proxy",
                 "state", direct == null ? "resolving" : remote != null && remote.isActive() ? "active" : "pending",
                 "profileId", profile == null ? "" : profile.id(), "profileName", profile == null ? "" : profile.name(),
@@ -79,7 +89,16 @@ final class LocalSession {
 
     private void evaluate() {
         if (closed || !browser.isActive()) return;
-        if (rules.matches(target.host())) {
+        if (originalAddress != null) {
+            // 关联仅影响展示与规则；实际出站始终保留应用选择的原始 IP。
+            // 全局模式优先，其次是原始 IP 精确规则、关联域名精确规则、域名后缀和 IP 网段。
+            boolean route;
+            if (!rules.mode().equals("rules")) route = rules.mode().equals("direct");
+            else if (rules.override(target.host()) != null) route = rules.matches(target.host());
+            else if (rules.override(displayTarget.host()) != null) route = rules.matches(displayTarget.host());
+            else route = rules.matches(displayTarget.host()) || rules.matches(target.host());
+            decide(route ? originalAddress : null);
+        } else if (rules.matches(target.host())) {
             cancelLookup(); decide(target.unresolved());
         } else if (!rules.needsResolution(target.host())) {
             cancelLookup(); decide(null);
