@@ -16,8 +16,8 @@ TrafficSummary fixture(
   return TrafficSummary.fromJson({
     'sentBytes': empty ? 0 : sent,
     'receivedBytes': empty ? 0 : 2000,
-    'sampleCount': empty ? 0 : 1,
-    'lastSampledAt': empty ? 0 : times.first.millisecondsSinceEpoch,
+    'recordCount': empty ? 0 : 1,
+    'latestMinuteStart': empty ? 0 : times.first.millisecondsSinceEpoch,
     'buckets': [
       for (var i = 0; i < times.length - 1; i++)
         {
@@ -25,7 +25,7 @@ TrafficSummary fixture(
           'to': times[i + 1].millisecondsSinceEpoch,
           'sentBytes': !empty && i == 0 ? sent : 0,
           'receivedBytes': !empty && i == 0 ? 2000 : 0,
-          'sampleCount': !empty && i == 0 ? 1 : 0,
+          'recordCount': !empty && i == 0 ? 1 : 0,
         },
     ],
   });
@@ -139,7 +139,7 @@ void main() {
         kernel.empty = true;
         await tester.tap(find.text('重试'));
         await tester.pumpAndSettle();
-        expect(find.text('此时间段暂无采样记录'), findsOneWidget);
+        expect(find.text('此时间段暂无分钟记录'), findsOneWidget);
         expect(tester.takeException(), isNull);
       });
     }

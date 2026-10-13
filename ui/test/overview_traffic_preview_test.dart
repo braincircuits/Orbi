@@ -25,7 +25,19 @@ void main() {
     api.provider = 'Example Network Company, LLC';
     await model.startOverview('exit-ip');
     await model.startOverview('latency');
-    proxy.traffic = TrafficSnapshot.merge(null, trafficFixture(time: 300000));
+    final current = trafficFixture(time: 7200000);
+    proxy.traffic = TrafficSnapshot.merge(null, {
+      ...current,
+      'history': [
+        for (var i = 0; i <= 3600; i++)
+          {
+            ...current,
+            'sampledAt': 3600000 + i * 1000,
+            'sendBytesPerSecond': 50000.0 + (i % 120) * 1000,
+            'receiveBytesPerSecond': 600000.0 + (i % 300) * 10000,
+          },
+      ],
+    });
     addTearDown(() async {
       model.dispose();
       await directory.delete(recursive: true);

@@ -95,14 +95,17 @@ void main() {
         final profile = proxy.appliedProfile!;
         await proxy.shutdown();
         await proxy.connect(profile, resources ?? '');
-        expect(proxy.traffic!.sessionId, session);
-        expect(proxy.traffic!.current.receivedBytes, payload.length);
+        expect(proxy.traffic!.sessionId, '');
+        expect(proxy.traffic!.current.receivedBytes, 0);
         expect(
           (await proxy.accessHistory()).items.single.target,
           records.items.single.target,
         );
         expect(
-          (await proxy.trafficHistory()).traffic!.current.sentBytes,
+          (await proxy.trafficHistory()).items.fold<int>(
+            0,
+            (sum, row) => sum + row.sentBytes,
+          ),
           payload.length,
         );
         for (final period in TrafficPeriod.values) {
@@ -111,7 +114,7 @@ void main() {
           );
           expect(summary.sentBytes, payload.length);
           expect(summary.receivedBytes, payload.length);
-          expect(summary.sampleCount, greaterThan(1));
+          expect(summary.recordCount, greaterThanOrEqualTo(1));
           expect(
             summary.buckets.fold<int>(0, (sum, b) => sum + b.sentBytes),
             payload.length,

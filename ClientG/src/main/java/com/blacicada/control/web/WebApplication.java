@@ -1,6 +1,7 @@
 package com.blacicada.control.web;
 
 import com.blacicada.control.KernelControl;
+import com.blacicada.io.StorageConfig;
 import java.nio.file.*;
 import java.util.*;
 
@@ -18,7 +19,7 @@ public final class WebApplication {
         return (Files.isDirectory(source) ? source : source.getParent()).resolve("kernel.db");
     }
     public static void run(String[] args) throws Exception {
-        Path database = null, endpoint = null;
+        Path database = null, storageFile = null, endpoint = null;
         int port = 9090;
         Set<String> origins = new HashSet<>();
         String token = ControlHttpServer.newToken();
@@ -28,6 +29,7 @@ public final class WebApplication {
             String value = args[++i];
             switch (key) {
                 case "--db" -> database = Path.of(value);
+                case "--storage-config" -> storageFile = Path.of(value);
                 case "--port" -> port = Integer.parseInt(value);
                 case "--endpoint-file" -> endpoint = Path.of(value);
                 case "--token-file" -> token = Files.readString(Path.of(value)).trim();
@@ -42,14 +44,17 @@ public final class WebApplication {
             }
         }
         if (port < 0 || port > 65535) throw new IllegalArgumentException("管理端口无效");
-        if (database == null) database = defaultDatabase();
-        if (endpoint == null) endpoint = database.toAbsolutePath().getParent().resolve("run/control.json");
+        if (database != null && storageFile != null) throw new IllegalArgumentException("--db 与 --storage-config 不能同时使用");
+        StorageConfig storage = storageFile == null ? StorageConfig.sqlite(database == null ? defaultDatabase() : database)
+                : StorageConfig.load(storageFile);
+        if (endpoint == null) endpoint = storage.directory().resolve("run/control.json");
         Path endpointFile = endpoint.toAbsolutePath();
-        try (var control = new KernelControl(database); var web = new ControlHttpServer(control, port, token, origins)) {
+        try (var control = new KernelControl(storage); var web = new ControlHttpServer(control, port, token, origins)) {
             var hook = new Thread(web::close, "web-control-shutdown");
             Runtime.getRuntime().addShutdownHook(hook);
             try {
                 web.start(); web.writeEndpoint(endpointFile);
+                System.out.println("内核存储后端：" + storage.type().name().toLowerCase(Locale.ROOT));
                 System.out.println("代理内核管理接口已启动：" + web.url());
                 System.out.println("管理连接信息文件：" + endpointFile);
                 // 管理接口启动后保持代理停止，代理客户端按需要显式启动转发。

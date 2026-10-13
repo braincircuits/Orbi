@@ -12,21 +12,17 @@ final class ProxyRuntime implements AutoCloseable {
     private int interfaceIndex;
     int interfaceIndex() { return interfaceIndex; }
     void bindInterface(int index, KernelConfig config) throws Exception {
-        boolean running = isRunning(); stop(); interfaceIndex = index;
-        if (running) start(config);
+        boolean running = isRunning(); suspend(); interfaceIndex = index;
+        if (running) {
+            try { start(config, lastTraffic); }
+            catch (Exception failure) { lastTraffic.stop(); throw failure; }
+        }
     }
     private com.blacicada.proxy.TrafficStatistics lastTraffic;
     private final HistoryRecorder history;
-    private final java.util.Map<String, Object> restoredTraffic;
-    ProxyRuntime(HistoryRecorder history, java.util.Map<String, Object> restoredTraffic) {
-        this.history = history; this.restoredTraffic = restoredTraffic;
-    }
+    ProxyRuntime(HistoryRecorder history) { this.history = history; }
     java.util.Map<String, Object> traffic(boolean history) {
-        if (lastTraffic != null) return lastTraffic.snapshot(history);
-        if (restoredTraffic == null) return com.blacicada.proxy.TrafficStatistics.empty(history);
-        var result = new java.util.LinkedHashMap<>(restoredTraffic);
-        if (!history) result.remove("history");
-        return result;
+        return lastTraffic == null ? com.blacicada.proxy.TrafficStatistics.empty(history) : lastTraffic.snapshot(history);
     }
 
     /** 运行时诊断与转发共用生效快照；停止时读取待启动的配置。 */
@@ -56,14 +52,18 @@ final class ProxyRuntime implements AutoCloseable {
         return !old.get("bind", "127.0.0.1").equals(next.get("bind", "127.0.0.1"))
                 || old.integer("port", 8080, 0, 65535) != next.integer("port", 8080, 0, 65535);
     }
-    void start(KernelConfig config) throws Exception {
+    void start(KernelConfig config) throws Exception { start(config, new com.blacicada.proxy.TrafficStatistics()); }
+    private void start(KernelConfig config, com.blacicada.proxy.TrafficStatistics traffic) throws Exception {
         if (proxy != null) return;
         if (config.connections().isEmpty() && !config.routingMode().equals("direct")) throw new ControlException(409, "NO_DEFAULT_PROFILE", "请先添加连接配置");
-        proxy = new LocalProxyServer(config, history::traffic, history::access, interfaceIndex).start();
+        proxy = new LocalProxyServer(config, history::traffic, history::access, interfaceIndex, traffic).start();
         lastTraffic = proxy.traffic();
     }
     void stop() {
         if (proxy != null) { proxy.close(); proxy = null; }
+    }
+    private void suspend() {
+        if (proxy != null) { proxy.close(false); proxy = null; }
     }
     void disconnect() throws Exception { if (proxy != null) proxy.disconnect(); }
     void apply(KernelConfig next) throws Exception {
@@ -72,11 +72,12 @@ final class ProxyRuntime implements AutoCloseable {
         if (!requiresRestart(next)) { proxy.apply(next); return; }
         KernelConfig previous = proxy.configuration();
         // 新监听失败时恢复旧配置；已经断开的浏览器连接无法恢复。
-        stop();
-        try { start(next); }
+        suspend();
+        try { start(next, lastTraffic); }
         catch (Exception failure) {
-            try { start(previous); }
+            try { start(previous, lastTraffic); }
             catch (Exception rollback) {
+                lastTraffic.stop();
                 throw new ControlException(503, "LISTENER_ROLLBACK_FAILED", "新监听启动失败，旧监听也未能恢复；配置未修改，请检查端口后重新启动代理");
             }
             throw new ControlException(409, "LISTENER_RESTART_FAILED", "新监听启动失败，已恢复旧监听；原有连接已断开，配置未修改");

@@ -26,7 +26,7 @@ public final class LocalProxyServer implements AutoCloseable {
     private SessionRouter session;
     private final KernelConfig initial;
     private Channel listener;
-    private final TrafficStatistics traffic = new TrafficStatistics();
+    private final TrafficStatistics traffic;
     private io.netty.util.concurrent.ScheduledFuture<?> trafficSampler;
     private final java.util.function.Consumer<java.util.Map<String, Object>> trafficRecorder, accessRecorder;
     public TrafficStatistics traffic() { return traffic; }
@@ -38,12 +38,22 @@ public final class LocalProxyServer implements AutoCloseable {
     }
     public LocalProxyServer(KernelConfig config, java.util.function.Consumer<java.util.Map<String, Object>> trafficRecorder,
                             java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder, int interfaceIndex) {
-        this(config, trafficRecorder, accessRecorder, interfaceIndex,
+        this(config, trafficRecorder, accessRecorder, interfaceIndex, new TrafficStatistics());
+    }
+    public LocalProxyServer(KernelConfig config, java.util.function.Consumer<java.util.Map<String, Object>> trafficRecorder,
+                            java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder, int interfaceIndex, TrafficStatistics traffic) {
+        this(config, trafficRecorder, accessRecorder, interfaceIndex, traffic,
                 io.netty.resolver.dns.DnsServerAddressStreamProviders.platformDefault());
     }
     LocalProxyServer(KernelConfig config, java.util.function.Consumer<java.util.Map<String, Object>> trafficRecorder,
                      java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder, int interfaceIndex,
                      io.netty.resolver.dns.DnsServerAddressStreamProvider dnsServers) {
+        this(config, trafficRecorder, accessRecorder, interfaceIndex, new TrafficStatistics(), dnsServers);
+    }
+    LocalProxyServer(KernelConfig config, java.util.function.Consumer<java.util.Map<String, Object>> trafficRecorder,
+                     java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder, int interfaceIndex,
+                     TrafficStatistics traffic, io.netty.resolver.dns.DnsServerAddressStreamProvider dnsServers) {
+        this.traffic = traffic;
         network = new OutboundNetwork(interfaceIndex); group = network.newGroup(); resolver = network.resolver();
         dns = new KernelDns(network, resolver, dnsServers);
         this.initial = config; this.config = config.local();
@@ -89,7 +99,7 @@ public final class LocalProxyServer implements AutoCloseable {
             traffic.recordTo(trafficRecorder);
             trafficSampler = group.next().scheduleAtFixedRate(traffic::sample, 1, 1, TimeUnit.SECONDS);
             return this;
-        } catch (Exception e) { close(); throw e; }
+        } catch (Exception e) { close(false); throw e; }
     }
     public InetSocketAddress address() { return (InetSocketAddress) listener.localAddress(); }
     public int activeTunnels() { return session.activeTunnels(); }
@@ -111,7 +121,9 @@ public final class LocalProxyServer implements AutoCloseable {
     public long connectionCount() { return session.connectionCount(); }
     public String connectionState() { return session.connectionState(); }
     public String lastError() { return session.lastError(); }
-    @Override public void close() {
+    @Override public void close() { close(true); }
+    /** 网络接口或监听重建时可保留同一运行会话的流量统计。 */
+    public void close(boolean finishTraffic) {
         if (!closed.compareAndSet(false, true)) return;
         if (trafficSampler != null) trafficSampler.cancel(false);
         if (listener != null) listener.close().awaitUninterruptibly();
@@ -119,6 +131,6 @@ public final class LocalProxyServer implements AutoCloseable {
         if (session != null) session.close();
         resolver.close();
         group.shutdownGracefully(0, 2, TimeUnit.SECONDS).awaitUninterruptibly();
-        traffic.stop();
+        if (finishTraffic) traffic.stop();
     }
 }

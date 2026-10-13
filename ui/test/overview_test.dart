@@ -55,7 +55,11 @@ class OverviewApi extends KernelApiClient {
     if (path == 'info') {
       data = {
         'apiVersion': 1,
+        'storageBackend': 'sqlite',
         'capabilities': [
+          'sqlite',
+          'postgresql',
+          'mysql',
           'events',
           'hotSettings',
           'hotRoutes',

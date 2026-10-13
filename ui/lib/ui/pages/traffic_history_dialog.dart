@@ -299,10 +299,10 @@ class _TrafficHistoryDialogState extends State<TrafficHistoryDialog> {
                           ],
                         ),
                         const SizedBox(height: 20),
-                        if (data.sampleCount == 0)
+                        if (data.recordCount == 0)
                           const Padding(
                             padding: EdgeInsets.only(bottom: 16),
-                            child: Text('此时间段暂无采样记录'),
+                            child: Text('此时间段暂无分钟记录'),
                           ),
                         TrafficSummaryChart(
                           summary: data,
@@ -316,13 +316,13 @@ class _TrafficHistoryDialogState extends State<TrafficHistoryDialog> {
                               : '显示所选时间段的已保存流量。',
                           style: theme.textTheme.bodySmall,
                         ),
-                        if (data.lastSampledAt > 0)
+                        if (data.latestMinuteStart > 0)
                           Text(
-                            '采样截至：${DateTime.fromMillisecondsSinceEpoch(data.lastSampledAt).toString().split('.').first}',
+                            '最近保存分钟：${DateTime.fromMillisecondsSinceEpoch(data.latestMinuteStart).toString().split('.').first}',
                             style: theme.textTheme.bodySmall,
                           ),
                         Text(
-                          '包含代理与直连流量；无采样记录的时间段不作估算。',
+                          '包含代理与直连流量；每分钟结束或正常停止时保存，未记录时段不作估算。',
                           style: theme.textTheme.bodySmall,
                         ),
                       ],

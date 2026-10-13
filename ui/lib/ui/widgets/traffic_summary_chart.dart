@@ -29,13 +29,12 @@ class _TrafficSummaryChartState extends State<TrafficSummaryChart> {
     if (oldWidget.summary != widget.summary) selected = null;
   }
 
-  String range(TrafficBucket bucket) =>
-      '${trafficDate(bucket.from)} ${trafficTime(bucket.from)} ${bucket.from.timeZoneName} → '
-      '${trafficDate(bucket.to)} ${trafficTime(bucket.to)} ${bucket.to.timeZoneName}';
+  String startLabel(TrafficBucket bucket) =>
+      '${trafficDate(bucket.from)} ${trafficTime(bucket.from)} ${bucket.from.timeZoneName}';
   String details(TrafficBucket bucket) => bucket.from.isAfter(DateTime.now())
       ? '尚未到达'
-      : bucket.sampleCount == 0
-      ? '无采样记录'
+      : bucket.recordCount == 0
+      ? '无分钟记录'
       : '发送 ${formatTrafficBytes(bucket.sentBytes)} · 接收 ${formatTrafficBytes(bucket.receivedBytes)}';
   @override
   Widget build(BuildContext context) {
@@ -118,7 +117,7 @@ class _TrafficSummaryChartState extends State<TrafficSummaryChart> {
                               Expanded(
                                 child: Tooltip(
                                   message:
-                                      '${range(buckets[i])}\n${details(buckets[i])}',
+                                      '${startLabel(buckets[i])}\n${details(buckets[i])}',
                                   waitDuration: const Duration(
                                     milliseconds: 200,
                                   ),
@@ -139,7 +138,7 @@ class _TrafficSummaryChartState extends State<TrafficSummaryChart> {
                                           },
                                     child: Semantics(
                                       label:
-                                          '${range(buckets[i])}，${details(buckets[i])}',
+                                          '${startLabel(buckets[i])}，${details(buckets[i])}',
                                       child: Container(
                                         height: 161,
                                         color: selected == i
@@ -149,7 +148,7 @@ class _TrafficSummaryChartState extends State<TrafficSummaryChart> {
                                         padding: const EdgeInsets.symmetric(
                                           horizontal: 1,
                                         ),
-                                        child: buckets[i].sampleCount == 0
+                                        child: buckets[i].recordCount == 0
                                             ? Align(
                                                 alignment:
                                                     Alignment.bottomCenter,
@@ -224,12 +223,12 @@ class _TrafficSummaryChartState extends State<TrafficSummaryChart> {
         Text(
           index == null
               ? '悬停查看明细${widget.window.period == TrafficPeriod.hour ? '' : '，点击查看该${widget.window.period == TrafficPeriod.month ? '天' : '小时'}'}'
-              : range(buckets[index]),
+              : startLabel(buckets[index]),
           style: theme.textTheme.bodySmall,
         ),
         Text(
           index == null
-              ? '灰色短线表示无采样记录；有采样但无流量显示为 0 B。'
+              ? '灰色短线表示无分钟记录；有记录但无流量显示为 0 B。'
               : details(buckets[index]),
           style: theme.textTheme.bodySmall,
         ),

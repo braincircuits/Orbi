@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/proxy_profile.dart';
+import '../models/database_settings.dart';
 import '../services/native_bridge.dart';
 import '../services/kernel_api_client.dart';
 import '../services/proxy_controller.dart';
@@ -521,6 +522,13 @@ class ProxyViewModel extends ChangeNotifier {
     }
   }
 
+  Future<void> changeDatabase(DatabaseSettings settings) => action(() async {
+    if (dirty && proxy.connected) throw StateError('请先应用或放弃代理配置草稿，再切换数据库');
+    await proxy.changeDatabase(settings, draftProfile(), resources);
+    if (active) update(() => accept(proxy.appliedProfile!));
+    message('数据库已切换为 ${settings.label}，请确认配置后启动代理');
+  });
+
   Future<void> saveRuntime() => action(() async {
     await preferences.write(
       proxy.directory,
@@ -682,7 +690,7 @@ class ProxyViewModel extends ChangeNotifier {
     super.dispose();
   }
 
-  bool get locked => loading || working || proxy.busy;
+  bool get locked => loading || working || proxy.busy || proxy.changingDatabase;
   bool get canApply => !locked && (page == 1 || page == 2);
   void navigate(int value) {
     if (value < 0 || value > 5) return;

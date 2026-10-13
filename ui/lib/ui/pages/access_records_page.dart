@@ -4,6 +4,7 @@ import '../desktop_theme.dart';
 import '../widgets/desktop_select.dart';
 
 import '../../models/kernel_status.dart';
+import '../../models/database_settings.dart';
 import '../../services/proxy_controller.dart';
 
 /// 按数据库游标加载历史，滚动接近底部时自动加载下一页。
@@ -159,7 +160,7 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
         ),
         const SizedBox(height: 10),
         Text(
-          '长期保存在 SQLite · 已显示 ${records.length} 条 · 最新访问在前',
+          '长期保存在 ${DatabaseSettings.labels[widget.proxy.storageBackend] ?? '数据库'} · 已显示 ${records.length} 条 · 最新访问在前',
           style: theme.textTheme.bodySmall,
         ),
         const SizedBox(height: 6),

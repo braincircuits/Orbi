@@ -7,8 +7,6 @@ import 'package:network_ui/services/proxy_controller.dart';
 import 'package:network_ui/ui/desktop_theme.dart';
 import 'package:network_ui/ui/pages/access_records_page.dart';
 
-import 'traffic_fixture.dart';
-
 class HistoryKernel extends ProxyController {
   final requests = <(String, int?, String)>[];
   bool fail = false;
@@ -37,19 +35,6 @@ class HistoryKernel extends ProxyController {
       'nextBeforeId': beforeId == null ? 20 : 0,
     });
   }
-
-  @override
-  Future<TrafficRecordPage> trafficHistory({
-    int? from,
-    int? to,
-    int? beforeId,
-  }) async => TrafficRecordPage.fromJson({
-    'items': [
-      {...trafficFixture(time: 300000), 'id': 1},
-    ],
-    'nextBeforeId': 0,
-    'hasMore': false,
-  });
 }
 
 class PagedHistoryKernel extends HistoryKernel {
@@ -140,18 +125,26 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
-  test('历史流量跨启动会话及采样空档翻页不跳过旧记录', () {
+  test('分钟历史保留不同启动会话的增量，分页游标由内核决定', () {
     final page = TrafficRecordPage.fromJson({
       'items': [
-        {...trafficFixture(time: 600000), 'id': 9, 'sessionId': 'new'},
-        {...trafficFixture(time: 500000), 'id': 8, 'sessionId': 'new'},
-        {...trafficFixture(time: 200000), 'id': 7, 'sessionId': 'old'},
+        for (var id = 3; id >= 1; id--)
+          {
+            'id': id,
+            'sessionId': id == 1 ? '旧会话' : '新会话',
+            'minuteStart': 60000,
+            'activeDurationMillis': 15000,
+            'sentBytes': 100,
+            'receivedBytes': 200,
+          },
       ],
-      'nextBeforeId': 0,
-      'hasMore': false,
+      'nextBeforeId': 1,
     });
-    expect(page.traffic!.history, hasLength(2));
-    expect(page.nextBeforeId, 8);
+    expect(page.items, hasLength(3));
+    expect(page.items.last.sessionId, '旧会话');
+    expect(page.items.first.activeDurationMillis, 15000);
+    expect(page.nextBeforeId, 1);
+    expect(() => page.items.clear(), throwsUnsupportedError);
   });
   testWidgets('访问记录分页、查询、失败恢复和窄窗口布局', (tester) async {
     final kernel = HistoryKernel()..connected = true;

@@ -21,7 +21,7 @@ class PreviewSummaryKernel extends ProxyController {
           'to': times[i + 1].millisecondsSinceEpoch,
           'sentBytes': i < DateTime.now().hour ? (i % 5 + 1) * 1250000 : 0,
           'receivedBytes': i < DateTime.now().hour ? (i % 7 + 1) * 22400000 : 0,
-          'sampleCount': i < DateTime.now().hour ? 3600 : 0,
+          'recordCount': i < DateTime.now().hour ? 60 : 0,
         },
     ];
     return TrafficSummary.fromJson({
@@ -31,8 +31,9 @@ class PreviewSummaryKernel extends ProxyController {
         0,
         (sum, b) => sum + b['receivedBytes']!,
       ),
-      'sampleCount': 50000,
-      'lastSampledAt': DateTime.now().millisecondsSinceEpoch,
+      'recordCount': DateTime.now().hour * 60,
+      'latestMinuteStart':
+          DateTime.now().millisecondsSinceEpoch ~/ 60000 * 60000,
     });
   }
 }

@@ -16,8 +16,9 @@ java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT
 | 参数 | 含义 |
 | --- | --- |
 | `--db` | SQLite 数据库路径；不存在时自动建库，以空连接和空规则启动；默认位于程序目录 |
+| `--storage-config` | UTF-8 存储配置文件，选择 SQLite/PostgreSQL/MySQL，重启生效；与 `--db` 互斥，见 [数据库切换](database-storage.md) |
 | `--port` | 本机管理端口，默认 9090；0 表示自动分配 |
-| `--endpoint-file` | 管理连接信息文件，默认数据库目录下的 `run/control.json` |
+| `--endpoint-file` | 管理连接信息文件，SQLite 默认在数据库目录下，远程库默认在存储配置目录下的 `run/control.json` |
 | `--token-file` | 可选，从文件读取至少 32 字符的管理令牌；默认每次启动生成随机令牌 |
 | `--allow-origin` | 可重复指定网页 Origin，例如 `http://localhost:3000`；默认不允许其他网页来源 |
 
@@ -94,7 +95,7 @@ UI 通过 `error.code` 判断行为，通过中文 `message` 展示原因，不�
 | `POST /overview/latency` | 当前代理连接 RTT，HTTP/2 PING 或 QUIC 路径 RTT，返回 202 | — |
 | `POST /overview/websites` | 按当前路由依次测试 GitHub、Google、YouTube 的 HTTPS 响应耗时，返回 202 | — |
 | `POST /overview/exit-ip` | 从当前路由查询出口公网 IP、归属地和运营商，返回 202 | — |
-| `GET /traffic` | 当前或最近一次代理启动的累计量、速率及最近五分钟历史 | — |
+| `GET /traffic` | 当前或最近一次代理启动的累计量、速率及最近一小时历史 | — |
 | `POST /traffic/summary` | 按指定日历边界汇总所有启动会话的流量 | — |
 | `GET /traffic/history` | 分页查询长期保存的流量采样 | — |
 | `GET /access-records` | 分页查询长期保存的访问目标和连接结果 | — |
@@ -108,7 +109,7 @@ UI 通过 `error.code` 判断行为，通过中文 `message` 展示原因，不�
 | `GET /logs?after=0&limit=100&levels=WARN,ERROR` | 按级别增量读取脱敏日志，limit 为 1～500 | — |
 | `GET /events` | SSE 状态、配置、日志、诊断任务事件 | — |
 
-`PATCH` 使用递归合并，字段为 null 表示移除。密码省略时保留原密码；空密码会校验失败。查询连接时返回 `hasPassword`，不返回密码。完整配置请求体见 [API 请求示例](../examples/config-request.json)，该示例不是启动配置文件。证书相对路径以数据库所在目录为基准，查询返回绝对路径。
+`PATCH` 使用递归合并，字段为 null 表示移除。密码省略时保留原密码；空密码会校验失败。查询连接时返回 `hasPassword`，不返回密码。完整配置请求体见 [API 请求示例](../examples/config-request.json)，该示例不是启动配置文件。证书相对路径在 SQLite 模式下以数据库所在目录为基准，远程数据库模式下以启动存储配置文件所在目录为基准，查询返回绝对路径。
 
 新增连接请求示例：
 
@@ -144,7 +145,7 @@ UI 通过 `error.code` 判断行为，通过中文 `message` 展示原因，不�
 | 新旧监听均启动失败 | 返回 503，代理停止；原配置仍保留，管理接口可继续检查和启动 |
 | 管理地址、令牌或 CORS 白名单 | 需重启内核进程，通过启动参数修改 |
 
-配置和规则只存储在 SQLite 中，通过 API 修改即时应用并自动保存。`routesFile`、规则文件重载与手动保存接口已删除。替换同一路径的 CA 文件后需显式断开对应会话使证书重新加载。数据库事务失败会撤销修改并恢复运行配置；若恢复失败则停止代理并返回明确错误，已断开的连接无法恢复。
+配置和规则只存储在启动时选定的数据库中，通过 API 修改即时应用并自动保存。`routesFile`、规则文件重载与手动保存接口已删除。替换同一路径的 CA 文件后需显式断开对应会话使证书重新加载。数据库事务失败会撤销修改并恢复运行配置；若恢复失败则停止代理并返回明确错误，已断开的连接无法恢复。
 
 规则变化按最终路由结果判断：移除某条域名规则但仍被另一条规则覆盖时保持连接；仅编辑注释、顺序或重复项不会中断。判断所需的地址已知时，在应用操作中立即发起关闭；已有代理域名因新增网段规则需要 DNS 时，异步解析完成后再决定，API 成功响应不表示这些解析均已结束。连续更新时按最新规则处理 DNS 结果。受影响连接不重放数据，需要浏览器或应用重新请求。
 
@@ -222,7 +223,9 @@ python3 scripts/web-smoke-test.py
 
 ## SQLite 与路由导入导出
 
-内核使用 SQLite 保存本地设置、连接及凭据、路由和 revision。数据库文件及锁文件限制当前用户访问；数据库未加密，不应分发给无权获得代理凭据的用户。日志、SSE、诊断和活动隧道不保存到数据库。`run/control.json` 是当前进程的管理发现文件，继续独立生成和清理。
+内核也支持 PostgreSQL 和 MySQL 整体存储，选型、启动参数及事务边界见 [数据库切换](database-storage.md)。`GET /info` 增加 `storageBackend` 字段返回实际后端，能力列表包含 `sqlite`、`postgresql`、`mysql`，不包含数据库凭据。下面关于文件权限和锁文件的说明仅适用于 SQLite。
+
+内核使用选定数据库保存本地设置、连接及凭据、路由和 revision。数据库文件及锁文件限制当前用户访问；数据库未加密，不应分发给无权获得代理凭据的用户。日志、SSE、诊断和活动隧道不保存到数据库。`run/control.json` 是当前进程的管理发现文件，继续独立生成和清理。
 
 同一数据库只允许一个内核实例持有；重复启动会报错。数据库损坏、格式或结构版本不支持时拒绝启动，不自动重建、迁移或回退读取旧 JSON/PAC 文件，也不删除旧文件。数据库目录必须可写，以便创建事务日志与锁。锁文件和已截断的 `kernel.db-journal` 退出后保留，但操作系统锁会释放。备份或复制数据库前先停止内核。
 
@@ -247,13 +250,15 @@ python3 scripts/web-smoke-test.py
 
 ## 流量统计
 
-`info.capabilities` 包含 `traffic`。`GET /traffic` 返回 `sessionId`、`startedAt`、`sampledAt`、`sentBytes`、`receivedBytes`、`sendBytesPerSecond`、`receiveBytesPerSecond` 和 `history`。时间均为 Unix 毫秒，累计值为字节，速率为字节／秒。`history` 最多 301 个样本，每项含 `sampledAt`、累计值与两种速率。尚无任何启动历史时会话标识为空、时间和计数为零、历史为空。
+`info.capabilities` 包含 `traffic`。`GET /traffic` 返回 `sessionId`、`startedAt`、`sampledAt`、`sentBytes`、`receivedBytes`、`sendBytesPerSecond`、`receiveBytesPerSecond` 和 `history`。时间均为 Unix 毫秒，累计值为字节，速率为字节／秒。`history` 最多 3601 个样本，每项含 `sampledAt`、累计值与两种速率。本次内核尚未启动代理时会话标识为空、时间和计数为零、历史为空。
 
-内核每秒采样，使用单调时钟的实际采样间隔计算速率。普通状态响应与 SSE `status` 在 `traffic` 中只携带最新采样和会话信息；首次订阅或事件历史失效后的 SSE `snapshot` 携带完整五分钟窗口。客户端连接时可通过 `GET /traffic` 补齐历史，重复时间戳去重，禁止将采样空档填成零速率。
+内核每秒采样，使用单调时钟的实际采样间隔计算速率。普通状态响应与 SSE `status` 在 `traffic` 中只携带最新采样和会话信息；首次订阅或事件历史失效后的 SSE `snapshot` 携带完整一小时窗口。客户端连接时可通过 `GET /traffic` 补齐历史，重复时间戳去重，禁止将采样空档填成零速率。
 
 统计涵盖本地 HTTP 代理接入的代理与直连业务：发送为成功提交给目标连接或 HTTP/2、HTTP/3 业务流的字节，接收为从业务流收到的字节。普通 HTTP 包含转发后的请求头和响应头，CONNECT 仅统计隧道建立后的负载；不包含本地 CONNECT 握手、代理认证、代理协议帧、TLS／QUIC 封装与重传。内核通过本地代理执行的出口查询和网站测试也会计入。它不是网卡吞吐量或 TLS 解密后的内容大小。
 
-停止代理会将当前速率归零并保留累计量及最近窗口；重新启动本地监听创建新的 `sessionId` 并清零。热切换路由或默认连接保持同一统计会话。更改监听地址／端口导致重启时重新计数。全部采样写入当前 `kernel.db` 的 `traffic_samples` 表，长期保留，不自动删除。内核重开、代理尚未启动时从数据库恢复最近会话的五分钟窗口，实时速率为零。新启动仍创建独立会话，旧会话可通过历史接口查询。
+停止代理会将当前速率归零并在内存保留累计量及最近一小时窗口；用户再次启动服务创建新的 `sessionId` 并清零。切换路由、默认连接、TUN 出口或重建监听保持同一运行会话。UI 重连通过快照恢复曲线；退出内核后秒级曲线不持久化，下次内核启动时概览为空，历史流量仍可查询。
+
+历史只写 `traffic_minutes`，按自然分钟保存字节增量，每个运行会话的同一分钟唯一。内核在字节实际读取或成功写入时确定分钟归属，每分钟结束及正常停止时入队保存；零流量但服务仍运行的分钟也保存。时间从启动时的 Unix 毫秒加单调时钟经过时间计算，避免系统时钟校准造成倒序。当前未结束分钟不出现在历史中，异常退出最多可能丢失当前未完成分钟，以及因存储失败尚未提交的记录。旧 `traffic_samples` 原样保留，不读取、不合并、不迁移、不继续写入；旧数据由用户自行处理。
 
 
 ## 长期流量与访问记录
@@ -264,7 +269,7 @@ python3 scripts/web-smoke-test.py
 - `GET /access-records`：查询访问地址，支持可选 `target`（域名/IP/端口的不区分大小写字面子串，不使用 SQL 通配符）和 `state`（pending/connected/failed/cancelled；省略或空值表示全部）。状态与目标条件在数据库中联合筛选后再分页；下一页需携带相同条件。无效状态返回 400 / INVALID_QUERY。
 - 两者支持 `from`（含）、`to`（不含）的 Unix 毫秒范围、`beforeId` 游标与 `limit`（1～500，默认 100）。省略时间范围查询所有历史，省略游标从最新记录开始。响应 `data` 含 `items`、`hasMore`、`nextBeforeId`。按自增 ID 倒序返回；将 `nextBeforeId` 传入下一页，无更多记录时为 0。
 
-流量历史的每项包含 `id`、`sessionId`、`startedAt` 和原有采样字段。累计字节按启动会话计算，不能跨样本相加。内存只保留实时五分钟窗口，数据库保留所有原始样本。
+流量历史的每项包含 `id`、`sessionId`、`minuteStart`、`activeDurationMillis`、`sentBytes`、`receivedBytes`。`minuteStart` 为整分钟起点的 Unix 毫秒；`activeDurationMillis` 为本次运行在该分钟内的有效统计时长；字节值为本条分钟记录的增量，可以相加。分页仅查询新分钟表，时间筛选按 `minuteStart` 左闭右开。实时秒级采样仅在内存保留最近一小时。
 
 访问表 `access_records` 按一次本地 HTTP 请求或 CONNECT 隧道记录，包含 `id`、`requestId`、`sessionId`、`createdAt`、`completedAt`、`target`、`source`、`method`、`route`、`protocol`、`profileId`、`profileName`、`state`。请求首先写为 `pending`，连接结果更新同一条记录为 `connected`、`failed` 或 `cancelled`；`connected` 只表示目标连接建立，不代表网站 HTTP 状态成功。未完成记录的 `completedAt` 为 0，异常退出前尚未完成的请求保留 `pending`，不能据此认定仍有活跃隧道。
 
@@ -279,9 +284,9 @@ Netty 线程仅入队，控制线程每 250 毫秒最多批量提交 2048 条事
 
 `POST /traffic/summary` 是只读查询，不需要 `If-Match`。请求体为 `{"boundaries":[起始毫秒时间戳,下一边界,...,结束毫秒时间戳]}`。边界必须是 2～63 个非负、严格递增的整数，整体不超过 32 天。界面按本地日历生成边界：一小时分为 60 分钟，一天按小时切分（夏令时可能有 23 或 25 小时），一个月按实际天数切分。区间左闭右开。
 
-响应 `data` 包含 `buckets`、`sentBytes`、`receivedBytes`、`sampleCount` 和 `lastSampledAt`。每个桶含 `from`、`to`、`sentBytes`、`receivedBytes`、`sampleCount`；整个范围及桶的流量均为字节总量，不是速率。无采样桶返回零计数，界面标为“无采样记录”，与有采样但零流量区分。
+响应 `data` 包含 `buckets`、`sentBytes`、`receivedBytes`、`recordCount` 和 `latestMinuteStart`。每个桶含 `from`、`to`、`sentBytes`、`receivedBytes`、`recordCount`；整个范围及桶的流量均为字节总量，不是速率。`recordCount` 为分钟记录数，同一分钟的不同运行会话分别计数；`latestMinuteStart` 为最近保存的分钟起点。无记录桶返回零计数，界面标为“无分钟记录”，与运行但零流量区分。
 
-在 SQLite 内按启动会话计算累计计数差值，再合并所有会话。范围起点前的最后一个样本作为差分基线，停止前最后一次采样也参与统计，不对累计数或瞬时速率直接求和。增量归入该样本时间所在的桶；跨边界采样和采样空档不推测每字节的实际发生时刻。没有新表、历史迁移或额外副本，原始记录继续长期保留。查询只返回至多 62 个统计桶，不向界面传输逐秒记录。
+在数据库内对分钟增量求和，同一分钟多次启停的记录合并展示。分钟依据 `minuteStart` 归入统计桶，建议边界按分钟对齐；不进行秒级拆分或缺失时段估算。查询只返回至多 62 个统计桶，不向界面传输逐秒曲线。
 
 
 ## macOS TUN 生命周期

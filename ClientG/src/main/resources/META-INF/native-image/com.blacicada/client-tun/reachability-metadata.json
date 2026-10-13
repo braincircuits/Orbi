@@ -1,0 +1,317 @@
+{
+  "reflection": [
+    {
+      "type": "com.blacicada.proxy.TrafficStatistics$1"
+    },
+    {
+      "type": "com.sun.crypto.provider.PBKDF2Core$HmacSHA1",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.PBKDF2Core$HmacSHA224",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.PBKDF2Core$HmacSHA256",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.PBKDF2Core$HmacSHA384",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.PBKDF2Core$HmacSHA512",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "io.netty.channel.ChannelException",
+      "jniAccessible": true
+    },
+    {
+      "type": "io.netty.channel.DefaultFileRegion",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "file"
+        },
+        {
+          "name": "transferred"
+        }
+      ]
+    },
+    {
+      "type": "io.netty.channel.kqueue.BsdSocket",
+      "jniAccessible": true
+    },
+    {
+      "type": "io.netty.channel.kqueue.KQueueEventArray",
+      "jniAccessible": true
+    },
+    {
+      "type": "io.netty.channel.kqueue.KQueueIoHandler"
+    },
+    {
+      "type": "io.netty.channel.kqueue.KQueueStaticallyReferencedJniMethods",
+      "jniAccessible": true
+    },
+    {
+      "type": "io.netty.channel.kqueue.Native",
+      "jniAccessible": true
+    },
+    {
+      "type": "io.netty.channel.unix.Buffer",
+      "jniAccessible": true
+    },
+    {
+      "type": "io.netty.channel.unix.DatagramSocketAddress",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "byte[]",
+            "int",
+            "int",
+            "int",
+            "io.netty.channel.unix.DatagramSocketAddress"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "io.netty.channel.unix.DomainDatagramSocketAddress",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "byte[]",
+            "int",
+            "io.netty.channel.unix.DomainDatagramSocketAddress"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "io.netty.channel.unix.ErrorsStaticallyReferencedJniMethods",
+      "jniAccessible": true
+    },
+    {
+      "type": "io.netty.channel.unix.FileDescriptor",
+      "jniAccessible": true
+    },
+    {
+      "type": "io.netty.channel.unix.LimitsStaticallyReferencedJniMethods",
+      "jniAccessible": true
+    },
+    {
+      "type": "io.netty.channel.unix.PeerCredentials",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "int",
+            "int",
+            "int[]"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "io.netty.channel.unix.Socket",
+      "jniAccessible": true
+    },
+    {
+      "type": "java.io.FileDescriptor",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "fd"
+        }
+      ]
+    },
+    {
+      "type": "java.io.IOException",
+      "jniAccessible": true
+    },
+    {
+      "type": "java.lang.Boolean",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "getBoolean",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.lang.Object"
+    },
+    {
+      "type": "java.lang.OutOfMemoryError",
+      "jniAccessible": true
+    },
+    {
+      "type": "java.lang.RuntimeException",
+      "jniAccessible": true
+    },
+    {
+      "type": "java.lang.SecurityManager",
+      "methods": [
+        {
+          "name": "checkPermission",
+          "parameterTypes": [
+            "java.security.Permission"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.lang.System",
+      "methods": [
+        {
+          "name": "getSecurityManager",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.net.InetSocketAddress",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.String",
+            "int"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.net.PortUnreachableException",
+      "jniAccessible": true
+    },
+    {
+      "type": "java.nio.Buffer",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "limit"
+        },
+        {
+          "name": "position"
+        }
+      ],
+      "methods": [
+        {
+          "name": "limit",
+          "parameterTypes": []
+        },
+        {
+          "name": "position",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.nio.DirectByteBuffer"
+    },
+    {
+      "type": "java.nio.channels.ClosedChannelException",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.nio.channels.FileChannel"
+    },
+    {
+      "type": "java.security.AccessController",
+      "methods": [
+        {
+          "name": "doPrivileged",
+          "parameterTypes": [
+            "java.security.PrivilegedExceptionAction"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.util.Collections$UnmodifiableMap"
+    },
+    {
+      "type": "org.postgresql.Driver"
+    },
+    {
+      "type": "org.postgresql.core.QueryExecutorCloseAction"
+    },
+    {
+      "type": "org.postgresql.jdbc.PgStatement"
+    },
+    {
+      "type": "org.slf4j.Logger"
+    },
+    {
+      "type": "org.sqlite.JDBC"
+    },
+    {
+      "type": "sun.nio.ch.FileChannelImpl",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "fd"
+        }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "glob": ""
+    },
+    {
+      "glob": "META-INF/native/libnetty_transport_native_kqueue_aarch_64.dylib"
+    },
+    {
+      "glob": "META-INF/native/libnetty_transport_native_kqueue_aarch_64.jnilib"
+    },
+    {
+      "glob": "META-INF/services/java.sql.Driver"
+    },
+    {
+      "glob": "org/postgresql/driverconfig.properties"
+    }
+  ]
+}

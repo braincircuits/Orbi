@@ -7,7 +7,7 @@ import 'package:network_ui/ui/widgets/traffic_chart.dart';
 import 'traffic_fixture.dart';
 
 void main() {
-  test('流量历史去重、拒绝旧采样、保持五分钟窗口并按启动会话重置', () {
+  test('流量历史去重、拒绝旧采样、保持一小时窗口并按启动会话重置', () {
     var traffic = TrafficSnapshot.merge(null, trafficFixture(time: 100000));
     expect(traffic.history.length, 61);
     traffic = TrafficSnapshot.merge(
@@ -20,14 +20,14 @@ void main() {
       trafficFixture(time: 99000, history: false),
     );
     expect(traffic.current.sampledAt, 100000);
-    for (var i = 1; i <= 400; i++) {
+    for (var i = 1; i <= 4000; i++) {
       traffic = TrafficSnapshot.merge(
         traffic,
         trafficFixture(time: 100000 + i * 1000, history: false),
       );
     }
-    expect(traffic.history.length, 301);
-    expect(traffic.history.first.sampledAt, 200000);
+    expect(traffic.history.length, 3601);
+    expect(traffic.history.first.sampledAt, 500000);
     traffic = TrafficSnapshot.merge(
       traffic,
       trafficFixture(session: '新的启动', time: 600000, history: false),
@@ -67,6 +67,14 @@ void main() {
     );
     await pump();
     expect(find.text('流量趋势'), findsOneWidget);
+    expect(
+      tester
+          .widget<SegmentedButton<int>>(
+            find.byKey(const ValueKey('traffic-range')),
+          )
+          .selected,
+      {60},
+    );
     await tester.tap(find.text('5 分钟'));
     await tester.pump();
     expect(
@@ -76,6 +84,16 @@ void main() {
           )
           .selected,
       {5},
+    );
+    await tester.tap(find.text('1 小时'));
+    await tester.pump();
+    expect(
+      tester
+          .widget<SegmentedButton<int>>(
+            find.byKey(const ValueKey('traffic-range')),
+          )
+          .selected,
+      {60},
     );
     await tester.tap(find.text('发送'));
     await tester.tap(find.text('接收'));
@@ -96,4 +114,40 @@ void main() {
     expect(find.text('接收 2.46 MB/s'), findsNothing);
     expect(tester.takeException(), isNull);
   });
+  for (final platform in [
+    TargetPlatform.macOS,
+    TargetPlatform.windows,
+    TargetPlatform.linux,
+  ]) {
+    for (final brightness in Brightness.values) {
+      testWidgets('一小时趋势在 $platform / $brightness 的窄布局和单点启动状态不溢出', (
+        tester,
+      ) async {
+        for (final width in [320.0, 1000.0]) {
+          tester.view.physicalSize = Size(width, 640);
+          tester.view.devicePixelRatio = 1;
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: desktopTheme(brightness).copyWith(platform: platform),
+              home: Scaffold(
+                body: TrafficChart(
+                  traffic: TrafficSnapshot.merge(null, {
+                    ...trafficFixture(time: 60000, history: false),
+                    'startedAt': 60000,
+                  }),
+                  connected: true,
+                  running: true,
+                ),
+              ),
+            ),
+          );
+          await tester.pump();
+          expect(find.text('1 小时'), findsOneWidget);
+          expect(tester.takeException(), isNull);
+        }
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+      });
+    }
+  }
 }

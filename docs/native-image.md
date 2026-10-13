@@ -30,9 +30,11 @@ python3 scripts/web-smoke-test.py
 
 Flutter 项目通过 `--dart-define=PROXY_NATIVE=/原生程序绝对路径` 运行真实 UI 联调；`NATIVE_CORE` 配合 `test/native_kernel_integration_test.dart` 验证应用资源内原生程序的发现、自动启动、保存配置和重新接管。
 
+数据库后端支持 SQLite、PostgreSQL 和 MySQL。打包 JAR 必须保留 `Multi-Release: true`，使 GraalVM 能找到 SQLite 驱动位于版本目录中的 `SqliteJdbcFeature`；不能仅复制原生入口而遗漏驱动元数据。PostgreSQL 原生程序已在独立测试库验证；MySQL 没有可用测试库，不能据构建成功视为连接行为已验证。
+
 ## 反射与 JNI 元数据
 
-元数据在 `ClientG/src/main/resources/META-INF/native-image/com.blacicada/client/reachability-metadata.json`，由 GraalVM tracing agent 采集并合并。采集范围是 Flutter 项目的 `core_integration_test.dart` 和 `multi_connection_integration_test.dart`：配置、路由、隧道、日志、SSE、持久化、诊断、HTTP/2 TLS、HTTP/3 QUIC 以及直连。未通过测试框架收集 JUnit 内部反射信息。
+通用元数据在 `ClientG/src/main/resources/META-INF/native-image/com.blacicada/client/reachability-metadata.json`，数据库补充声明在同级 `client-databases/reachability-metadata.json`。MySQL 的单主机连接、日志与套接字工厂声明通过受控认证握手采集；资源包含消息、TLS 和时区配置。`python3 scripts/check-native-mysql.py` 验证原生驱动可到达认证阶段，但不替代真实 MySQL 建表与读写测试。TUN 补充声明位于同级 `client-tun/reachability-metadata.json`，通过真实接口绑定和 PostgreSQL TCP 握手采集，包含 KQueue 原生库与 JNI 注册。通用元数据由 GraalVM tracing agent 采集并合并。采集范围是 Flutter 项目的 `core_integration_test.dart` 和 `multi_connection_integration_test.dart`：配置、路由、隧道、日志、SSE、持久化、诊断、HTTP/2 TLS、HTTP/3 QUIC 以及直连。未通过测试框架收集 JUnit 内部反射信息。
 
 更新动态加载逻辑、依赖或目标平台时，需重新采集并执行原生联调。采集时只对客户端 JAR 添加 agent，服务端使用普通 JVM；每个内核进程分别输出，避免多个进程覆盖同一目录：
 

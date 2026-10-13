@@ -18,8 +18,30 @@ class HistoryPersistenceTest {
     @SuppressWarnings("unchecked")
     private static List<Map<String, Object>> items(Map<String, Object> page) { return (List<Map<String, Object>>) page.get("items"); }
     private static Map<String, Object> traffic(long time) {
-        return Map.of("sessionId", "会话一", "startedAt", 1L, "sampledAt", time,
-                "sentBytes", 128L, "receivedBytes", 256L, "sendBytesPerSecond", 12.5, "receiveBytesPerSecond", 25.0);
+        return Map.of("sessionId", "会话一", "minuteStart", time * 60_000, "activeDurationMillis", 60_000L,
+                "sentBytes", 128L, "receivedBytes", 256L);
+    }
+    @Test void internalNetworkRestartKeepsSessionButUserRestartStartsAnother() throws Exception {
+        try (var db = new KernelDatabase(directory.resolve("runtime.db"))) {
+            var recorder = new HistoryRecorder(db);
+            var properties = new Properties(); properties.setProperty("routingMode", "direct"); properties.setProperty("port", "0");
+            var config = new com.blacicada.config.KernelConfig(new com.blacicada.common.ProxyConfig(properties, directory), List.of(), "");
+            try (var runtime = new ProxyRuntime(recorder)) {
+                runtime.start(config);
+                String session = (String) runtime.traffic(true).get("sessionId");
+                Object started = runtime.traffic(true).get("startedAt");
+                // 使用默认出口重建监听即可验证生命周期，不修改系统路由或启动真实 TUN。
+                runtime.bindInterface(0, config);
+                assertEquals(session, runtime.traffic(true).get("sessionId"));
+                assertEquals(started, runtime.traffic(true).get("startedAt"));
+                runtime.stop(); recorder.finish();
+                assertEquals(session, runtime.traffic(true).get("sessionId"));
+                assertFalse(items(db.trafficHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 100, session)).isEmpty());
+                runtime.start(config);
+                assertNotEquals(session, runtime.traffic(true).get("sessionId"));
+                assertEquals(0L, runtime.traffic(true).get("sentBytes"));
+            }
+        }
     }
     @Test void accessStateFilterRunsBeforePaginationAndCombinesWithTarget() throws Exception {
         try (var db = new KernelDatabase(directory.resolve("filtered.db"))) {
@@ -49,7 +71,7 @@ class HistoryPersistenceTest {
         try (var db = new KernelDatabase(path); var external = DriverManager.getConnection("jdbc:sqlite:" + path); var sql = external.createStatement()) {
             var recorder = new HistoryRecorder(db);
             recorder.traffic(traffic(10));
-            sql.execute("CREATE TRIGGER reject_history BEFORE INSERT ON traffic_samples BEGIN SELECT RAISE(FAIL, '测试写入失败'); END");
+            sql.execute("CREATE TRIGGER reject_history BEFORE INSERT ON traffic_minutes BEGIN SELECT RAISE(FAIL, '测试写入失败'); END");
             assertFalse(recorder.flush());
             assertEquals(1, recorder.status().get("pendingRecords"));
             assertFalse(recorder.status().get("error").toString().isEmpty());
@@ -60,12 +82,11 @@ class HistoryPersistenceTest {
             var page = db.trafficHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 2, "会话一");
             assertTrue((boolean) page.get("hasMore")); assertEquals(2, items(page).size());
             var next = db.trafficHistory(0, Long.MAX_VALUE, ((Number) page.get("nextBeforeId")).longValue(), 2, "会话一");
-            assertEquals(1, items(next).size()); assertEquals(10L, items(next).getFirst().get("sampledAt"));
+            assertEquals(1, items(next).size()); assertEquals(600_000L, items(next).getFirst().get("minuteStart"));
         }
         try (var db = new KernelDatabase(path)) {
             assertEquals(3, items(db.trafficHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "")).size());
-            assertEquals(0.0, db.latestTraffic().get("sendBytesPerSecond"));
-            assertEquals(128L, db.latestTraffic().get("sentBytes"));
+            assertEquals(384L, db.trafficSummary(List.of(0L, 2_000_000L)).get("sentBytes"));
         }
     }
 
@@ -112,7 +133,7 @@ class HistoryPersistenceTest {
             assertThrows(ControlException.class, () -> control.history(false, 0, 1, 0, 100, "", ""));
         }
         try (var control = new KernelControl(path)) {
-            assertEquals(session, control.traffic().get("sessionId"));
+            assertEquals("", control.traffic().get("sessionId"));
             assertEquals(2, items(control.history(false, 0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "", "")).size());
             control.start(); assertNotEquals(session, control.traffic().get("sessionId")); control.stop();
             assertFalse(items(control.history(true, 0, Long.MAX_VALUE, Long.MAX_VALUE, 100, session, "")).isEmpty());

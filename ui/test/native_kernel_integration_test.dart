@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
@@ -49,8 +48,14 @@ void main() {
           'password': 'native-test-only',
         },
       );
-      await File('${directory.path}/kernel.json')
-          .writeAsString(jsonEncode(config.runtimeConfiguration));
+      final bootstrap = ProxyController(directory: directory);
+      try {
+        await bootstrap.connect(config, directory.path);
+        await bootstrap.apply(config, directory.path, expectedRevision: 0);
+        await bootstrap.shutdown();
+      } finally {
+        bootstrap.dispose();
+      }
       final model = ProxyViewModel(native: IntegrationDesktop(directory));
       final next = ProxyController(directory: directory);
       try {

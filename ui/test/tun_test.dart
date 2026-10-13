@@ -88,7 +88,16 @@ void main() {
       );
       await tester.pumpAndSettle();
       final button = find.byKey(const ValueKey('remove-tun-service'));
-      await tester.ensureVisible(button);
+      await tester.scrollUntilVisible(
+        button,
+        180,
+        scrollable: find
+            .descendant(
+              of: find.byKey(const PageStorageKey('settings')),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
       await tester.pumpAndSettle();
       await tester.tap(button);
       await tester.pumpAndSettle();

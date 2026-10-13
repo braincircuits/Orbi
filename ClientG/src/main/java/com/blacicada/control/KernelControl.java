@@ -2,6 +2,7 @@ package com.blacicada.control;
 
 import com.blacicada.common.*;
 import com.blacicada.io.KernelDatabase;
+import com.blacicada.io.StorageConfig;
 import java.sql.SQLException;
 import com.blacicada.config.KernelConfig;
 import com.blacicada.config.DirectRoutes;
@@ -30,14 +31,15 @@ public final class KernelControl implements AutoCloseable {
     private long tunHeartbeat;
     private static final Gson JSON = new Gson();
 
-    public KernelControl(Path file) throws IOException {
-        database = new KernelDatabase(file);
+    public KernelControl(Path file) throws IOException { this(StorageConfig.sqlite(file)); }
+
+    public KernelControl(StorageConfig storage) throws IOException {
+        database = new KernelDatabase(storage);
         history = new HistoryRecorder(database);
-        editor = new ConfigurationEditor(database.file().getParent());
+        editor = new ConfigurationEditor(database.directory());
         try {
             var stored = database.read(); config = stored.configuration(); revision = stored.revision();
-            runtime = new ProxyRuntime(history, database.latestTraffic());
-        } catch (SQLException e) { database.close(); publisher.shutdownNow(); throw new IOException("读取流量历史失败", e);
+            runtime = new ProxyRuntime(history);
         } catch (IOException | RuntimeException e) { database.close(); publisher.shutdownNow(); throw e; }
         updateSecrets(config);
         logs = new ControlLogs(events, this::redact);
@@ -57,8 +59,8 @@ public final class KernelControl implements AutoCloseable {
         secrets = List.copyOf(all);
     }
     public synchronized Map<String, Object> info() {
-        return Map.of("name", "network", "version", "1.0-SNAPSHOT", "apiVersion", 1,
-                "capabilities", List.of("http2", "http3", "multiConnection", "immediateSwitch", "hotSettings", "hotRoutes", "hotProfiles", "events", "logs", "asyncTests", "tunnels", "targetRoutes", "routingMode", "overviewTests", "sqlite", "routingImportExport", "traffic", "persistentHistory", "macosTun"));
+        return Map.of("name", "network", "version", "1.0-SNAPSHOT", "apiVersion", 1, "storageBackend", database.backend(),
+                "capabilities", List.of("http2", "http3", "multiConnection", "immediateSwitch", "hotSettings", "hotRoutes", "hotProfiles", "events", "logs", "asyncTests", "tunnels", "targetRoutes", "routingMode", "overviewTests", "sqlite", "postgresql", "mysql", "routingImportExport", "traffic", "persistentHistory", "macosTun"));
     }
     public synchronized Map<String, Object> metadata() {
         return Map.of("revision", revision,
@@ -174,7 +176,7 @@ public final class KernelControl implements AutoCloseable {
             }
             publishStatus();
             if (failure instanceof SQLException || failure instanceof IOException)
-                throw new ControlException(503, "DATABASE_WRITE_FAILED", "数据库写入失败，修改未保存；请检查磁盘空间、文件权限或占用情况");
+                throw new ControlException(503, "DATABASE_WRITE_FAILED", "数据库写入失败，修改未保存；请检查数据库连接、存储空间、权限或占用情况");
             throw failure;
         }
         config = next; updateSecrets(next); revision++;

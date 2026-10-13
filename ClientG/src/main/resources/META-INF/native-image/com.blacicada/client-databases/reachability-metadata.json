@@ -1,0 +1,78 @@
+{
+  "reflection": [
+    {
+      "type": "com.mysql.cj.conf.url.SingleConnectionUrl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "com.mysql.cj.conf.ConnectionUrlParser",
+            "java.util.Properties"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "com.mysql.cj.exceptions.CJException",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "com.mysql.cj.jdbc.AbandonedConnectionCleanupThread"
+    },
+    {
+      "type": "com.mysql.cj.jdbc.Driver"
+    },
+    {
+      "type": "com.mysql.cj.log.StandardLogger",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "com.mysql.cj.protocol.StandardSocketFactory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.postgresql.ssl.LibPQFactory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.util.Properties"
+          ]
+        }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "bundle": "com.mysql.cj.LocalizedErrorMessages"
+    },
+    {
+      "glob": "com/mysql/cj/LocalizedErrorMessages.properties"
+    },
+    {
+      "glob": "com/mysql/cj/TlsSettings.properties"
+    },
+    {
+      "glob": "com/mysql/cj/util/TimeZoneMapping.properties"
+    }
+  ]
+}

@@ -98,7 +98,7 @@ class ControlHttpServerTest {
     @Test void trafficSummaryValidatesCalendarBoundaries() throws Exception {
         var data = ok("POST", "/traffic/summary", "{\"boundaries\":[0,60000,120000]}", 200).getAsJsonObject("data");
         assertEquals(2, data.getAsJsonArray("buckets").size());
-        assertEquals(0, data.get("sampleCount").getAsInt());
+        assertEquals(0, data.get("recordCount").getAsInt());
         for (String boundaries : List.of("[]", "[0]", "[1,1]", "[2,1]", "[-1,1]", "[0,0.5]", "[0,\"1\"]", "[0,9223372036854775808]", "[0,2851200000]"))
             assertEquals(400, request("POST", "/traffic/summary", "{\"boundaries\":" + boundaries + "}").statusCode());
         assertEquals(400, request("POST", "/traffic/summary", "{}").statusCode());
@@ -189,9 +189,10 @@ class ControlHttpServerTest {
         assertNotEquals(started.get("sessionId"), next.get("sessionId"));
         assertEquals(0, next.get("sentBytes").getAsLong());
     }
-    @Test void historyEndpointsValidateRangesAndPaginatePersistentSamples() throws Exception {
+    @Test void historyEndpointsValidateRangesAndPaginatePersistentMinutes() throws Exception {
         ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
         ok("PATCH", "/settings", "{\"port\":0}", 200);
+        ok("POST", "/proxy/start", null, 200); ok("POST", "/proxy/stop", null, 200);
         ok("POST", "/proxy/start", null, 200); ok("POST", "/proxy/stop", null, 200);
         var page = ok("GET", "/traffic/history?limit=1", null, 200).getAsJsonObject("data");
         assertEquals(1, page.getAsJsonArray("items").size());

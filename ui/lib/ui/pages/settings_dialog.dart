@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import '../../view_models/proxy_view_model.dart';
 import '../widgets/desktop_widgets.dart';
 import '../widgets/desktop_select.dart';
+import '../../models/database_settings.dart';
+import 'database_settings_dialog.dart';
 
 /// 独立设置面板与主窗口共享草稿，关闭面板不会丢弃未应用的编辑。
 class SettingsDialog extends StatefulWidget {
@@ -119,7 +121,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 const Divider(),
                 const SizedBox(height: 12),
                 Text(
-                  '应用会同时保存连接、路由和本地代理的配置草稿。',
+                  '应用会保存连接、路由和本地代理草稿；数据库设置需单独保存并重启。',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 10),
@@ -168,6 +170,26 @@ class _SettingsDialogState extends State<SettingsDialog> {
         ),
       ),
     ], footer: '选择后立即生效并自动保存，无需应用代理配置。'),
+    ui.section('数据库', [
+      ui.caption(
+        model.proxy.connected
+            ? '当前使用：${DatabaseSettings.labels[model.proxy.storageBackend] ?? '未确认'}'
+            : '内核未连接 · 可修改数据库设置后重试',
+      ),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(
+        key: const ValueKey('configure-database'),
+        onPressed: model.locked
+            ? null
+            : () => showDialog<void>(
+                context: context,
+                barrierDismissible: false,
+                builder: (_) => DatabaseSettingsDialog(model: model),
+              ),
+        icon: const Icon(Icons.storage_outlined, size: 16),
+        label: const Text('配置数据库…'),
+      ),
+    ], footer: '支持 SQLite、PostgreSQL 和 MySQL，单独保存并重启内核生效。'),
     ui.section('本地代理', [
       ui.field('bind'),
       ui.field('port', help: '填 0 时自动分配可用端口'),

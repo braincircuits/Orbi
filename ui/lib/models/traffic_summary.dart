@@ -70,9 +70,9 @@ class TrafficBucket {
       to = DateTime.fromMillisecondsSinceEpoch(value['to'] as int),
       sentBytes = value['sentBytes'] as int,
       receivedBytes = value['receivedBytes'] as int,
-      sampleCount = value['sampleCount'] as int;
+      recordCount = value['recordCount'] as int;
   final DateTime from, to;
-  final int sentBytes, receivedBytes, sampleCount;
+  final int sentBytes, receivedBytes, recordCount;
 }
 
 class TrafficSummary {
@@ -84,8 +84,8 @@ class TrafficSummary {
       ),
       sentBytes = value['sentBytes'] as int,
       receivedBytes = value['receivedBytes'] as int,
-      sampleCount = value['sampleCount'] as int,
-      lastSampledAt = value['lastSampledAt'] as int;
+      recordCount = value['recordCount'] as int,
+      latestMinuteStart = value['latestMinuteStart'] as int;
   final List<TrafficBucket> buckets;
-  final int sentBytes, receivedBytes, sampleCount, lastSampledAt;
+  final int sentBytes, receivedBytes, recordCount, latestMinuteStart;
 }

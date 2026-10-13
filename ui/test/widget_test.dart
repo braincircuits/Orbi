@@ -365,6 +365,8 @@ void main() {
           )
           .first,
     );
+    await tester.ensureVisible(find.text('内核运行环境'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('内核运行环境'));
     await tester.pumpAndSettle();
     final java = find

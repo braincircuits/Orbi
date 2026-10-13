@@ -6,6 +6,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../models/proxy_profile.dart';
+import '../models/database_settings.dart';
+import 'database_preferences.dart';
 import '../models/kernel_status.dart';
 import '../models/traffic_summary.dart';
 import 'kernel_api_client.dart';
@@ -43,14 +45,24 @@ class KernelLog {
 
 /// HTTP 负责命令，SSE 负责推送；释放界面资源不会退出独立运行的内核。
 class ProxyController extends ChangeNotifier {
-  ProxyController({Directory? directory, KernelApiClient? api})
-    : _api = api ?? KernelApiClient(),
-      directory =
-          directory ??
-          Directory(
-            '${Platform.environment['HOME']}/Library/Application Support/NetworkUI',
-          );
+  ProxyController({
+    Directory? directory,
+    KernelApiClient? api,
+    DatabasePreferences? databases,
+  }) : _api = api ?? KernelApiClient(),
+       databases = databases ?? DatabasePreferences(),
+       directory =
+           directory ??
+           Directory(
+             '${Platform.environment['HOME']}/Library/Application Support/NetworkUI',
+           );
   Directory directory;
+  final DatabasePreferences databases;
+  DatabaseSettings? _databaseSettings;
+  DatabaseSettings get databaseSettings =>
+      _databaseSettings ?? DatabaseSettings(path: configPath);
+  String storageBackend = '';
+  bool changingDatabase = false;
   File get endpointFile => File('${directory.path}/run/control.json');
   String get configPath => '${directory.path}/kernel.db';
   bool get canShutdown => _base != null && _token.isNotEmpty;
@@ -120,7 +132,7 @@ class ProxyController extends ChangeNotifier {
   }) async {
     final query = Uri(
       queryParameters: {
-        'limit': '301',
+        'limit': '100',
         if (from != null) 'from': '$from',
         if (to != null) 'to': '$to',
         if (beforeId != null) 'beforeId': '$beforeId',
@@ -176,6 +188,9 @@ class ProxyController extends ChangeNotifier {
       text = text.replaceAll(secret, '***');
     }
     if (_token.isNotEmpty) text = text.replaceAll(_token, '***');
+    if (databaseSettings.password.isNotEmpty) {
+      text = text.replaceAll(databaseSettings.password, '***');
+    }
     return text;
   }
 
@@ -320,8 +335,15 @@ class ProxyController extends ChangeNotifier {
       'overviewTests',
       'traffic',
       'persistentHistory',
+      'sqlite',
+      'postgresql',
+      'mysql',
     })) {
       throw StateError('代理内核缺少所需的 Web 控制能力，请通过托盘退出旧版本后重新打开客户端');
+    }
+    storageBackend = data['storageBackend'] as String;
+    if (!DatabaseSettings.labels.containsKey(storageBackend)) {
+      throw StateError('内核数据库类型无效');
     }
     if (changed) {
       kernelGeneration++;
@@ -367,6 +389,7 @@ class ProxyController extends ChangeNotifier {
     String resources,
     bool launch,
   ) async {
+    _databaseSettings = await databases.read(directory);
     if (connected) return;
     _javaPath = profile.javaPath;
     _jarPath = profile.jarPath;
@@ -430,8 +453,13 @@ class ProxyController extends ChangeNotifier {
       }
       arguments.addAll([
         '--web',
-        '--db',
-        configPath,
+        if (await databases.file(directory).exists()) ...[
+          '--storage-config',
+          databases.file(directory).path,
+        ] else ...[
+          '--db',
+          configPath,
+        ],
         '--port',
         '0',
         '--endpoint-file',
@@ -456,13 +484,51 @@ class ProxyController extends ChangeNotifier {
       }
       if (!ready) {
         Process.killPid(process.pid);
-        throw StateError('内核启动失败或超时，请检查内核程序和 kernel.db；当前内核需要 --web 模式');
+        throw StateError(
+          '内核启动失败或超时，请检查数据库地址、权限、密码及 TLS 设置。已保存本次选择，可在设置中修改或重新选择原数据库。',
+        );
       }
       await refreshConfiguration();
       subscribe();
     } finally {
       await lock.unlock();
       await lock.close();
+    }
+  }
+
+  /// 显式停止旧内核后应用启动配置，失败也不退回其他数据库。
+  Future<void> changeDatabase(
+    DatabaseSettings settings,
+    ProxyProfile profile,
+    String resources,
+  ) async {
+    if (busy || changingDatabase) throw StateError('正在处理上一项操作');
+    if (tunEnabled) throw StateError('请先关闭虚拟网卡，再切换数据库');
+    settings.validate();
+    changingDatabase = true;
+    _notify();
+    try {
+      await shutdown();
+      await databases.write(directory, settings);
+      _databaseSettings = settings;
+      storageBackend = '';
+      appliedProfile = null;
+      configurationChanged = _instanceChanged = false;
+      revision = configurationRevision = 0;
+      connections = const [];
+      tunnels = const [];
+      traffic = null;
+      defaultConnectionId = '';
+      historyStorageWarning = '';
+      await connect(profile, resources);
+      if (storageBackend != settings.type) {
+        throw StateError('正在运行的内核与所选数据库不一致，请退出其他客户端后重试');
+      }
+    } finally {
+      // 退出请求失败且旧内核仍连接时，恢复状态订阅。
+      if (connected) subscribe();
+      changingDatabase = false;
+      _notify();
     }
   }
 
@@ -862,6 +928,7 @@ class ProxyController extends ChangeNotifier {
   }
 
   Future<void> shutdown() => _operate(() async {
+    unsubscribe();
     // 内核退出会移除发现文件，此时不能继续请求缓存中的旧地址。
     if (await endpointFile.exists()) {
       try {

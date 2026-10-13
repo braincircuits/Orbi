@@ -46,16 +46,55 @@ class TrafficStatisticsTest {
             var stopped = traffic.snapshot(true); traffic.sample(); assertEquals(stopped, traffic.snapshot(true));
         } finally { sent.release(); received.release(); channel.finishAndReleaseAll(); }
     }
-    @Test void keepsOnlyFiveMinutesAndSnapshotsAreImmutable() {
+    @Test void keepsOnlyOneHourAndSnapshotsAreImmutable() {
         var nanos = new AtomicLong();
         var traffic = new TrafficStatistics(nanos::get, () -> 10_000L);
         var initial = traffic.snapshot(true);
-        for (int i = 0; i < 700; i++) { nanos.addAndGet(1_000_000_000L); traffic.sample(); }
+        for (int i = 0; i < 4000; i++) { nanos.addAndGet(1_000_000_000L); traffic.sample(); }
         var history = (List<?>) traffic.snapshot(true).get("history");
-        assertEquals(301, history.size());
+        assertEquals(3601, history.size());
         assertEquals(410_000L, ((Map<?, ?>) history.getFirst()).get("sampledAt"));
         assertEquals(1, ((List<?>) initial.get("history")).size());
         assertThrows(UnsupportedOperationException.class, history::clear);
         assertNotEquals(initial.get("sessionId"), new TrafficStatistics().snapshot(false).get("sessionId"));
     }
+    @Test void minutesFollowByteArrivalAndFlushOnlyAtBoundaryOrStop() {
+        var nanos = new AtomicLong();
+        var traffic = new TrafficStatistics(nanos::get, () -> 40_000L);
+        var minutes = new java.util.ArrayList<Map<String, Object>>();
+        traffic.recordTo(minutes::add);
+        var channel = new EmbeddedChannel(traffic.handler());
+        try {
+            nanos.set(19_900_000_000L);
+            channel.writeOutbound(Unpooled.wrappedBuffer(new byte[100]));
+            traffic.sample();
+            assertTrue(minutes.isEmpty(), "秒级采样不应写历史表");
+            nanos.set(20_000_000_000L);
+            channel.writeInbound(Unpooled.wrappedBuffer(new byte[500]));
+            assertEquals(1, minutes.size());
+            assertEquals(Map.of("sessionId", traffic.sessionId(), "minuteStart", 0L,
+                    "activeDurationMillis", 20_000L, "sentBytes", 100L, "receivedBytes", 0L), minutes.getFirst());
+            nanos.set(35_000_000_000L); traffic.stop(); traffic.stop();
+            assertEquals(2, minutes.size());
+            assertEquals(60_000L, minutes.getLast().get("minuteStart"));
+            assertEquals(15_000L, minutes.getLast().get("activeDurationMillis"));
+            assertEquals(500L, minutes.getLast().get("receivedBytes"));
+            assertEquals(100L, traffic.snapshot(false).get("sentBytes"));
+            assertEquals(500L, traffic.snapshot(false).get("receivedBytes"));
+        } finally { channel.finishAndReleaseAll(); }
+    }
+    @Test void delayedSamplerKeepsZeroTrafficMinutesAndExactBoundaryStopHasNoExtraRow() {
+        var nanos = new AtomicLong();
+        var traffic = new TrafficStatistics(nanos::get, () -> 0L);
+        var minutes = new java.util.ArrayList<Map<String, Object>>();
+        traffic.recordTo(minutes::add);
+        nanos.set(180_000_000_000L); traffic.stop();
+        assertEquals(3, minutes.size());
+        assertEquals(List.of(0L, 60_000L, 120_000L), minutes.stream().map(m -> m.get("minuteStart")).toList());
+        for (var minute : minutes) {
+            assertEquals(60_000L, minute.get("activeDurationMillis"));
+            assertEquals(0L, minute.get("sentBytes")); assertEquals(0L, minute.get("receivedBytes"));
+        }
+    }
+
 }

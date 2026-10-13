@@ -172,7 +172,7 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 
 ## 部署配置
 
-服务端参考 `examples/server.properties`，相对路径以服务端配置目录为基准。内核 API 请求体参考 [examples/config-request.json](examples/config-request.json)。内核默认使用可执行程序旁的 `kernel.db`：JAR 模式与 JAR 同目录，原生模式与原生程序同目录；IDE 运行使用编译输出目录。可通过 `--db` 指定路径，证书相对路径以数据库目录为基准。数据库不存在时自动建库，旧 JSON/PAC 文件不读取、不迁移、不删除。
+服务端参考 `examples/server.properties`，相对路径以服务端配置目录为基准。内核 API 请求体参考 [examples/config-request.json](examples/config-request.json)。内核默认使用可执行程序旁的 `kernel.db`：JAR 模式与 JAR 同目录，原生模式与原生程序同目录；IDE 运行使用编译输出目录。可通过 `--db` 指定路径，证书相对路径以数据库目录为基准。也可通过 `--storage-config` 选择 SQLite、PostgreSQL 或 MySQL，重启生效，配置与历史记录整体使用选定后端；配置方式见 [数据库切换](docs/database-storage.md)。SQLite 文件不存在时自动建库，远程数据库须预先创建；不迁移、不删除原存储的数据。
 
 服务端：
 
@@ -194,7 +194,7 @@ ProxyHelloSender → ClientApplication → HTTP/3 → NettyServer → ProxyHello
 | `password` | 必填，账号密码或旧模式的共享密码；每个 CONNECT 请求均认证 |
 | `tls.serverName` | TLS 验证的服务端名称，默认等于 `server.host`，必须匹配证书 SAN |
 | `tls.ca` | 可选的 PEM 信任证书；省略则使用系统/JDK 默认信任链 |
-| `local.routesInline` | 直连域名/IP/CIDR 规则文本，存入 SQLite；默认空规则 |
+| `local.routesInline` | 直连域名/IP/CIDR 规则文本，存入选定数据库；默认空规则 |
 | `local.routesOverrides` | 精确目标强制 proxy/direct，每行一条；数据库按目标逐行保存 |
 | `local.routingMode` | rules（默认）、direct 或 proxy |
 
@@ -245,7 +245,7 @@ client2=替换为客户端2的随机长密码
 
 ## 直连规则（域名、IP 与网段）
 
-直连规则统一保存在 SQLite，通过 `PUT /api/v1/routing/direct-rules` 修改，或通过路由 JSON 导入。规则命中时由内核直接连接目标，未命中时走默认代理；全局模式和精确目标规则的优先级见 [Web API](docs/web-api.md)。浏览器仍配置普通 HTTP 代理。
+直连规则统一保存在选定数据库，通过 `PUT /api/v1/routing/direct-rules` 修改，或通过路由 JSON 导入。规则命中时由内核直接连接目标，未命中时走默认代理；全局模式和精确目标规则的优先级见 [Web API](docs/web-api.md)。浏览器仍配置普通 HTTP 代理。
 
 规则为空或只有注释时不会自动添加内网直连规则。按需编辑以下规则文本，每行一条：
 
@@ -423,12 +423,12 @@ java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT
 
 代理内核只接受 `--web` 入口，不再接受无参数启动或直接传入配置文件。启动脚本和 IDEA 配置也使用 Web 模式。启动后代理转发处于停止状态，UI 调用 `/api/v1/proxy/start` 开始转发。管理接口固定监听 `127.0.0.1`，默认发现文件为数据库目录下的 `run/control.json`，包含管理地址和随机令牌；仅当前用户可读写。用 `--port 0` 自动分配管理端口。所有接口要求 `Authorization: Bearer <token>`，令牌不要放入 URL。
 
-详细接口、请求示例、错误码、热更新规则和 Flutter 接入流程见 [Web 管理接口文档](docs/web-api.md)。修改本地代理监听地址/端口会立即重启转发并断开全部旧连接；管理接口保持运行。修改成功后自动保存到 SQLite，重启后恢复；不再提供手动保存。
+详细接口、请求示例、错误码、热更新规则和 Flutter 接入流程见 [Web 管理接口文档](docs/web-api.md)。修改本地代理监听地址/端口会立即重启转发并断开全部旧连接；管理接口保持运行。修改成功后自动保存到选定数据库，重启后恢复；不再提供手动保存。
 
 
 ## 多连接配置与 HTTP/2
 
-API 请求体示例见 [examples/config-request.json](examples/config-request.json)，可提交到 `PUT /api/v1/config`。内核通过 SQLite 持久化；在每份连接的 `config` 中设置 `"protocol":"http2"` 或 `"protocol":"http3"`。
+API 请求体示例见 [examples/config-request.json](examples/config-request.json)，可提交到 `PUT /api/v1/config`。内核通过选定数据库持久化；在每份连接的 `config` 中设置 `"protocol":"http2"` 或 `"protocol":"http3"`。
 
 ```sh
 java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT.jar --web
@@ -496,7 +496,7 @@ HTTP/2 超时日志按实际阶段分别显示“等待 HTTP/2 流额度”“�
 | `SessionRouter` | 选择当前代理会话、切换连接及关闭旧隧道 |
 | `Http2Session` / `Http3Session` | 协议握手、单连接复用、流额度及请求超时 |
 
-配置修改遵循“校验版本 → 生成候选配置 → 写入未提交的 SQLite 事务 → 应用运行状态 → 提交数据库及内存版本 → 发布事件”。应用或数据库提交失败会回滚；运行配置恢复失败时停止代理。事务恢复失败后需重启内核。已断开的业务连接无法恢复。
+配置修改遵循“校验版本 → 生成候选配置 → 写入未提交的数据库事务 → 应用运行状态 → 提交数据库及内存版本 → 发布事件”。应用或数据库提交失败会回滚；运行配置恢复失败时停止代理。事务恢复失败后需重启内核。已断开的业务连接无法恢复。
 
 `KernelControl` 的锁负责串行业务操作，`ControlApi` 在同一锁内取得操作结果和版本快照，实际 HTTP 响应写入在锁外执行。`ProxyRuntime` 只由控制入口访问；协议会话和流状态继续由所属 Netty EventLoop 串行处理。SQLite 版本移除了手动保存和文件重载接口；协议与断线重连策略保持。
 
@@ -507,7 +507,7 @@ HTTP/2 超时日志按实际阶段分别显示“等待 HTTP/2 流额度”“�
 - `ProxyCommon/com.blacicada.common`：两端、两种协议实际共用的目标地址、配置、认证、转发与传输辅助代码。协议帧及 QUIC 专用处理仍放在 `common.h2`、`common.h3`。
 - `ClientG/com.blacicada.io.PrivateFiles`：数据库和管理令牌文件共用私有权限控制，发现文件继续原子写入。
 
-路由查询和诊断使用当前配置快照。SQLite 是唯一配置存储；不要直接修改运行中的数据库。
+路由查询和诊断使用当前配置快照。启动时选定的数据库是唯一配置存储；不要直接修改运行中的数据库。
 
 保留 `ProxySession`、会话工厂和生命周期管理器，因为它们已有多种协议实现、多个调用点或独立资源管理职责。删除未使用的旧启动等待方法、配置 upsert、重复密码保留分支和过期重载，不为未来需求保留兼容空壳。
 

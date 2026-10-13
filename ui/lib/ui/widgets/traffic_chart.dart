@@ -35,7 +35,7 @@ class TrafficChart extends StatefulWidget {
 }
 
 class _TrafficChartState extends State<TrafficChart> {
-  int minutes = 1;
+  int minutes = 60;
   bool showSend = true, showReceive = true;
   double? pointer;
   @override
@@ -52,7 +52,10 @@ class _TrafficChartState extends State<TrafficChart> {
     final theme = Theme.of(context);
     final current = widget.traffic?.current;
     final end = current?.sampledAt ?? 0;
-    final start = end - minutes * 60000;
+    final start = math.max(
+      widget.traffic?.startedAt ?? end,
+      end - minutes * 60000,
+    );
     final samples =
         widget.traffic?.history
             .where((sample) => sample.sampledAt >= start)
@@ -81,15 +84,19 @@ class _TrafficChartState extends State<TrafficChart> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
+        Wrap(
+          spacing: 16,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Expanded(child: Text('流量趋势', style: theme.textTheme.titleMedium)),
+            Text('流量趋势', style: theme.textTheme.titleMedium),
             SegmentedButton<int>(
               key: const ValueKey('traffic-range'),
               showSelectedIcon: false,
               segments: const [
                 ButtonSegment(value: 1, label: Text('1 分钟')),
                 ButtonSegment(value: 5, label: Text('5 分钟')),
+                ButtonSegment(value: 60, label: Text('1 小时')),
               ],
               selected: {minutes},
               onSelectionChanged: (value) => setState(() {
@@ -266,7 +273,8 @@ class _TrafficGeometry {
         ),
       ) *
       1.15;
-  double x(int time) => left + (time - start) / (end - start) * (right - left);
+  double x(int time) =>
+      left + (time - start) / math.max(1, end - start) * (right - left);
   double y(double value) => bottom - value / maximum * (bottom - top);
   (int, double, double)? read(double pointer) {
     final time =
@@ -352,9 +360,9 @@ class _TrafficPainter extends CustomPainter {
     for (var i = 0; i <= ticks; i++) {
       final seconds = ((g.end - g.start) / 1000 * (1 - i / ticks)).round();
       final text = seconds == 0
-          ? '现在'
+          ? (faded ? '停止时' : '现在')
           : seconds >= 60
-          ? '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')} 前'
+          ? '${seconds ~/ 60} 分钟前'
           : '$seconds 秒前';
       label(
         canvas,

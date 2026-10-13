@@ -77,27 +77,40 @@ class KernelDatabaseTest {
         assertThrows(IOException.class, () -> new KernelDatabase(newer));
         assertArrayEquals(before, Files.readAllBytes(newer));
     }
-    private Map<String, Object> sample(String session, long time, long sent, long received) {
-        return Map.of("sessionId", session, "startedAt", 0L, "sampledAt", time,
-                "sentBytes", sent, "receivedBytes", received, "sendBytesPerSecond", 0.0, "receiveBytesPerSecond", 0.0);
+    private Map<String, Object> minute(String session, long time, long sent, long received) {
+        return Map.of("sessionId", session, "minuteStart", time, "activeDurationMillis", 30_000L,
+                "sentBytes", sent, "receivedBytes", received);
     }
-    @Test void summariesUseCounterDifferencesAcrossBoundariesRestartsAndEmptyBuckets() throws Exception {
-        try (var database = new KernelDatabase(directory.resolve("kernel.db"))) {
-            database.writeHistory(List.of(
-                    sample("甲", 10, 100, 1000), sample("甲", 100, 130, 1040),
-                    sample("甲", 199, 150, 1100), sample("甲", 200, 160, 1200),
-                    sample("乙", 150, 0, 0), sample("乙", 190, 25, 50),
-                    sample("乙", 300, 25, 50), sample("乙", 500, 999, 999)), List.of());
-            var result = database.trafficSummary(List.of(100L, 200L, 300L, 400L, 500L));
+    @Test void summariesAddMinuteDeltasAcrossRestartsAndRetriesWithoutReadingOldTable() throws Exception {
+        Path file = directory.resolve("kernel.db");
+        try (var database = new KernelDatabase(file); var connection = DriverManager.getConnection("jdbc:sqlite:" + file);
+             var sql = connection.createStatement()) {
+            // 故意保留不同结构的旧表；新的查询不能读取、修改或删除它。
+            sql.execute("CREATE TABLE traffic_samples (original TEXT)");
+            sql.execute("INSERT INTO traffic_samples VALUES('保留旧记录')");
+            database.writeHistory(List.of(minute("甲", 0, 100, 1000), minute("甲", 60_000, 30, 40),
+                    minute("甲", 120_000, 10, 100), minute("乙", 60_000, 25, 50),
+                    minute("乙", 180_000, 0, 0), minute("乙", 300_000, 999, 999)), List.of());
+            database.writeHistory(List.of(minute("甲", 60_000, 50, 100)), List.of());
+            var result = database.trafficSummary(List.of(60_000L, 120_000L, 180_000L, 240_000L, 300_000L));
             assertEquals(85L, result.get("sentBytes")); assertEquals(250L, result.get("receivedBytes"));
-            assertEquals(6L, result.get("sampleCount")); assertEquals(300L, result.get("lastSampledAt"));
+            assertEquals(4L, result.get("recordCount")); assertEquals(180_000L, result.get("latestMinuteStart"));
             var buckets = (List<?>) result.get("buckets");
             assertEquals(75L, ((Map<?, ?>) buckets.get(0)).get("sentBytes"));
             assertEquals(10L, ((Map<?, ?>) buckets.get(1)).get("sentBytes"));
-            assertEquals(1L, ((Map<?, ?>) buckets.get(2)).get("sampleCount"));
-            assertEquals(0L, ((Map<?, ?>) buckets.get(3)).get("sampleCount"));
+            assertEquals(1L, ((Map<?, ?>) buckets.get(2)).get("recordCount"));
+            assertEquals(0L, ((Map<?, ?>) buckets.get(3)).get("recordCount"));
             assertEquals(0L, ((Map<?, ?>) buckets.get(2)).get("sentBytes"));
-            assertEquals(0L, database.trafficSummary(List.of(600L, 700L)).get("sampleCount"));
+            assertThrows(SQLException.class, () -> database.writeHistory(List.of(minute("无效", 60_001, 1, 1)), List.of()));
+            try (var row = sql.executeQuery("SELECT sql FROM sqlite_master WHERE name='traffic_minutes'")) {
+                assertTrue(row.next()); assertTrue(row.getString(1).contains("统计分钟起点"));
+                assertTrue(row.getString(1).contains("分钟业务流量统计"));
+            }
+        }
+        try (var database = new KernelDatabase(file); var connection = DriverManager.getConnection("jdbc:sqlite:" + file);
+             var sql = connection.createStatement(); var rows = sql.executeQuery("SELECT original FROM traffic_samples")) {
+            assertTrue(rows.next()); assertEquals("保留旧记录", rows.getString(1)); assertFalse(rows.next());
+            assertEquals(1184L, database.trafficSummary(List.of(0L, 360_000L)).get("sentBytes"));
         }
     }
     @Test void databaseJournalAndLockArePrivate() throws Exception {

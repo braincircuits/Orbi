@@ -41,6 +41,16 @@ class TrafficSnapshot {
     if (sameSession && current.sampledAt < previous!.current.sampledAt) {
       return previous;
     }
+    if (sameSession &&
+        value['history'] == null &&
+        current.sampledAt == previous!.current.sampledAt &&
+        current.sentBytes == previous.current.sentBytes &&
+        current.receivedBytes == previous.current.receivedBytes &&
+        current.sendBytesPerSecond == previous.current.sendBytesPerSecond &&
+        current.receiveBytesPerSecond ==
+            previous.current.receiveBytesPerSecond) {
+      return previous;
+    }
     final samples = <int, TrafficSample>{};
     final history = value['history'] as List?;
     final source = history != null
@@ -51,7 +61,7 @@ class TrafficSnapshot {
         ? previous!.history
         : const <TrafficSample>[];
     for (final sample in source) {
-      if (sample.sampledAt >= current.sampledAt - 300000 &&
+      if (sample.sampledAt >= current.sampledAt - 3600000 &&
           sample.sampledAt <= current.sampledAt) {
         samples[sample.sampledAt] = sample;
       }
@@ -64,7 +74,7 @@ class TrafficSnapshot {
       startedAt: value['startedAt'] as int,
       current: current,
       history: List.unmodifiable(
-        ordered.skip(ordered.length > 301 ? ordered.length - 301 : 0),
+        ordered.skip(ordered.length > 3601 ? ordered.length - 3601 : 0),
       ),
     );
   }
@@ -114,32 +124,29 @@ class AccessRecordPage {
   final int nextBeforeId;
 }
 
+/// 每条历史记录为一个运行会话在一个自然分钟内的流量增量。
+class TrafficMinute {
+  TrafficMinute.fromJson(Map<String, dynamic> value)
+    : id = value['id'] as int,
+      sessionId = value['sessionId'] as String,
+      minuteStart = value['minuteStart'] as int,
+      activeDurationMillis = value['activeDurationMillis'] as int,
+      sentBytes = value['sentBytes'] as int,
+      receivedBytes = value['receivedBytes'] as int;
+  final int id, minuteStart, activeDurationMillis, sentBytes, receivedBytes;
+  final String sessionId;
+}
+
 class TrafficRecordPage {
-  TrafficRecordPage.fromJson(Map<String, dynamic> value) {
-    final rows = (value['items'] as List).cast<Map<String, dynamic>>();
-    nextBeforeId = value['nextBeforeId'] as int;
-    if (rows.isNotEmpty) {
-      final newest = rows.first;
-      final visible = rows
-          .where(
-            (row) =>
-                row['sessionId'] == newest['sessionId'] &&
-                (row['sampledAt'] as int) >=
-                    (newest['sampledAt'] as int) - 300000,
-          )
-          .toList();
-      if (visible.length < rows.length) {
-        nextBeforeId = visible.last['id'] as int;
-      }
-      // 一张图只显示一个启动会话，避免把两次启动的采样连成一条曲线。
-      traffic = TrafficSnapshot.merge(null, {
-        ...newest,
-        'history': visible.reversed.toList(),
-      });
-    }
-  }
-  TrafficSnapshot? traffic;
-  late int nextBeforeId;
+  TrafficRecordPage.fromJson(Map<String, dynamic> value)
+    : items = List.unmodifiable(
+        (value['items'] as List).map(
+          (item) => TrafficMinute.fromJson(item as Map<String, dynamic>),
+        ),
+      ),
+      nextBeforeId = value['nextBeforeId'] as int;
+  final List<TrafficMinute> items;
+  final int nextBeforeId;
 }
 
 /// 内核当前的业务隧道快照，包含代理流和直连连接。
