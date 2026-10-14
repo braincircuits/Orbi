@@ -60,7 +60,7 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
             ctx.channel().config().setAutoRead(false);
             final java.net.InetSocketAddress destination;
             try { destination = dns == null ? authority.unresolved() : dns.upstream(dnsServers); }
-            catch (RuntimeException e) { fail(ctx, "502"); return; }
+            catch (RuntimeException e) { fail(ctx, "502", e); return; }
             if (udp) {
                 var opening = UdpTunnel.connect(ctx.channel().eventLoop(), resolver, destination);
                 ctx.channel().closeFuture().addListener(ignored -> opening.cancel(false));
@@ -86,7 +86,7 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
     private void connected(ChannelHandlerContext ctx, Channel connected, Throwable failure, boolean udp) {
         if (connected != null) target = connected;
         if (finished || !ctx.channel().isActive()) { if (connected != null) connected.close(); return; }
-        if (failure != null) { fail(ctx, "502"); return; }
+        if (failure != null) { fail(ctx, "502", failure); return; }
         var response = new DefaultHttp3HeadersFrame(); response.headers().status("200");
         if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
         if (dns != null) response.headers().set(DnsTunnel.HEADER, dns.header());
@@ -108,11 +108,16 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void fail(ChannelHandlerContext ctx, String status) {
+        fail(ctx, status, null);
+    }
+
+    private void fail(ChannelHandlerContext ctx, String status, Throwable cause) {
         if (finished) return;
         finished = true;
         QuicStreamChannel stream = (QuicStreamChannel) ctx.channel();
-        LOGGER.warn("CONNECT 请求失败：状态={}，目标={}，连接 ID={}，流 ID={}",
-                status, requestedTarget, stream.parent().id().asShortText(), stream.streamId());
+        LOGGER.warn("CONNECT 请求失败：状态={}，目标={}，连接 ID={}，流 ID={}，DNS={}，原因={}",
+                status, requestedTarget, stream.parent().id().asShortText(), stream.streamId(), dns,
+                cause == null ? "无底层异常" : cause.toString());
         if (timeout != null) timeout.cancel(false);
         releasePending();
         if (target != null) target.close();

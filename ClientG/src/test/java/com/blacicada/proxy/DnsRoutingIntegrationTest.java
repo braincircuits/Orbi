@@ -2,6 +2,8 @@ package com.blacicada.proxy;
 
 import com.blacicada.common.*;
 import com.blacicada.config.KernelConfig;
+import com.blacicada.control.ControlEvents;
+import com.blacicada.control.ControlLogs;
 import com.blacicada.h2.Http2ProxyServer;
 import com.blacicada.h3.Http3ProxyServer;
 import io.netty.resolver.dns.DnsServerAddresses;
@@ -149,13 +151,38 @@ class DnsRoutingIntegrationTest {
 
     @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
     void serverDnsAndAuthenticationFailuresNeverFallBackToClientDns(String protocol) throws Exception {
-        for (boolean wrongPassword : List.of(false, true)) try (var f = new Fixture(protocol, wrongPassword)) {
+        for (boolean wrongPassword : List.of(false, true)) try (var events = new ControlEvents();
+                var logs = new ControlLogs(events, text -> text); var f = new Fixture(protocol, wrongPassword)) {
             f.unavailable = true;
             for (boolean udp : List.of(true, false)) {
                 assertEquals(2, f.lookup("failed.example", udp, 8).flags & 15);
+                String message = awaitLog(events, KernelDns.class.getName(), "传输=" + (udp ? "UDP" : "TCP"));
+                assertTrue(message.contains("代理 CONNECT 失败：" + (wrongPassword ? "407" : "502")));
+                assertTrue(message.contains("服务端上游序号=0"));
+                assertTrue(message.contains("服务端上游序号=3"));
                 assertTrue(f.localNames.isEmpty()); assertTrue(f.local.requests.isEmpty()); assertTrue(f.remote.requests.isEmpty());
             }
             if (wrongPassword) assertTrue(f.remoteNames.isEmpty(), "认证失败不能选择或访问服务端 DNS");
+            else {
+                String logger = protocol.equals("http2") ? "com.blacicada.h2.H2ServerConnectHandler" : "com.blacicada.h3.ServerConnectHandler";
+                String message = awaitLog(events, logger, "测试服务端 DNS 不可用");
+                assertTrue(message.contains("failed.example"));
+                assertTrue(message.contains("serverIndex=0"));
+            }
+        }
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
+    void laterMissingServersDoNotHideOriginalDnsTimeout(String protocol) throws Exception {
+        try (var events = new ControlEvents(); var logs = new ControlLogs(events, text -> text);
+             var f = new Fixture(protocol, false)) {
+            f.remote.udp.close();
+            assertEquals(2, f.lookup("timeout.example", true, 9).flags & 15);
+            String message = awaitLog(events, KernelDns.class.getName(), "域名=timeout.example");
+            assertTrue(message.contains("服务端上游序号=0，原因=等待 DNS 响应超时"));
+            assertTrue(message.contains("服务端上游序号=1，原因=建立连接失败"));
+            assertTrue(message.contains("代理 CONNECT 失败：502"));
+            assertTrue(f.localNames.isEmpty());
         }
     }
 

@@ -3,6 +3,8 @@ package com.blacicada.proxy;
 import com.blacicada.common.ProxyConfig;
 import com.blacicada.common.OutboundNetwork;
 import com.blacicada.config.KernelConfig;
+import com.blacicada.control.ControlEvents;
+import com.blacicada.control.ControlLogs;
 import io.netty.resolver.dns.DnsServerAddresses;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -19,6 +21,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(20)
 class KernelDnsTest {
+    static String awaitLog(ControlEvents events, String logger, String text) throws Exception {
+        long cursor = 0, deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (System.nanoTime() < deadline) {
+            var batch = events.await(cursor, 100);
+            cursor = batch.cursor();
+            for (var event : batch.events()) if (event.data() instanceof Map<?, ?> entry
+                    && logger.equals(entry.get("logger")) && entry.get("message").toString().contains(text))
+                return entry.get("message").toString();
+        }
+        fail("未收到预期日志：" + text); return "";
+    }
     static byte[] query(String name, int type, int id) throws IOException {
         var bytes = new ByteArrayOutputStream(); var out = new DataOutputStream(bytes);
         out.writeShort(id); out.writeShort(0x0100); out.writeShort(1);
@@ -239,7 +252,8 @@ class KernelDnsTest {
 
     @Test void retriesSystemServersTimesOutAndCancels() throws Exception {
         var network = OutboundNetwork.DEFAULT; var group = network.newGroup(); var resolver = network.resolver();
-        try (var silent = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0)); var server = new Upstream()) {
+        try (var events = new ControlEvents(); var logs = new ControlLogs(events, text -> text);
+             var silent = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0)); var server = new Upstream()) {
             var loop = group.next();
             var dns = new KernelDns(network, resolver, name -> DnsServerAddresses.sequential(
                     (InetSocketAddress) silent.getLocalSocketAddress(), server.address()).stream(), 100, System::nanoTime);
@@ -249,6 +263,9 @@ class KernelDnsTest {
                     (InetSocketAddress) silent.getLocalSocketAddress()).stream(), 100, System::nanoTime);
             var failed = loop.submit(() -> unavailable.query(loop, query("timeout.example", 1, 23), true)).sync().getNow();
             assertEquals(2, failed.sync().getNow()[3] & 15);
+            String message = awaitLog(events, KernelDns.class.getName(), "域名=timeout.example");
+            assertTrue(message.contains("上游=" + silent.getLocalSocketAddress()));
+            assertTrue(message.contains("超时（100 毫秒）"));
             var cancelled = loop.submit(() -> unavailable.query(loop, query("cancel.example", 1, 24), true)).sync().getNow();
             cancelled.cancel(false); assertTrue(cancelled.isCancelled());
         } finally { resolver.close(); group.shutdownGracefully(0, 1, TimeUnit.SECONDS).sync(); }

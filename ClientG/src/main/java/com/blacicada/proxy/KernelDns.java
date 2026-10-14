@@ -181,6 +181,7 @@ final class KernelDns {
         final List<InetSocketAddress> upstreams;
         final String cacheKey;
         final Promise<byte[]> result;
+        final List<String> failures = new ArrayList<>();
         int index, generation;
         Channel channel;
         Future<Channel> opening;
@@ -201,18 +202,26 @@ final class KernelDns {
             if (opening != null) { opening.cancel(false); opening = null; }
             if (channel != null) { Channel old = channel; channel = null; old.close(); }
         }
+        void failed(int attempt, String reason) {
+            if (attempt != generation || result.isDone()) return;
+            String upstream = proxy ? "服务端上游序号=" + (index - 1) : "上游=" + upstreams.get(index - 1);
+            failures.add(upstream + "，原因=" + reason);
+            next();
+        }
         void next() {
             cleanup();
             if (result.isDone()) return;
             if (index == (proxy ? DnsTunnel.MAX_SERVERS : upstreams.size())) {
-                LogManager.getLogger(KernelDns.class).warn("系统 DNS 查询失败：域名={}，传输={}，路由={}", question.question.name(), udp ? "UDP" : "TCP", proxy ? "代理" : "直连");
+                LogManager.getLogger(KernelDns.class).warn("系统 DNS 查询失败：域名={}，类型={}，传输={}，路由={}，尝试详情={}",
+                        question.question.name(), question.question.type(), udp ? "UDP" : "TCP", proxy ? "代理" : "直连", failures);
                 result.trySuccess(DnsMessage.failure(original, 2)); return;
             }
             int serverIndex = index++;
             int attempt = generation;
             long openingTimeout = proxy ? Math.max(timeoutMillis,
                     session.config().profile(session.config().defaultConnectionId()).config().connectTimeoutMillis() * 2L) : timeoutMillis;
-            timer = loop.schedule(this::next, openingTimeout, TimeUnit.MILLISECONDS);
+            timer = loop.schedule(() -> failed(attempt, "建立连接或等待响应超时（" + openingTimeout + " 毫秒）"),
+                    openingTimeout, TimeUnit.MILLISECONDS);
             InetSocketAddress address = proxy ? null : upstreams.get(serverIndex);
             if (proxy) opening = session.openDns(new DnsTunnel(question.question.name(), serverIndex), browser, udp);
             else if (udp) opening = UdpTunnel.connect(loop, resolver, address, network);
@@ -234,11 +243,12 @@ final class KernelDns {
                     if (done.isSuccess()) request.getNow().close(); return;
                 }
                 opening = null;
-                if (!done.isSuccess()) { next(); return; }
+                if (!done.isSuccess()) { failed(attempt, "建立连接失败：" + done.cause()); return; }
                 Channel upstream = request.getNow(); channel = upstream;
                 if (proxy) {
                     timer.cancel(false);
-                    timer = loop.schedule(this::next, timeoutMillis, TimeUnit.MILLISECONDS);
+                    timer = loop.schedule(() -> failed(attempt, "等待 DNS 响应超时（" + timeoutMillis + " 毫秒）"),
+                            timeoutMillis, TimeUnit.MILLISECONDS);
                 }
                 if (udp && proxy) UdpTunnel.addFraming(upstream.pipeline());
                 if (!udp) framing(upstream.pipeline());
@@ -248,7 +258,7 @@ final class KernelDns {
                         byte[] bytes = new byte[data.readableBytes()]; data.readBytes(bytes);
                         DnsMessage response;
                         try { response = new DnsMessage(bytes, true); }
-                        catch (RuntimeException e) { if (!udp) next(); else ctx.read(); return; }
+                        catch (RuntimeException e) { if (!udp) failed(attempt, "DNS 响应无效：" + e); else ctx.read(); return; }
                         if (!response.matches(question)) { ctx.read(); return; }
                         bytes[0] = original[0]; bytes[1] = original[1];
                         remember(response);
@@ -263,11 +273,11 @@ final class KernelDns {
                         }
                         result.trySuccess(bytes);
                     }
-                    @Override public void channelInactive(ChannelHandlerContext ctx) { if (attempt == generation && !result.isDone()) next(); }
-                    @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) { if (attempt == generation && !result.isDone()) next(); }
+                    @Override public void channelInactive(ChannelHandlerContext ctx) { failed(attempt, "收到 DNS 响应前连接已关闭"); }
+                    @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) { failed(attempt, "DNS 通道异常：" + cause); }
                 });
                 upstream.writeAndFlush(Unpooled.wrappedBuffer(outgoing)).addListener(sent -> {
-                    if (!sent.isSuccess() && attempt == generation && !result.isDone()) next();
+                    if (!sent.isSuccess()) failed(attempt, "发送 DNS 查询失败：" + sent.cause());
                 });
                 upstream.read();
             });
