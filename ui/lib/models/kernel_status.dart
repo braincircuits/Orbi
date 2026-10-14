@@ -178,6 +178,23 @@ class TunnelStatus {
   final String id, target, source, route, state, profileName, protocol;
   final String originalProtocol;
   final DateTime createdAt;
+  // 连续推送可能重新解析出内容相同的对象，按快照内容比较可避免无效刷新。
+  Object get _identity => (
+    id,
+    target,
+    source,
+    route,
+    state,
+    profileName,
+    protocol,
+    originalProtocol,
+    createdAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      other is TunnelStatus && _identity == other._identity;
+  @override
+  int get hashCode => _identity.hashCode;
   String get originalProtocolLabel => originalProtocol.toUpperCase();
   String get stateLabel => switch (state) {
     'active' => '活跃',

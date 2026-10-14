@@ -304,7 +304,10 @@ class _RoutesPageState extends State<RoutesPage> {
                               ),
                             ),
                           ],
-                          _queryCard(ui),
+                          ListenableBuilder(
+                            listenable: model.operationChanges,
+                            builder: (context, _) => _queryCard(ui),
+                          ),
                           const SizedBox(height: 18),
                           Wrap(
                             spacing: 12,

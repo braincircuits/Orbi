@@ -28,6 +28,7 @@ class _OverviewPageState extends State<OverviewPage> {
     super.initState();
     _rememberExit();
     model.addListener(_modelChanged);
+    model.overviewChanges.addListener(_modelChanged);
   }
 
   @override
@@ -35,9 +36,11 @@ class _OverviewPageState extends State<OverviewPage> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.model != model) {
       oldWidget.model.removeListener(_modelChanged);
+      oldWidget.model.overviewChanges.removeListener(_modelChanged);
       previousExit = null;
       exitGeneration = null;
       model.addListener(_modelChanged);
+      model.overviewChanges.addListener(_modelChanged);
       _rememberExit();
     }
   }
@@ -63,6 +66,7 @@ class _OverviewPageState extends State<OverviewPage> {
   @override
   void dispose() {
     model.removeListener(_modelChanged);
+    model.overviewChanges.removeListener(_modelChanged);
     super.dispose();
   }
 
@@ -319,116 +323,122 @@ class _OverviewPageState extends State<OverviewPage> {
       const SizedBox(height: 14),
       Padding(
         padding: EdgeInsets.zero,
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final traffic = proxy.connected ? proxy.traffic?.current : null;
-            Widget speed(String name, bool sending) => Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      sending ? Icons.north_east : Icons.south_west,
-                      size: 16,
-                      color: sending
-                          ? DesktopDesign.trafficSend(theme.brightness)
-                          : DesktopDesign.trafficReceive(theme.brightness),
-                    ),
-                    const SizedBox(width: 6),
-                    small(name),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  traffic == null
-                      ? '—'
-                      : '${formatTrafficBytes(running ? (sending ? traffic.sendBytesPerSecond : traffic.receiveBytesPerSecond) : 0)}/s',
-                  key: ValueKey(
-                    sending ? 'overview-send-rate' : 'overview-receive-rate',
-                  ),
-                  style: theme.textTheme.headlineMedium,
-                ),
-                const SizedBox(height: 4),
-                small(
-                  '累计 ${traffic == null ? '—' : formatTrafficBytes(sending ? traffic.sentBytes : traffic.receivedBytes)}',
-                ),
-              ],
-            );
-            final items = [
-              speed('发送速率', true),
-              speed('接收速率', false),
-              Column(
+        child: ListenableBuilder(
+          listenable: Listenable.merge([
+            model.trafficChanges,
+            model.tunnelChanges,
+          ]),
+          builder: (context, _) => LayoutBuilder(
+            builder: (context, constraints) {
+              final traffic = proxy.connected ? proxy.traffic?.current : null;
+              Widget speed(String name, bool sending) => Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  small('活跃隧道'),
-                  const SizedBox(height: 8),
-                  InkWell(
-                    onTap: () => model.navigate(4),
-                    child: Text(
-                      proxy.connected ? '${proxy.activeTunnelCount}' : '—',
-                      key: const ValueKey('overview-active-tunnels'),
-                      style: theme.textTheme.headlineMedium,
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () => model.navigate(4),
-                    child: Text(
-                      '等待 ${proxy.connected ? proxy.pendingTunnelCount : '—'} · 查看',
-                      key: const ValueKey('overview-pending-tunnels'),
-                    ),
-                  ),
-                ],
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Tooltip(
-                    message: 'HTTP/2 使用 PING 往返时延；HTTP/3 使用当前 QUIC 路径 RTT。',
-                    child: small('连接延迟'),
+                  Row(
+                    children: [
+                      Icon(
+                        sending ? Icons.north_east : Icons.south_west,
+                        size: 16,
+                        color: sending
+                            ? DesktopDesign.trafficSend(theme.brightness)
+                            : DesktopDesign.trafficReceive(theme.brightness),
+                      ),
+                      const SizedBox(width: 6),
+                      small(name),
+                    ],
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    latency?.state == 'succeeded'
-                        ? '${_millis(latency!.result.latencyMillis)} ms'
-                        : '—',
+                    traffic == null
+                        ? '—'
+                        : '${formatTrafficBytes(running ? (sending ? traffic.sendBytesPerSecond : traffic.receiveBytesPerSecond) : 0)}/s',
+                    key: ValueKey(
+                      sending ? 'overview-send-rate' : 'overview-receive-rate',
+                    ),
                     style: theme.textTheme.headlineMedium,
                   ),
-                  TextButton(
-                    onPressed:
-                        canTest && !direct && !proxy.overviewBusy('latency')
-                        ? () => model.startOverview('latency')
-                        : null,
-                    child: Text(
-                      proxy.overviewBusy('latency') ? '检测中…' : '检测延迟',
-                    ),
+                  const SizedBox(height: 4),
+                  small(
+                    '累计 ${traffic == null ? '—' : formatTrafficBytes(sending ? traffic.sentBytes : traffic.receivedBytes)}',
                   ),
                 ],
-              ),
-            ];
-            final columns = constraints.maxWidth < 680 ? 2 : 4;
-            return Wrap(
-              spacing: 16,
-              runSpacing: 18,
-              children: [
-                for (final item in items)
-                  SizedBox(
-                    width:
-                        (constraints.maxWidth - 16 * (columns - 1)) / columns,
-                    child: ui.card(
-                      ConstrainedBox(
-                        constraints: BoxConstraints(
-                          minHeight:
-                              96 *
-                              MediaQuery.textScalerOf(context).scale(13) /
-                              13,
-                        ),
-                        child: item,
+              );
+              final items = [
+                speed('发送速率', true),
+                speed('接收速率', false),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    small('活跃隧道'),
+                    const SizedBox(height: 8),
+                    InkWell(
+                      onTap: () => model.navigate(4),
+                      child: Text(
+                        proxy.connected ? '${proxy.activeTunnelCount}' : '—',
+                        key: const ValueKey('overview-active-tunnels'),
+                        style: theme.textTheme.headlineMedium,
                       ),
                     ),
-                  ),
-              ],
-            );
-          },
+                    TextButton(
+                      onPressed: () => model.navigate(4),
+                      child: Text(
+                        '等待 ${proxy.connected ? proxy.pendingTunnelCount : '—'} · 查看',
+                        key: const ValueKey('overview-pending-tunnels'),
+                      ),
+                    ),
+                  ],
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Tooltip(
+                      message: 'HTTP/2 使用 PING 往返时延；HTTP/3 使用当前 QUIC 路径 RTT。',
+                      child: small('连接延迟'),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      latency?.state == 'succeeded'
+                          ? '${_millis(latency!.result.latencyMillis)} ms'
+                          : '—',
+                      style: theme.textTheme.headlineMedium,
+                    ),
+                    TextButton(
+                      onPressed:
+                          canTest && !direct && !proxy.overviewBusy('latency')
+                          ? () => model.startOverview('latency')
+                          : null,
+                      child: Text(
+                        proxy.overviewBusy('latency') ? '检测中…' : '检测延迟',
+                      ),
+                    ),
+                  ],
+                ),
+              ];
+              final columns = constraints.maxWidth < 680 ? 2 : 4;
+              return Wrap(
+                spacing: 16,
+                runSpacing: 18,
+                children: [
+                  for (final item in items)
+                    SizedBox(
+                      width:
+                          (constraints.maxWidth - 16 * (columns - 1)) / columns,
+                      child: ui.card(
+                        ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minHeight:
+                                96 *
+                                MediaQuery.textScalerOf(context).scale(13) /
+                                13,
+                          ),
+                          child: item,
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
         ),
       ),
       const SizedBox(height: 14),
@@ -441,10 +451,13 @@ class _OverviewPageState extends State<OverviewPage> {
       ui.card(
         Column(
           children: [
-            TrafficChart(
-              traffic: proxy.traffic,
-              connected: proxy.connected,
-              running: running,
+            ListenableBuilder(
+              listenable: model.trafficChanges,
+              builder: (context, _) => TrafficChart(
+                traffic: proxy.traffic,
+                connected: proxy.connected,
+                running: running,
+              ),
             ),
             Align(
               alignment: Alignment.centerRight,

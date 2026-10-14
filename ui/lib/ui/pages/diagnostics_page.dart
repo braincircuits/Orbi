@@ -11,8 +11,10 @@ class DiagnosticsPage extends StatelessWidget {
   const DiagnosticsPage({super.key, required this.model});
   final ProxyViewModel model;
   @override
-  Widget build(BuildContext context) =>
-      _content(context, DesktopWidgets(context, model));
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: model.operationChanges,
+    builder: (context, _) => _content(context, DesktopWidgets(context, model)),
+  );
   Widget _content(BuildContext context, DesktopWidgets ui) {
     const states = {
       'queued': '排队中',

@@ -167,19 +167,6 @@ class _TunnelsPageState extends State<TunnelsPage> {
 
   Widget _live(BuildContext context) {
     final ui = DesktopWidgets(context, widget.model);
-    final proxy = widget.model.proxy;
-    final all = proxy.tunnels;
-    final search = query.trim().toLowerCase();
-    final entries = all
-        .where(
-          (tunnel) =>
-              (route == 'all' || tunnel.route == route) &&
-              '${tunnel.target} ${tunnel.source} ${tunnel.profileName}'
-                  .toLowerCase()
-                  .contains(search),
-        )
-        .toList();
-    final active = proxy.activeTunnelCount;
     return LayoutBuilder(
       builder: (context, constraints) {
         final wide = constraints.maxWidth >= 900;
@@ -219,188 +206,10 @@ class _TunnelsPageState extends State<TunnelsPage> {
               ],
             ),
             const SizedBox(height: 12),
-            Text(
-              '共 ${all.length} 条 · 活跃 $active · 等待 ${proxy.pendingTunnelCount}'
-              '${entries.length == all.length ? '' : ' · 当前显示 ${entries.length} 条'}',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            if (!proxy.connected) ...[
-              const SizedBox(height: 10),
-              ui.notice(
-                '内核未连接，列表保留最后一次收到的隧道信息。',
-                Icons.warning_amber_outlined,
-                warning: true,
-              ),
-            ],
-            const SizedBox(height: 14),
             Expanded(
-              child: Container(
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  color: ui.panel,
-                  border: Border.all(color: ui.line),
-                  borderRadius: BorderRadius.circular(
-                    DesktopDesign.panelRadius,
-                  ),
-                ),
-                child: entries.isEmpty
-                    ? ui.empty(
-                        Icons.swap_vert,
-                        all.isEmpty ? '暂无隧道' : '没有匹配的隧道',
-                        all.isEmpty ? '代理请求到达后，会在这里显示当前连接' : '调整搜索内容或路由筛选',
-                      )
-                    : SelectionArea(
-                        child: Column(
-                          children: [
-                            if (wide)
-                              Container(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .surfaceContainerLow,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 10,
-                                ),
-                                child: Row(
-                                  children: [
-                                    Expanded(child: _text('目标地址', muted: true)),
-                                    SizedBox(
-                                      width: 80,
-                                      child: _text('原始协议', muted: true),
-                                    ),
-                                    SizedBox(
-                                      width: 176,
-                                      child: _text('来源地址', muted: true),
-                                    ),
-                                    SizedBox(
-                                      width: 156,
-                                      child: _text('路由 / 协议', muted: true),
-                                    ),
-                                    SizedBox(
-                                      width: 104,
-                                      child: _text('状态', muted: true),
-                                    ),
-                                    SizedBox(
-                                      width: 88,
-                                      child: _text('开始时间', muted: true),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            Expanded(
-                              child: ScrollConfiguration(
-                                behavior: ScrollConfiguration.of(context)
-                                    .copyWith(scrollbars: false),
-                                child: ListView.builder(
-                                  key: const PageStorageKey('tunnels'),
-                                  itemCount: entries.length,
-                                  itemBuilder: (context, index) {
-                                    final tunnel = entries[index];
-                                    return Container(
-                                      key: ValueKey(tunnel.id),
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 16,
-                                        vertical: 12,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        border: Border(
-                                          bottom: BorderSide(color: ui.line),
-                                        ),
-                                      ),
-                                      child: wide
-                                          ? Row(
-                                              children: [
-                                                Expanded(
-                                                  child: Padding(
-                                                    padding:
-                                                        const EdgeInsets.only(
-                                                          right: 16,
-                                                        ),
-                                                    child: _text(tunnel.target),
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 80,
-                                                  child: _text(
-                                                    tunnel
-                                                        .originalProtocolLabel,
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 176,
-                                                  child: _text(
-                                                    tunnel.source,
-                                                    muted: true,
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 156,
-                                                  child: Padding(
-                                                    padding:
-                                                        const EdgeInsets.only(
-                                                          right: 12,
-                                                        ),
-                                                    child: _routeControl(
-                                                      tunnel,
-                                                    ),
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 104,
-                                                  child: _state(tunnel, ui),
-                                                ),
-                                                SizedBox(
-                                                  width: 88,
-                                                  child: _createdAt(tunnel),
-                                                ),
-                                              ],
-                                            )
-                                          : Column(
-                                              children: [
-                                                Row(
-                                                  children: [
-                                                    Expanded(
-                                                      child: _text(
-                                                        tunnel.target,
-                                                      ),
-                                                    ),
-                                                    const SizedBox(width: 12),
-                                                    _routeControl(tunnel),
-                                                    const SizedBox(width: 8),
-                                                    SizedBox(
-                                                      width: 76,
-                                                      child: _state(tunnel, ui),
-                                                    ),
-                                                  ],
-                                                ),
-                                                const SizedBox(height: 6),
-                                                Row(
-                                                  children: [
-                                                    _text(
-                                                      '原始 ${tunnel.originalProtocolLabel}',
-                                                      muted: true,
-                                                    ),
-                                                    const SizedBox(width: 12),
-                                                    Expanded(
-                                                      child: _text(
-                                                        tunnel.source,
-                                                        muted: true,
-                                                      ),
-                                                    ),
-                                                    const SizedBox(width: 12),
-                                                    _createdAt(tunnel),
-                                                  ],
-                                                ),
-                                              ],
-                                            ),
-                                    );
-                                  },
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+              child: ListenableBuilder(
+                listenable: widget.model.tunnelChanges,
+                builder: (context, _) => _tunnelList(context, ui, wide),
               ),
             ),
             const SizedBox(height: 10),
@@ -411,6 +220,209 @@ class _TunnelsPageState extends State<TunnelsPage> {
           ],
         );
       },
+    );
+  }
+
+  Widget _tunnelList(BuildContext context, DesktopWidgets ui, bool wide) {
+    final proxy = widget.model.proxy;
+    final all = proxy.tunnels;
+    final search = query.trim().toLowerCase();
+    final entries = all
+        .where(
+          (tunnel) =>
+              (route == 'all' || tunnel.route == route) &&
+              '${tunnel.target} ${tunnel.source} ${tunnel.profileName}'
+                  .toLowerCase()
+                  .contains(search),
+        )
+        .toList();
+    final active = proxy.activeTunnelCount;
+    final indices = {
+      for (final (index, tunnel) in entries.indexed) tunnel.id: index,
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '共 ${all.length} 条 · 活跃 $active · 等待 ${proxy.pendingTunnelCount}'
+          '${entries.length == all.length ? '' : ' · 当前显示 ${entries.length} 条'}',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        if (!proxy.connected) ...[
+          const SizedBox(height: 10),
+          ui.notice(
+            '内核未连接，列表保留最后一次收到的隧道信息。',
+            Icons.warning_amber_outlined,
+            warning: true,
+          ),
+        ],
+        const SizedBox(height: 14),
+        Expanded(
+          child: Container(
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: ui.panel,
+              border: Border.all(color: ui.line),
+              borderRadius: BorderRadius.circular(DesktopDesign.panelRadius),
+            ),
+            child: entries.isEmpty
+                ? ui.empty(
+                    Icons.swap_vert,
+                    all.isEmpty ? '暂无隧道' : '没有匹配的隧道',
+                    all.isEmpty ? '代理请求到达后，会在这里显示当前连接' : '调整搜索内容或路由筛选',
+                  )
+                : SelectionArea(
+                    child: Column(
+                      children: [
+                        if (wide)
+                          Container(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerLow,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 10,
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(child: _text('目标地址', muted: true)),
+                                SizedBox(
+                                  width: 80,
+                                  child: _text('原始协议', muted: true),
+                                ),
+                                SizedBox(
+                                  width: 176,
+                                  child: _text('来源地址', muted: true),
+                                ),
+                                SizedBox(
+                                  width: 156,
+                                  child: _text('路由 / 协议', muted: true),
+                                ),
+                                SizedBox(
+                                  width: 104,
+                                  child: _text('状态', muted: true),
+                                ),
+                                SizedBox(
+                                  width: 88,
+                                  child: _text('开始时间', muted: true),
+                                ),
+                              ],
+                            ),
+                          ),
+                        Expanded(
+                          child: ScrollConfiguration(
+                            behavior: ScrollConfiguration.of(context)
+                                .copyWith(scrollbars: false),
+                            child: ListView.builder(
+                              key: const PageStorageKey('tunnels'),
+                              itemCount: entries.length,
+                              findChildIndexCallback: (key) =>
+                                  key is ValueKey<String>
+                                  ? indices[key.value]
+                                  : null,
+                              itemBuilder: (context, index) {
+                                final tunnel = entries[index];
+                                return Container(
+                                  key: ValueKey(tunnel.id),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 12,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    border: Border(
+                                      bottom: BorderSide(color: ui.line),
+                                    ),
+                                  ),
+                                  child: wide
+                                      ? Row(
+                                          children: [
+                                            Expanded(
+                                              child: Padding(
+                                                padding: const EdgeInsets.only(
+                                                  right: 16,
+                                                ),
+                                                child: _text(tunnel.target),
+                                              ),
+                                            ),
+                                            SizedBox(
+                                              width: 80,
+                                              child: _text(
+                                                tunnel.originalProtocolLabel,
+                                              ),
+                                            ),
+                                            SizedBox(
+                                              width: 176,
+                                              child: _text(
+                                                tunnel.source,
+                                                muted: true,
+                                              ),
+                                            ),
+                                            SizedBox(
+                                              width: 156,
+                                              child: Padding(
+                                                padding: const EdgeInsets.only(
+                                                  right: 12,
+                                                ),
+                                                child: _routeControl(tunnel),
+                                              ),
+                                            ),
+                                            SizedBox(
+                                              width: 104,
+                                              child: _state(tunnel, ui),
+                                            ),
+                                            SizedBox(
+                                              width: 88,
+                                              child: _createdAt(tunnel),
+                                            ),
+                                          ],
+                                        )
+                                      : Column(
+                                          children: [
+                                            Row(
+                                              children: [
+                                                Expanded(
+                                                  child: _text(tunnel.target),
+                                                ),
+                                                const SizedBox(width: 12),
+                                                _routeControl(tunnel),
+                                                const SizedBox(width: 8),
+                                                SizedBox(
+                                                  width: 76,
+                                                  child: _state(tunnel, ui),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Row(
+                                              children: [
+                                                _text(
+                                                  '原始 ${tunnel.originalProtocolLabel}',
+                                                  muted: true,
+                                                ),
+                                                const SizedBox(width: 12),
+                                                Expanded(
+                                                  child: _text(
+                                                    tunnel.source,
+                                                    muted: true,
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 12),
+                                                _createdAt(tunnel),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+          ),
+        ),
+      ],
     );
   }
 }

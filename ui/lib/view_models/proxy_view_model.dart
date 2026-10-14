@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -36,6 +37,13 @@ class ProxyViewModel extends ChangeNotifier {
       fields[e.key] = TextEditingController(text: e.value);
     }
     logScroll.addListener(_logPositionChanged);
+    _controlState = _currentControlState;
+    _connectionChoices = _currentConnectionChoices;
+    _capabilities = Set.of(this.proxy.capabilities);
+    _traffic = this.proxy.traffic;
+    _tunnels = List.of(this.proxy.tunnels);
+    _operations = Map.of(this.proxy.operations);
+    _overviewState = _currentOverviewState;
     this.proxy.addListener(_proxyChanged);
     this.proxy.logChanges.addListener(_logsChanged);
   }
@@ -51,6 +59,52 @@ class ProxyViewModel extends ChangeNotifier {
   final themeMode = ValueNotifier(ThemeMode.system);
   bool savingAppearance = false;
   final messages = StreamController<UiMessage>.broadcast(sync: true);
+  // 高频数据各自通知使用它的区域，配置和交互状态仍沿用主视图模型。
+  final trafficChanges = ChangeNotifier();
+  final tunnelChanges = ChangeNotifier();
+  final operationChanges = ChangeNotifier();
+  final overviewChanges = ChangeNotifier();
+  late Object _controlState, _overviewState;
+  late List<(String, String, String)> _connectionChoices;
+  late Set<String> _capabilities;
+  TrafficSnapshot? _traffic;
+  late List<TunnelStatus> _tunnels;
+  late Map<String, DiagnosticOperation> _operations;
+
+  Object get _currentControlState => (
+    proxy.busy,
+    proxy.changingDatabase,
+    proxy.storageBackend,
+    proxy.running,
+    proxy.connected,
+    proxy.streaming,
+    proxy.tunState,
+    proxy.tunError,
+    proxy.configurationChanged,
+    proxy.revision,
+    proxy.configurationRevision,
+    proxy.kernelGeneration,
+    proxy.networkGeneration,
+    proxy.routingMode,
+    proxy.connection,
+    proxy.address,
+    proxy.error,
+    proxy.defaultConnectionId,
+    proxy.appliedProfile,
+    proxy.historyStorageWarning,
+  );
+  List<(String, String, String)> get _currentConnectionChoices => [
+    for (final connection in proxy.connections)
+      (connection.id, connection.name, connection.protocol),
+  ];
+  Object get _currentOverviewState => (
+    proxy.overviewOperation('latency'),
+    proxy.overviewBusy('latency'),
+    proxy.overviewOperation('exit-ip'),
+    proxy.overviewBusy('exit-ip'),
+    proxy.overviewOperation('websites'),
+    proxy.overviewBusy('websites'),
+  );
   bool _disposed = false;
   bool _initialized = false;
   Future<bool>? _exitRequest;
@@ -224,7 +278,6 @@ class ProxyViewModel extends ChangeNotifier {
       working = true;
       routingModeChanging = routingModeChange;
     });
-    _syncDesktop();
     try {
       await action();
     } catch (e) {
@@ -266,7 +319,6 @@ class ProxyViewModel extends ChangeNotifier {
           routingModeChanging = false;
           _acceptKernelConfiguration();
         });
-        _syncDesktop();
       }
     }
   }
@@ -439,10 +491,33 @@ class ProxyViewModel extends ChangeNotifier {
 
   void _proxyChanged() {
     if (!active) return;
-    if (!working) _acceptKernelConfiguration();
-    update(() {});
-    _syncDesktop();
-    if (!pauseLogs && page == 3 && followLogs) scrollToLatest();
+    final control = _currentControlState;
+    final choices = _currentConnectionChoices;
+    final overview = _currentOverviewState;
+    final controlChanged =
+        control != _controlState ||
+        !listEquals(choices, _connectionChoices) ||
+        !setEquals(proxy.capabilities, _capabilities);
+    final trafficChanged = !identical(_traffic, proxy.traffic);
+    final tunnelsChanged = !listEquals(_tunnels, proxy.tunnels);
+    final operationsChanged = !mapEquals(_operations, proxy.operations);
+    final overviewChanged = overview != _overviewState;
+    // 先更新比较快照，再通知订阅者，避免同步回调重复派发同一份状态。
+    _controlState = control;
+    _connectionChoices = choices;
+    _capabilities = Set.of(proxy.capabilities);
+    _traffic = proxy.traffic;
+    if (tunnelsChanged) _tunnels = List.of(proxy.tunnels);
+    if (operationsChanged) _operations = Map.of(proxy.operations);
+    _overviewState = overview;
+    if (controlChanged) {
+      if (!working) _acceptKernelConfiguration();
+      update(() {});
+    }
+    if (trafficChanged) trafficChanges.notifyListeners();
+    if (tunnelsChanged) tunnelChanges.notifyListeners();
+    if (operationsChanged) operationChanges.notifyListeners();
+    if (overviewChanged) overviewChanges.notifyListeners();
   }
 
   void _acceptKernelConfiguration() {
@@ -531,7 +606,6 @@ class ProxyViewModel extends ChangeNotifier {
       update(() {
         loading = false;
       });
-      _syncDesktop();
     }
   }
 
@@ -823,6 +897,10 @@ class ProxyViewModel extends ChangeNotifier {
     }
     logScroll.dispose();
     themeMode.dispose();
+    trafficChanges.dispose();
+    tunnelChanges.dispose();
+    operationChanges.dispose();
+    overviewChanges.dispose();
     super.dispose();
   }
 

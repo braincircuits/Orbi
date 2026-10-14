@@ -680,6 +680,7 @@ class ProxyController extends ChangeNotifier {
         }
       case 'status':
         _status(value);
+        return;
       case 'configuration':
         _metadata(value);
         if (configurationChanged) await refreshConfiguration();
