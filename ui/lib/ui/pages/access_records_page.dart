@@ -121,10 +121,14 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
               ),
             ),
             const SizedBox(width: 12),
-            OutlinedButton.icon(
-              onPressed: available ? () => _load() : null,
-              icon: const Icon(Icons.refresh, size: 16),
-              label: const Text('查询 / 刷新'),
+            // 与实时隧道的路由筛选框等宽，切换页签时保持搜索框边界不变。
+            SizedBox(
+              width: 128,
+              child: OutlinedButton.icon(
+                onPressed: available ? () => _load() : null,
+                icon: const Icon(Icons.refresh, size: 16),
+                label: const Text('查询 / 刷新'),
+              ),
             ),
           ],
         ),
