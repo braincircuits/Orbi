@@ -77,7 +77,7 @@ void main() {
     expect(find.text('密码'), findsOneWidget);
     await tester.tap(find.text('路由规则').first);
     await tester.pumpAndSettle();
-    expect(find.text('校验规则'), findsOneWidget);
+    expect(find.text('应用直连规则'), findsOneWidget);
     await tester.tap(find.text('运行日志').first);
     await tester.pumpAndSettle();
     expect(find.text('暂无日志'), findsOneWidget);
@@ -453,7 +453,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('桌面快捷键保留草稿，密码显隐及文件规则模式可用', (tester) async {
+  testWidgets('桌面快捷键保留草稿，密码显隐及批量规则编辑可用', (tester) async {
     tester.view.physicalSize = const Size(860, 640);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -489,10 +489,10 @@ void main() {
     await tester.pump();
     expect(tester.widget<TextField>(password).obscureText, isFalse);
     await shortcut(LogicalKeyboardKey.digit4);
-    expect(find.byKey(const ValueKey('rules-editor')), findsOneWidget);
-    await tester.tap(find.text('规则文件'));
+    await tester.tap(find.text('批量编辑'));
     await tester.pumpAndSettle();
-    expect(find.text('重新载入文件规则'), findsOneWidget);
+    expect(find.byKey(const ValueKey('rules-editor')), findsOneWidget);
+    expect(find.text('规则文件'), findsNothing);
     await shortcut(LogicalKeyboardKey.comma, control: true);
     expect(find.text('本地代理'), findsOneWidget);
     final localPort = find.byKey(const ValueKey('field-port'));
@@ -623,10 +623,10 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  test('内核快照保留密码标志，空密码字段不会提交且文件规则不变成内联', () {
+  test('内核快照保留密码标志，空密码字段不会提交且保留当前直连规则', () {
     final profile = ProxyProfile.fromKernel({
       'version': 1,
-      'local': {'routesFile': '/tmp/direct.txt'},
+      'local': {'routesInline': 'example.com'},
       'defaultConnectionId': 'one',
       'connections': [
         {
@@ -643,8 +643,8 @@ void main() {
       (profile.selected.json()['config'] as Map).containsKey('password'),
       isFalse,
     );
-    expect(profile.localConfiguration.containsKey('routesInline'), isFalse);
-    expect(profile.localConfiguration['routesFile'], '/tmp/direct.txt');
+    expect(profile.localConfiguration['routesInline'], 'example.com');
+    expect(profile.localConfiguration.containsKey('routesFile'), isFalse);
   });
 
   test('拒绝无效端口与不完整服务端配置', () {

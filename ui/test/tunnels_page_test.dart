@@ -36,8 +36,9 @@ class _RoutingModel extends ProxyViewModel {
   _RoutingModel({required super.proxy}) : super(native: _Desktop());
   final switches = <(String, String)>[];
   @override
-  Future<void> routeTarget(String target, String route) async {
+  Future<bool> routeTarget(String target, String route) async {
     switches.add((target, route));
+    return true;
   }
 }
 
@@ -160,7 +161,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('目标路由管理在窄窗口和明暗模式下可查看与恢复，不挤占规则编辑区域', (tester) async {
+  testWidgets('指定目标页签在窄窗口和明暗模式下可查看与移除', (tester) async {
     tester.view.physicalSize = const Size(592, 430);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -185,15 +186,18 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('查看目标路由（2）'));
+      await tester.ensureVisible(find.text('指定目标 2'));
+      await tester.tap(find.text('指定目标 2'));
       await tester.pumpAndSettle();
       expect(find.text('www.example.com'), findsOneWidget);
       expect(find.text('2001:db8:0:0:0:0:0:1'), findsOneWidget);
-      await tester.tap(find.text('恢复自动').first);
+      await tester.ensureVisible(find.text('移除指定').last);
+      await tester.tap(find.text('移除指定').last);
       await tester.pumpAndSettle();
-      expect(model.switches.last, ('www.example.com:80', 'auto'));
+      expect(model.switches.last, ('www.example.com:443', 'auto'));
       expect(tester.takeException(), isNull);
-      await tester.tap(find.text('关闭'));
+      await tester.ensureVisible(find.text('直连规则 0'));
+      await tester.tap(find.text('直连规则 0'));
       await tester.pumpAndSettle();
     }
   });

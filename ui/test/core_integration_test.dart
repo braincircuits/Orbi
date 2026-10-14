@@ -41,13 +41,11 @@ void main() {
   final jar = Platform.environment['UI_TEST_JAR'];
   final java = Platform.environment['UI_TEST_JAVA'];
   test(
-    '真实 UI 路由切换：保存精确目标规则，保留文件来源和密码，草稿应用不会丢失规则',
+    '真实 UI 路由切换：保存精确目标规则，保留直连规则和密码，草稿应用不会丢失规则',
     () async {
       final directory = await Directory.systemTemp.createTemp(
         'network-target-ui-',
       );
-      final rulesFile = File('${directory.path}/routes.txt');
-      await rulesFile.writeAsString('example.com\n');
       await RuntimePreferences().write(directory, RuntimePaths(java!, jar!));
       final seed = ProxyController(directory: directory);
       final model = ProxyViewModel(native: IntegrationDesktop(directory));
@@ -62,8 +60,7 @@ void main() {
               'port': '0',
               'password': 'target-test-password',
             },
-            routesFile: rulesFile.path,
-            inlineRules: false,
+            rules: 'example.com\n',
             javaPath: java,
             jarPath: jar,
           ),
@@ -76,9 +73,7 @@ void main() {
           'www.example.com': 'proxy',
         });
 
-        expect(model.inlineRules, isFalse);
-        expect(model.rules.text, isEmpty);
-        expect(model.routesFile.text, rulesFile.path);
+        expect(model.rules.text, 'example.com\n');
         model.connectionName.text = '路由切换后的名称';
         model.changed('');
         final revision = model.proxy.revision;
@@ -87,9 +82,7 @@ void main() {
         expect(model.dirty, isTrue);
         expect(model.connectionName.text, '路由切换后的名称');
         expect(messages.last.text, contains('编辑草稿已保留'));
-        final routeSaved = jsonDecode(
-          await File(model.proxy.configPath).readAsString(),
-        ) as Map<String, dynamic>;
+        final routeSaved = model.proxy.appliedProfile!.runtimeConfiguration;
         expect(
           ((routeSaved['connections'] as List).first as Map)['name'],
           isNot('路由切换后的名称'),
@@ -98,15 +91,9 @@ void main() {
         expect(model.proxy.appliedProfile!.targetRoutes, {
           'www.example.com': 'direct',
         });
-        final saved = jsonDecode(
-          await File(model.proxy.configPath).readAsString(),
-        ) as Map<String, dynamic>;
-        expect((saved['local'] as Map)['routesFile'], rulesFile.path);
-        expect((saved['local'] as Map).containsKey('routesInline'), isFalse);
-        expect(
-          ((saved['connections'] as List).first as Map)['config']['password'],
-          'target-test-password',
-        );
+        final saved = model.proxy.appliedProfile!.runtimeConfiguration;
+        expect((saved['local'] as Map)['routesInline'], 'example.com\n');
+        expect(model.proxy.appliedProfile!.selected.hasPassword, isTrue);
         await model.routeTarget('[2001:db8::1]:443', 'direct');
         expect(
           model.proxy.appliedProfile!.targetRoutes.values,
@@ -119,7 +106,29 @@ void main() {
           ),
           isFalse,
         );
-        expect(await rulesFile.readAsString(), 'example.com\n');
+        expect(model.proxy.appliedProfile!.rules, 'example.com\n');
+        model.fields['port']!.text = '8888';
+        model.changed('');
+        model.editRules('# 新规则\nchanged.example\n::1/128');
+        await model.applyRules();
+        expect(model.rulesDirty, isFalse);
+        expect(model.dirty, isTrue);
+        expect(model.fields['port']!.text, '8888');
+        expect(model.proxy.appliedProfile!.values['port'], '0');
+        await model.queryRoute('[::1]:443');
+        await until(() => model.routeQuery?.finished == true);
+        expect(model.routeQuery!.result.action, 'direct');
+        expect(model.routeQueryStale, isFalse);
+        final beforeInvalid = model.proxy.configurationRevision;
+        model.editRules('192.168.1.0/99');
+        await model.applyRules();
+        expect(model.rulesError, contains('直连规则:1'));
+        expect(model.rules.text, '192.168.1.0/99');
+        expect(model.proxy.configurationRevision, beforeInvalid);
+        expect(
+          model.proxy.appliedProfile!.rules,
+          '# 新规则\nchanged.example\n::1/128',
+        );
       } finally {
         await subscription.cancel();
         await model.proxy.shutdown();
@@ -486,16 +495,10 @@ void main() {
         expect(controller.appliedProfile!.selected.name, '热更新后的名称');
         expect(controller.appliedProfile!.selected.hasPassword, isTrue);
         await request();
-        // 文件规则与内联规则切换热更新，既有监听保持可用。
-        final ruleFile = File('${directory.path}/direct.txt');
-        await ruleFile.writeAsString('127.0.0.1');
-        final fileRules = controller.appliedProfile!;
-        fileRules.inlineRules = false;
-        fileRules.routesFile = ruleFile.path;
-        await controller.apply(fileRules, '');
+        // 直连规则独立热更新，既有监听保持可用。
+        await controller.updateDirectRules('127.0.0.1');
         await request();
-        await ruleFile.writeAsString('127.0.0.1\nlocalhost');
-        await controller.reloadRules();
+        await controller.updateDirectRules('127.0.0.1\nlocalhost');
         await controller.diagnose('localhost:443');
         await until(() => controller.operations.values.last.finished);
         expect(controller.operations.values.last.result.action, 'direct');

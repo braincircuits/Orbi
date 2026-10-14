@@ -877,23 +877,34 @@ class ProxyController extends ChangeNotifier {
         );
       });
 
-  Future<void> validateRules(ProxyProfile profile, String resources) =>
+  Future<int> updateDirectRules(String rules, {int? expectedRevision}) =>
       _operate(() async {
-        await connect(profile, resources);
-        await _request(
-          'POST',
-          'routing/validate',
-          body: {'rules': profile.rules},
+        final result = await _request(
+          'PUT',
+          'routing/direct-rules',
+          body: {'rules': rules},
+          expectedRevision: expectedRevision ?? configurationRevision,
         );
+        await refreshConfiguration();
+        return result['revision'] as int;
       });
-  Future<void> reloadRules({int? expectedRevision}) => _operate(() async {
-    await _request(
-      'POST',
-      'routing/reload',
-      expectedRevision: expectedRevision ?? configurationRevision,
-    );
-    await refreshConfiguration();
+
+  Future<void> validateDirectRules(String rules) => _operate(() async {
+    await _request('POST', 'routing/validate', body: {'rules': rules});
   });
+
+  Future<String> resolveRoute(String target) => _operate(() async {
+    final value =
+        (await _request(
+              'POST',
+              'routing/resolve',
+              body: {'target': target},
+            ))['data']
+            as Map<String, dynamic>;
+    _operation(value);
+    return value['id'] as String;
+  });
+
   Future<void> diagnose(String target, {String? profileId}) =>
       _operate(() async {
         final path = profileId == null

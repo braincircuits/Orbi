@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/proxy_profile.dart';
+import '../models/kernel_status.dart';
 import '../models/database_settings.dart';
 import '../services/native_bridge.dart';
 import '../services/kernel_api_client.dart';
@@ -68,11 +70,11 @@ class ProxyViewModel extends ChangeNotifier {
 
   final fields = <String, TextEditingController>{};
   final rules = TextEditingController();
-  final routesFile = TextEditingController();
   final target = TextEditingController(text: 'www.google.com:443');
-  bool inlineRules = true;
   bool followLogs = true;
   bool working = false;
+  bool routingModeChanging = false;
+  bool get showBlockingProgress => locked && !routingModeChanging;
   String? testProfileId;
   int? baseRevision;
   ProxyProfile? _acceptedKernelProfile;
@@ -180,10 +182,10 @@ class ProxyViewModel extends ChangeNotifier {
       editingId = '';
     }
     rules.text = profile.rules;
-    routesFile.text = profile.routesFile;
-    inlineRules = profile.inlineRules;
     baseRevision = proxy.configurationRevision;
     dirty = false;
+    routesConflict = false;
+    rulesError = '';
   }
 
   Future<void> ensureKernel() async {
@@ -212,9 +214,16 @@ class ProxyViewModel extends ChangeNotifier {
     });
   }
 
-  Future<void> action(Future<void> Function() action) async {
+  Future<void> action(
+    Future<void> Function() action, {
+    bool preserveDrafts = false,
+    bool routingModeChange = false,
+  }) async {
     if (working || !active) return;
-    update(() => working = true);
+    update(() {
+      working = true;
+      routingModeChanging = routingModeChange;
+    });
     _syncDesktop();
     try {
       await action();
@@ -222,10 +231,23 @@ class ProxyViewModel extends ChangeNotifier {
       if (proxy.configurationChanged ||
           e is KernelApiException &&
               (e.code == 'REVISION_CONFLICT' || e.code == 'KERNEL_RESTARTED')) {
+        final keepDrafts = preserveDrafts || routesConflict;
+        if (keepDrafts) routesConflict = true;
         try {
           await proxy.refreshConfiguration();
-          if (active) update(() => accept(proxy.appliedProfile!));
-          message('已同步内核最新配置，请核对后重新操作', failure: true);
+          if (active) {
+            update(() {
+              if (keepDrafts) {
+                routesConflict = true;
+              } else {
+                accept(proxy.appliedProfile!);
+              }
+            });
+          }
+          message(
+            keepDrafts ? '内核配置已变化，编辑草稿已保留，请重新读取并核对配置' : '已同步内核最新配置，请核对后重新操作',
+            failure: true,
+          );
         } catch (syncError) {
           message(
             '同步内核配置失败：${proxy.redact(syncError.toString())}',
@@ -241,6 +263,7 @@ class ProxyViewModel extends ChangeNotifier {
       if (active) {
         update(() {
           working = false;
+          routingModeChanging = false;
           _acceptKernelConfiguration();
         });
         _syncDesktop();
@@ -249,6 +272,7 @@ class ProxyViewModel extends ChangeNotifier {
   }
 
   Future<void> apply() => action(() async {
+    if (routesConflict) throw StateError('请先在路由规则页核对配置冲突');
     final profile = draftProfile();
     await ensureKernel();
     await proxy.apply(profile, resources, expectedRevision: baseRevision);
@@ -257,6 +281,7 @@ class ProxyViewModel extends ChangeNotifier {
   });
 
   Future<void> switchConnection(String id) => action(() async {
+    if (routesConflict) throw StateError('请先在路由规则页核对配置冲突');
     if (id == proxy.defaultConnectionId) return;
     if (!proxy.connected) throw StateError('请先连接代理内核');
     if (!proxy.appliedProfile!.connections.any((c) => c.id == id)) {
@@ -286,30 +311,38 @@ class ProxyViewModel extends ChangeNotifier {
     message('默认连接已切换并保存，旧代理隧道已关闭${keepDraft ? '；编辑草稿已保留' : ''}');
   });
 
-  Future<void> setRoutingMode(String mode) => action(() async {
-    if (mode == proxy.routingMode) return;
-    if (!proxy.connected) throw StateError('请先连接代理内核');
-    captureConnection();
-    final keepDraft = dirty;
-    final appliedRevision = await proxy.setRoutingMode(
-      mode,
-      expectedRevision: baseRevision,
-    );
-    if (active) {
-      update(() {
-        // 只合并全局模式及版本，不提交尚未应用的编辑草稿。
-        if (keepDraft &&
-            proxy.configurationRevision == appliedRevision &&
-            _acceptedKernelGeneration == proxy.kernelGeneration) {
-          _acceptedKernelProfile = proxy.appliedProfile;
-          baseRevision = appliedRevision;
-        } else {
-          accept(proxy.appliedProfile!);
-        }
-      });
-    }
-    // 成功由模式选中态直接反馈，避免连续切换时成功提示排队播放。
-  });
+  Future<void> setRoutingMode(String mode) => action(
+    () async {
+      if (routesConflict) throw StateError('请先在路由规则页核对配置冲突');
+      if (mode == proxy.routingMode) return;
+      if (!proxy.connected) throw StateError('请先连接代理内核');
+      captureConnection();
+      final keepDraft = dirty;
+      final appliedRevision = await proxy.setRoutingMode(
+        mode,
+        expectedRevision: baseRevision,
+      );
+      if (active) {
+        update(() {
+          // 只合并全局模式及版本，不提交尚未应用的编辑草稿。
+          if (keepDraft &&
+              proxy.configurationRevision == appliedRevision &&
+              _acceptedKernelGeneration == proxy.kernelGeneration) {
+            _acceptedKernelProfile = proxy.appliedProfile;
+            baseRevision = appliedRevision;
+          } else if (proxy.configurationRevision == appliedRevision &&
+              _acceptedKernelGeneration == proxy.kernelGeneration) {
+            accept(proxy.appliedProfile!);
+          } else {
+            routesConflict = true;
+          }
+        });
+      }
+      // 成功由模式选中态直接反馈，避免连续切换时成功提示排队播放。
+    },
+    preserveDrafts: true,
+    routingModeChange: true,
+  );
 
   Future<void> startOverview(String kind) =>
       action(() => proxy.startOverview(kind));
@@ -329,35 +362,54 @@ class ProxyViewModel extends ChangeNotifier {
 
   void discardDrafts() {
     if (locked || _acceptedKernelProfile == null) return;
-    update(() => accept(_acceptedKernelProfile!));
+    if (routesConflict && (proxy.configurationChanged || !proxy.connected)) {
+      message('请先重新读取内核配置，再放弃草稿', failure: true);
+      return;
+    }
+    // 冲突后必须恢复最新快照，不能给旧配置套用新版本号。
+    update(
+      () => accept(
+        routesConflict ? proxy.appliedProfile! : _acceptedKernelProfile!,
+      ),
+    );
   }
 
-  Future<void> routeTarget(String target, String route) => action(() async {
-    if (!proxy.connected) throw StateError('请先连接代理内核');
-    captureConnection();
-    final keepDraft = dirty;
-    final appliedRevision = await proxy.routeTarget(
-      target,
-      route,
-      expectedRevision: baseRevision,
-    );
-    if (active) {
-      update(() {
-        // 只合并本次目标路由和版本，保留连接、默认连接、规则及密码草稿。
-        if (keepDraft &&
-            proxy.configurationRevision == appliedRevision &&
-            _acceptedKernelGeneration == proxy.kernelGeneration) {
-          _acceptedKernelProfile = proxy.appliedProfile;
-          baseRevision = appliedRevision;
-        } else {
-          accept(proxy.appliedProfile!);
-        }
-      });
-    }
-    message(
-      '${route == 'auto' ? '已恢复自动路由' : '目标已切换为${route == 'direct' ? '直连' : '代理'}'}并保存；路由变化的连接已断开，请求重连后生效${keepDraft ? '；编辑草稿已保留' : ''}',
-    );
-  });
+  Future<bool> routeTarget(String target, String route) async {
+    var saved = false;
+    await action(() async {
+      if (routesConflict) throw StateError('请先核对内核配置冲突');
+      if (!proxy.connected) throw StateError('请先连接代理内核');
+      captureConnection();
+      final keepDraft = dirty;
+      final appliedRevision = await proxy.routeTarget(
+        target,
+        route,
+        expectedRevision: baseRevision,
+      );
+      if (active) {
+        update(() {
+          // 只合并本次目标路由和版本，保留连接、默认连接、规则及密码草稿。
+          if (keepDraft &&
+              proxy.configurationRevision == appliedRevision &&
+              _acceptedKernelGeneration == proxy.kernelGeneration) {
+            _acceptedKernelProfile = proxy.appliedProfile;
+            baseRevision = appliedRevision;
+          } else if (proxy.configurationRevision == appliedRevision &&
+              _acceptedKernelGeneration == proxy.kernelGeneration) {
+            accept(proxy.appliedProfile!);
+          } else {
+            routesConflict = true;
+          }
+        });
+      }
+      saved = !routesConflict;
+      if (!saved) throw StateError('内核配置再次变化，草稿已保留，请重新读取并核对配置');
+      message(
+        '${route == 'auto' ? '已移除指定规则' : '目标已切换为${route == 'direct' ? '直连' : '代理'}'}并保存；路由变化的连接已断开，请求重连后生效${keepDraft ? '；编辑草稿已保留' : ''}',
+      );
+    }, preserveDrafts: true);
+    return saved;
+  }
 
   List<KernelLog> pausedLines = [];
   (bool, bool, bool)? desktopState;
@@ -394,6 +446,7 @@ class ProxyViewModel extends ChangeNotifier {
   }
 
   void _acceptKernelConfiguration() {
+    if (routesConflict) return;
     final profile = proxy.appliedProfile;
     if (active &&
         proxy.connected &&
@@ -402,7 +455,11 @@ class ProxyViewModel extends ChangeNotifier {
         !identical(profile, _acceptedKernelProfile)) {
       if (baseRevision != proxy.configurationRevision ||
           _acceptedKernelGeneration != proxy.kernelGeneration) {
-        accept(profile);
+        if (rulesDirty) {
+          routesConflict = true;
+        } else {
+          accept(profile);
+        }
       } else {
         // 同版本快照只更新引用，普通重订阅不会清空仍有效的编辑内容。
         _acceptedKernelProfile = profile;
@@ -487,10 +544,8 @@ class ProxyViewModel extends ChangeNotifier {
       connections: connectionDrafts.map((c) => c.copy()).toList(),
       defaultConnectionId: defaultId,
       rules: rules.text,
-      routesFile: routesFile.text.trim(),
       routesOverrides: _acceptedKernelProfile?.routesOverrides ?? '',
       routingMode: _acceptedKernelProfile?.routingMode ?? 'rules',
-      inlineRules: inlineRules,
       javaPath: java.text.trim(),
       jarPath: jar.text.trim(),
     );
@@ -538,6 +593,7 @@ class ProxyViewModel extends ChangeNotifier {
   });
 
   Future<void> start() => action(() async {
+    if (routesConflict) throw StateError('请先在路由规则页核对配置冲突');
     final profile = draftProfile();
     await ensureKernel();
     final appliedRevision = await proxy.start(
@@ -623,19 +679,93 @@ class ProxyViewModel extends ChangeNotifier {
     }
   }
 
+  bool routesConflict = false;
+  String rulesError = '';
+  bool get rulesDirty => rules.text != (_acceptedKernelProfile?.rules ?? '');
+  String? routeQueryId;
+  String routeQueryTarget = '';
+  int? _routeQueryRevision;
+  int? _routeQueryGeneration;
+  DiagnosticOperation? get routeQuery => proxy.operations[routeQueryId];
+  bool get routeQueryStale =>
+      !proxy.connected ||
+      _routeQueryRevision != proxy.revision ||
+      _routeQueryGeneration != proxy.kernelGeneration;
+
+  void _refreshDirty() {
+    dirty =
+        _acceptedKernelProfile == null ||
+        jsonEncode(draftProfile().runtimeConfiguration) !=
+            jsonEncode(_acceptedKernelProfile!.runtimeConfiguration);
+  }
+
+  void editRules(String text) => update(() {
+    if (rules.text != text) rules.text = text;
+    rulesError = '';
+    _refreshDirty();
+  });
+
+  void discardRules() {
+    if (locked) return;
+    editRules(_acceptedKernelProfile?.rules ?? '');
+  }
+
+  /// 只提交直连规则；其他表单的草稿继续保留。
+  Future<void> applyRules() => action(() async {
+    if (!proxy.connected) throw StateError('请先连接代理内核');
+    if (routesConflict) throw StateError('请先核对内核配置冲突');
+    if (!rulesDirty) return;
+    captureConnection();
+    rulesError = '';
+    final int appliedRevision;
+    try {
+      appliedRevision = await proxy.updateDirectRules(
+        rules.text,
+        expectedRevision: baseRevision,
+      );
+    } catch (e) {
+      rulesError = proxy.redact(e.toString());
+      rethrow;
+    }
+    if (!active) return;
+    update(() {
+      if (proxy.configurationRevision != appliedRevision ||
+          _acceptedKernelGeneration != proxy.kernelGeneration) {
+        routesConflict = true;
+        rulesError = '提交后配置再次变化，草稿已保留，请重新读取并核对配置';
+        return;
+      }
+      _acceptedKernelProfile = proxy.appliedProfile;
+      baseRevision = appliedRevision;
+      rules.text = proxy.appliedProfile!.rules;
+      _refreshDirty();
+    });
+    if (!routesConflict) message('直连规则已应用并保存；路由变化的连接需要重新建立');
+  }, preserveDrafts: true);
+
+  Future<bool> validateRuleDraft(String text) async {
+    var valid = false;
+    await action(() async {
+      if (!proxy.connected) throw StateError('请先连接代理内核');
+      await proxy.validateDirectRules(text);
+      valid = true;
+    }, preserveDrafts: true);
+    return valid;
+  }
+
+  Future<void> queryRoute(String target) => action(() async {
+    if (!proxy.connected) throw StateError('请先连接代理内核');
+    routeQueryId = null;
+    routeQueryTarget = target;
+    _routeQueryRevision = proxy.revision;
+    _routeQueryGeneration = proxy.kernelGeneration;
+    routeQueryId = await proxy.resolveRoute(target);
+  });
+
   Future<void> validateConfiguration() => action(() async {
     await ensureKernel();
     await proxy.validateConfiguration(draftProfile());
     message('配置校验通过，尚未应用');
-  });
-  Future<void> validateRules() => action(() async {
-    await proxy.validateRules(draftProfile(), resources);
-    message('规则校验通过');
-  });
-  Future<void> reloadRules() => action(() async {
-    await proxy.reloadRules(expectedRevision: baseRevision);
-    if (active) update(() => accept(proxy.appliedProfile!));
-    message('文件规则已重新载入');
   });
   Future<void> diagnose({String? profileId}) =>
       action(() => proxy.diagnose(target.text.trim(), profileId: profileId));
@@ -654,13 +784,20 @@ class ProxyViewModel extends ChangeNotifier {
     update(() => pausedLines = []);
   }
 
+  Future<String?> readRulesFile() async {
+    String? text;
+    await action(() async {
+      final path = await native.chooseFile('rules');
+      if (path != null) text = await File(path).readAsString();
+    });
+    return text;
+  }
+
   Future<void> choose(String kind, TextEditingController controller) async {
     try {
       final path = await native.chooseFile(kind);
       if (path == null || !active) return;
-      final value = kind == 'rules' ? await File(path).readAsString() : path;
-      if (!active) return;
-      controller.text = value;
+      controller.text = path;
       if (active && kind != 'java' && kind != 'jar') changed('');
     } catch (e) {
       message('读取文件失败：$e', failure: true);
@@ -678,7 +815,6 @@ class ProxyViewModel extends ChangeNotifier {
       ...fields.values,
       connectionName,
       rules,
-      routesFile,
       target,
       java,
       jar,
@@ -691,7 +827,11 @@ class ProxyViewModel extends ChangeNotifier {
   }
 
   bool get locked => loading || working || proxy.busy || proxy.changingDatabase;
-  bool get canApply => !locked && (page == 1 || page == 2);
+  bool get canApply =>
+      !locked &&
+      (page == 1 ||
+          page == 2 && rulesDirty && proxy.connected && !routesConflict);
+  Future<void> applyCurrentPage() => page == 2 ? applyRules() : apply();
   void navigate(int value) {
     if (value < 0 || value > 5) return;
     update(() => page = value);
@@ -710,7 +850,9 @@ class ProxyViewModel extends ChangeNotifier {
     }
     if (call.method == 'showSettings') navigate(1);
     if (call.method == 'navigate') navigate(call.arguments as int);
-    if (call.method == 'applyConfiguration' && canApply) await apply();
+    if (call.method == 'applyConfiguration' && canApply) {
+      await applyCurrentPage();
+    }
     if (call.method == 'toggleProxy' && !locked) {
       await (proxy.running ? stop() : start());
       if (proxy.error.isNotEmpty) await native.showWindow();

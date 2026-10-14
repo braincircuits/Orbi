@@ -32,8 +32,6 @@ class RoutingKernel extends TestKernel {
         connections: previous.connections.map((c) => c.copy()).toList(),
         defaultConnectionId: previous.defaultConnectionId,
         rules: previous.rules,
-        routesFile: previous.routesFile,
-        inlineRules: previous.inlineRules,
         routesOverrides: routes.entries
             .map((e) => '${e.value} ${e.key}')
             .join('\n'),
@@ -66,8 +64,6 @@ void main() {
     model.fields['password']!.text = '草稿密码';
     model.fields['port']!.text = '8888';
     model.rules.text = 'draft.example';
-    model.routesFile.text = '/tmp/草稿规则.txt';
-    model.inlineRules = false;
     model.changed('');
     model.addConnection();
     model.defaultId = model.editingId;
@@ -87,8 +83,6 @@ void main() {
     expect(model.connectionDrafts.first.values['password'], '草稿密码');
     expect(model.fields['port']!.text, '8888');
     expect(model.rules.text, 'draft.example');
-    expect(model.routesFile.text, '/tmp/草稿规则.txt');
-    expect(model.inlineRules, isFalse);
     expect(kernel.appliedProfile!.connections.length, 1);
     expect(kernel.appliedProfile!.selected.name, '默认连接');
     expect(kernel.appliedProfile!.values['port'], '8080');
@@ -118,12 +112,13 @@ void main() {
     expect(kernel.writes, isEmpty);
   });
 
-  test('并发外部配置变更仍以内核为准，不保存错误版本', () async {
+  test('目标规则提交遇到外部变化时保留草稿并阻止覆盖', () async {
     kernel.externalChange = true;
     await model.routeTarget('example.com', 'direct');
-    expect(model.baseRevision, 3);
-    expect(model.fields['server.host']!.text, 'external.example');
-    expect(model.dirty, isFalse);
+    expect(model.baseRevision, 1);
+    expect(model.rules.text, 'draft.example');
+    expect(model.routesConflict, isTrue);
+    expect(model.dirty, isTrue);
     expect(kernel.writes, isEmpty);
   });
 }

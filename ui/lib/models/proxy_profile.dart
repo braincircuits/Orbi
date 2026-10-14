@@ -38,10 +38,8 @@ class ProxyProfile {
   ProxyProfile({
     Map<String, String>? values,
     this.rules = '',
-    this.routesFile = '',
     this.routesOverrides = '',
     this.routingMode = 'rules',
-    this.inlineRules = true,
     this.javaPath = '',
     this.jarPath = '',
     List<ConnectionProfile>? connections,
@@ -71,7 +69,6 @@ class ProxyProfile {
   late List<ConnectionProfile> connections;
   String defaultConnectionId;
   String rules;
-  String routesFile;
   String routesOverrides;
   String routingMode;
   Map<String, String> get targetRoutes {
@@ -83,7 +80,6 @@ class ProxyProfile {
     return result;
   }
 
-  bool inlineRules;
   String javaPath;
   String jarPath;
   ConnectionProfile get selected =>
@@ -92,8 +88,7 @@ class ProxyProfile {
     'routingMode': routingMode,
     'bind': values['bind']!,
     'port': values['port']!,
-    if (inlineRules) 'routesInline': rules,
-    if (routesFile.isNotEmpty) 'routesFile': routesFile,
+    'routesInline': rules,
     if (routesOverrides.isNotEmpty) 'routesOverrides': routesOverrides,
     'connectTimeoutMillis': values['local.connectTimeoutMillis']!,
   };
@@ -131,10 +126,7 @@ class ProxyProfile {
       defaultConnectionId: config['defaultConnectionId'] as String,
       routingMode: '${local['routingMode'] ?? 'rules'}',
       rules: '${local['routesInline'] ?? ''}',
-      routesFile: '${local['routesFile'] ?? ''}',
       routesOverrides: '${local['routesOverrides'] ?? ''}',
-      inlineRules:
-          local.containsKey('routesInline') || !local.containsKey('routesFile'),
       javaPath: javaPath,
       jarPath: jarPath,
     );

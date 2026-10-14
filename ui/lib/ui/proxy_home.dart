@@ -30,6 +30,7 @@ class _ProxyHomeState extends State<ProxyHome> {
   final keyboardFocus = FocusNode(skipTraversal: true);
   late final AppLifecycleListener lifecycle;
   late final StreamSubscription<UiMessage> messages;
+  UiMessage? visibleMessage;
   int previousPage = 0;
   bool settingsOpen = false;
   (int, int)? overviewGeneration;
@@ -70,42 +71,53 @@ class _ProxyHomeState extends State<ProxyHome> {
     model.addListener(_modelChanged);
     messages = model.messages.stream.listen((message) {
       if (!mounted) return;
+      if (visibleMessage?.text == message.text &&
+          visibleMessage?.failure == message.failure) {
+        return;
+      }
+      visibleMessage = message;
       final theme = Theme.of(context);
       final size = MediaQuery.sizeOf(context);
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            key: const ValueKey('desktop-message'),
-            width: math.min(520, size.width - 32),
-            duration: Duration(seconds: message.failure ? 8 : 4),
-            content: Semantics(
-              liveRegion: true,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(
-                    message.failure
-                        ? Icons.error_outline
-                        : Icons.check_circle_outline,
-                    color: message.failure
-                        ? theme.colorScheme.error
-                        : DesktopDesign.success(theme.brightness),
-                    size: 20,
-                    semanticLabel: message.failure ? '操作失败' : '操作完成',
+      final messenger = ScaffoldMessenger.of(context);
+      // 新消息替换当前提示；重复消息不排队，也不延长显示时间。
+      messenger.removeCurrentSnackBar();
+      final controller = messenger.showSnackBar(
+        SnackBar(
+          key: const ValueKey('desktop-message'),
+          width: math.min(520, size.width - 32),
+          duration: Duration(seconds: message.failure ? 8 : 4),
+          content: Semantics(
+            liveRegion: true,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  message.failure
+                      ? Icons.error_outline
+                      : Icons.check_circle_outline,
+                  color: message.failure
+                      ? theme.colorScheme.error
+                      : DesktopDesign.success(theme.brightness),
+                  size: 20,
+                  semanticLabel: message.failure ? '操作失败' : '操作完成',
+                ),
+                const SizedBox(width: DesktopDesign.spacing),
+                Expanded(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxHeight: size.height * .3),
+                    child: SingleChildScrollView(child: Text(message.text)),
                   ),
-                  const SizedBox(width: DesktopDesign.spacing),
-                  Expanded(
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(maxHeight: size.height * .3),
-                      child: SingleChildScrollView(child: Text(message.text)),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
-        );
+        ),
+      );
+      unawaited(
+        controller.closed.then((_) {
+          if (identical(visibleMessage, message)) visibleMessage = null;
+        }),
+      );
     });
     NativeBridge.channel.setMethodCallHandler((call) async {
       if (call.method == 'showSettings') {
@@ -276,14 +288,14 @@ class _ProxyHomeState extends State<ProxyHome> {
               meta: meta,
               control: !meta,
             ): () {
-              if (model.canApply) unawaited(model.apply());
+              if (model.canApply) unawaited(model.applyCurrentPage());
             },
             SingleActivator(
               LogicalKeyboardKey.enter,
               meta: meta,
               control: !meta,
             ): () {
-              if (model.canApply) unawaited(model.apply());
+              if (model.canApply) unawaited(model.applyCurrentPage());
             },
           },
         },
@@ -578,13 +590,6 @@ class _ProxyHomeState extends State<ProxyHome> {
             const SizedBox(width: 7),
             Text(_proxyState, style: TextStyle(fontSize: 11, color: ui.muted)),
           ],
-          if (model.page == 2) ...[
-            const SizedBox(width: 12),
-            FilledButton(
-              onPressed: model.locked ? null : model.apply,
-              child: const Text('应用配置'),
-            ),
-          ],
         ],
       ),
     ),
@@ -607,7 +612,7 @@ class _ProxyHomeState extends State<ProxyHome> {
       ),
       child: Row(
         children: [
-          if (model.locked) ...[
+          if (model.showBlockingProgress) ...[
             SizedBox.square(
               dimension: 12,
               child: CircularProgressIndicator(strokeWidth: 2, color: ui.muted),
@@ -620,11 +625,12 @@ class _ProxyHomeState extends State<ProxyHome> {
                   ? model.proxy.connected
                         ? '正在准备代理…'
                         : '正在读取内核配置…'
-                  : model.locked
+                  : model.showBlockingProgress
                   ? '正在处理…'
                   : !model.proxy.connected
                   ? '等待连接内核'
-                  : model.proxy.configurationChanged
+                  : model.proxy.configurationChanged &&
+                        !model.routingModeChanging
                   ? '正在同步内核配置…'
                   : model.dirty
                   ? '草稿未应用'

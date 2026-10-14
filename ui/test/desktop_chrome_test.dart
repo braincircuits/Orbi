@@ -99,6 +99,39 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('重复告警不排队不续时，新告警替换且关闭后不再出现', (tester) async {
+    final model = _DesktopModel();
+    addTearDown(model.dispose);
+    await tester.pumpWidget(NetworkApp(model: model));
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 8; i++) {
+      model.message('请填写域名或 IP', failure: true);
+    }
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 6));
+    model.message('请填写域名或 IP', failure: true);
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('desktop-message')), findsNothing);
+    for (var i = 0; i < 8; i++) {
+      model.message('错误 $i', failure: true);
+    }
+    await tester.pumpAndSettle();
+    expect(find.text('错误 7'), findsOneWidget);
+    expect(find.text('错误 0'), findsNothing);
+    final message = find.byKey(const ValueKey('desktop-message'));
+    await tester.tap(
+      find.descendant(of: message, matching: find.byType(IconButton)),
+    );
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 30));
+    expect(message, findsNothing);
+    model.message('错误 7', failure: true);
+    await tester.pumpAndSettle();
+    expect(message, findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('处理中移除表单键盘焦点，恢复后保留草稿', (tester) async {
     tester.view.physicalSize = const Size(1120, 780);
     tester.view.devicePixelRatio = 1;
@@ -109,7 +142,10 @@ void main() {
     await tester.pumpWidget(NetworkApp(model: model));
     model.navigate(2);
     await tester.pumpAndSettle();
+    await tester.tap(find.text('批量编辑'));
+    await tester.pumpAndSettle();
     final field = find.byKey(const ValueKey('rules-editor'));
+    await tester.ensureVisible(field);
     await tester.enterText(field, 'example.com');
     final editor = tester.widget<EditableText>(
       find.descendant(of: field, matching: find.byType(EditableText)),
