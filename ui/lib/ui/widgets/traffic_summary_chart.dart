@@ -1,78 +1,100 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../models/traffic_summary.dart';
 import '../desktop_theme.dart';
-import 'traffic_chart.dart';
+import '../traffic_format.dart';
 
-/// 历史图展示每段字节总量，不把累计流量当作瞬时速率连线。
+/// 分钟与小时共用区间流量折线；无记录处断开，有记录的零流量正常连线。
 class TrafficSummaryChart extends StatefulWidget {
-  const TrafficSummaryChart({
-    super.key,
-    required this.summary,
-    required this.window,
-    required this.onOpen,
-  });
+  const TrafficSummaryChart({super.key, required this.summary, this.from});
   final TrafficSummary summary;
-  final TrafficWindow window;
-  final ValueChanged<TrafficBucket> onOpen;
+  final int? from;
   @override
   State<TrafficSummaryChart> createState() => _TrafficSummaryChartState();
 }
 
 class _TrafficSummaryChartState extends State<TrafficSummaryChart> {
   int? selected;
+  bool showSend = true, showReceive = true;
   @override
   void didUpdateWidget(TrafficSummaryChart oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.summary != widget.summary) selected = null;
+    if (oldWidget.summary != widget.summary || oldWidget.from != widget.from) {
+      selected = null;
+    }
   }
 
-  String startLabel(TrafficBucket bucket) =>
-      '${trafficDate(bucket.from)} ${trafficTime(bucket.from)} ${bucket.from.timeZoneName}';
-  String details(TrafficBucket bucket) => bucket.from.isAfter(DateTime.now())
-      ? '尚未到达'
-      : bucket.recordCount == 0
-      ? '无分钟记录'
-      : '发送 ${formatTrafficBytes(bucket.sentBytes)} · 接收 ${formatTrafficBytes(bucket.receivedBytes)}';
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final buckets = widget.summary.buckets;
-    final up = DesktopDesign.trafficSend(theme.brightness);
-    final down = DesktopDesign.trafficReceive(theme.brightness);
+    final buckets = widget.summary.buckets
+        .where((b) => b.from >= (widget.from ?? widget.summary.from))
+        .toList();
+    final up = DesktopDesign.trafficSend(theme.brightness),
+        down = DesktopDesign.trafficReceive(theme.brightness);
     final maximum =
         buckets.fold<int>(
           1,
-          (v, b) => math.max(v, math.max(b.sentBytes, b.receivedBytes)),
+          (v, b) => math.max(
+            v,
+            math.max(
+              showSend ? b.sentBytes : 0,
+              showReceive ? b.receivedBytes : 0,
+            ),
+          ),
         ) *
         1.15;
     final index = selected;
+    final bucket = index == null || index >= buckets.length
+        ? null
+        : buckets[index];
+    final detail = bucket == null
+        ? '悬停或使用左右方向键查看区间流量'
+        : '${bucket.label} · ${bucket.recordCount == 0 ? '无记录' : '发送 ${formatTrafficBytes(bucket.sentBytes)} · 接收 ${formatTrafficBytes(bucket.receivedBytes)}'}';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Wrap(
-          spacing: 20,
+          spacing: 16,
           runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Text('● 发送', style: TextStyle(color: up)),
-            Text('● 接收', style: TextStyle(color: down)),
+            TextButton.icon(
+              onPressed: () => setState(() => showSend = !showSend),
+              icon: Icon(
+                showSend ? Icons.show_chart : Icons.visibility_off_outlined,
+                color: up,
+                size: 16,
+              ),
+              label: const Text('发送'),
+            ),
+            TextButton.icon(
+              onPressed: () => setState(() => showReceive = !showReceive),
+              icon: Icon(
+                showReceive ? Icons.show_chart : Icons.visibility_off_outlined,
+                color: down,
+                size: 16,
+              ),
+              label: const Text('接收'),
+            ),
             Text(
-              '每${widget.window.period.bucketLabel}流量 · 代理与直连',
+              '每${widget.summary.interval == 'hour' ? '小时' : '分钟'}流量 · 代理与直连',
               style: theme.textTheme.bodySmall,
             ),
           ],
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 12),
         SizedBox(
-          height: 188,
+          height: 204,
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               SizedBox(
-                width: 62,
-                height: 160,
+                width: 72,
+                height: 176,
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -93,123 +115,75 @@ class _TrafficSummaryChartState extends State<TrafficSummaryChart> {
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     final width = constraints.maxWidth;
-                    final step = math.max(
-                      1,
-                      (buckets.length / (width < 400 ? 4 : 8)).ceil(),
-                    );
-                    return Stack(
-                      fit: StackFit.expand,
+                    void select(double x) {
+                      if (buckets.isEmpty || width <= 0) return;
+                      final value = ((x / width) * (buckets.length - 1))
+                          .round()
+                          .clamp(0, buckets.length - 1);
+                      if (value != selected) setState(() => selected = value);
+                    }
+
+                    return Column(
                       children: [
-                        for (final top in [0.0, 80.0, 160.0])
-                          Positioned(
-                            left: 0,
-                            right: 0,
-                            top: top,
-                            child: Divider(
-                              height: 1,
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                          ),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            for (var i = 0; i < buckets.length; i++)
-                              Expanded(
-                                child: Tooltip(
-                                  message:
-                                      '${startLabel(buckets[i])}\n${details(buckets[i])}',
-                                  waitDuration: const Duration(
-                                    milliseconds: 200,
-                                  ),
-                                  child: InkWell(
-                                    key: ValueKey('traffic-bucket-$i'),
-                                    onHover: (hover) {
-                                      if (hover) setState(() => selected = i);
-                                    },
-                                    onFocusChange: (focus) {
-                                      if (focus) setState(() => selected = i);
-                                    },
-                                    onTap:
-                                        buckets[i].from.isAfter(DateTime.now())
-                                        ? null
-                                        : () {
-                                            setState(() => selected = i);
-                                            widget.onOpen(buckets[i]);
-                                          },
-                                    child: Semantics(
-                                      label:
-                                          '${startLabel(buckets[i])}，${details(buckets[i])}',
-                                      child: Container(
-                                        height: 161,
-                                        color: selected == i
-                                            ? theme.colorScheme.primary
-                                                  .withValues(alpha: 0.08)
-                                            : null,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 1,
-                                        ),
-                                        child: buckets[i].recordCount == 0
-                                            ? Align(
-                                                alignment:
-                                                    Alignment.bottomCenter,
-                                                child: Container(
-                                                  height: 3,
-                                                  color: theme
-                                                      .colorScheme
-                                                      .outlineVariant,
-                                                ),
-                                              )
-                                            : Row(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.end,
-                                                children: [
-                                                  Expanded(
-                                                    child: Container(
-                                                      height: math.max(
-                                                        1,
-                                                        160 *
-                                                            buckets[i]
-                                                                .sentBytes /
-                                                            maximum,
-                                                      ),
-                                                      color: up,
-                                                    ),
-                                                  ),
-                                                  const SizedBox(width: 1),
-                                                  Expanded(
-                                                    child: Container(
-                                                      height: math.max(
-                                                        1,
-                                                        160 *
-                                                            buckets[i]
-                                                                .receivedBytes /
-                                                            maximum,
-                                                      ),
-                                                      color: down,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                      ),
-                                    ),
+                        Focus(
+                          onKeyEvent: (_, event) {
+                            if (event is KeyUpEvent || buckets.isEmpty) {
+                              return KeyEventResult.ignored;
+                            }
+                            final direction =
+                                event.logicalKey == LogicalKeyboardKey.arrowLeft
+                                ? -1
+                                : event.logicalKey ==
+                                      LogicalKeyboardKey.arrowRight
+                                ? 1
+                                : 0;
+                            if (direction == 0) return KeyEventResult.ignored;
+                            setState(
+                              () => selected = ((selected ?? 0) + direction)
+                                  .clamp(0, buckets.length - 1),
+                            );
+                            return KeyEventResult.handled;
+                          },
+                          child: Semantics(
+                            label: detail,
+                            child: MouseRegion(
+                              onHover: (event) =>
+                                  select(event.localPosition.dx),
+                              child: GestureDetector(
+                                onTapDown: (event) =>
+                                    select(event.localPosition.dx),
+                                child: CustomPaint(
+                                  key: const ValueKey('traffic-line-chart'),
+                                  size: Size(width, 176),
+                                  painter: _TrafficLines(
+                                    buckets,
+                                    maximum,
+                                    up,
+                                    down,
+                                    theme.colorScheme.outlineVariant,
+                                    showSend,
+                                    showReceive,
+                                    selected,
                                   ),
                                 ),
                               ),
-                          ],
-                        ),
-                        for (var i = 0; i < buckets.length; i += step)
-                          Positioned(
-                            top: 166,
-                            left: (width * i / buckets.length).clamp(
-                              0,
-                              math.max(0, width - 35),
                             ),
-                            child: Text(switch (widget.window.period) {
-                              TrafficPeriod.hour =>
-                                '${buckets[i].from.minute.toString().padLeft(2, '0')}分',
-                              TrafficPeriod.day => trafficTime(buckets[i].from),
-                              TrafficPeriod.month => '${buckets[i].from.day}日',
-                            }, style: theme.textTheme.bodySmall),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        if (buckets.isNotEmpty)
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                buckets.first.shortLabel,
+                                style: theme.textTheme.bodySmall,
+                              ),
+                              Text(
+                                buckets.last.shortLabel,
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ],
                           ),
                       ],
                     );
@@ -220,19 +194,91 @@ class _TrafficSummaryChartState extends State<TrafficSummaryChart> {
           ),
         ),
         const SizedBox(height: 8),
-        Text(
-          index == null
-              ? '悬停查看明细${widget.window.period == TrafficPeriod.hour ? '' : '，点击查看该${widget.window.period == TrafficPeriod.month ? '天' : '小时'}'}'
-              : startLabel(buckets[index]),
-          style: theme.textTheme.bodySmall,
-        ),
-        Text(
-          index == null
-              ? '灰色短线表示无分钟记录；有记录但无流量显示为 0 B。'
-              : details(buckets[index]),
-          style: theme.textTheme.bodySmall,
-        ),
+        Text(detail, style: theme.textTheme.bodySmall),
+        Text('空缺表示无记录；零流量显示为 0 B。', style: theme.textTheme.bodySmall),
       ],
     );
   }
+}
+
+class _TrafficLines extends CustomPainter {
+  _TrafficLines(
+    this.buckets,
+    this.maximum,
+    this.up,
+    this.down,
+    this.grid,
+    this.showSend,
+    this.showReceive,
+    this.selected,
+  );
+  final List<TrafficBucket> buckets;
+  final double maximum;
+  final Color up, down, grid;
+  final bool showSend, showReceive;
+  final int? selected;
+  @override
+  void paint(Canvas canvas, Size size) {
+    final guide = Paint()
+      ..color = grid
+      ..strokeWidth = 1;
+    for (final fraction in [0.0, .5, 1.0]) {
+      canvas.drawLine(
+        Offset(0, size.height * fraction),
+        Offset(size.width, size.height * fraction),
+        guide,
+      );
+    }
+    double x(int i) => buckets.length < 2
+        ? size.width / 2
+        : i * size.width / (buckets.length - 1);
+    void line(bool sending, Color color) {
+      final path = Path();
+      final paint = Paint()
+        ..color = color
+        ..strokeWidth = 1.5
+        ..style = PaintingStyle.stroke;
+      var connected = false;
+      for (var i = 0; i < buckets.length; i++) {
+        final bucket = buckets[i];
+        if (bucket.recordCount == 0) {
+          connected = false;
+          continue;
+        }
+        final y =
+            size.height *
+            (1 - (sending ? bucket.sentBytes : bucket.receivedBytes) / maximum);
+        if (!connected) {
+          path.moveTo(x(i), y);
+        } else {
+          path.lineTo(x(i), y);
+        }
+        // 单独一个有效区间也可见，零流量与缺失记录有明确区别。
+        canvas.drawCircle(Offset(x(i), y), 1.5, Paint()..color = color);
+        connected = true;
+      }
+      canvas.drawPath(path, paint);
+    }
+
+    if (showSend) line(true, up);
+    if (showReceive) line(false, down);
+    if (selected != null && selected! < buckets.length) {
+      canvas.drawLine(
+        Offset(x(selected!), 0),
+        Offset(x(selected!), size.height),
+        guide,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TrafficLines old) =>
+      buckets != old.buckets ||
+      maximum != old.maximum ||
+      up != old.up ||
+      down != old.down ||
+      grid != old.grid ||
+      showSend != old.showSend ||
+      showReceive != old.showReceive ||
+      selected != old.selected;
 }

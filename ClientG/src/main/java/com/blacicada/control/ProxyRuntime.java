@@ -21,8 +21,8 @@ final class ProxyRuntime implements AutoCloseable {
     private com.blacicada.proxy.TrafficStatistics lastTraffic;
     private final HistoryRecorder history;
     ProxyRuntime(HistoryRecorder history) { this.history = history; }
-    java.util.Map<String, Object> traffic(boolean history) {
-        return lastTraffic == null ? com.blacicada.proxy.TrafficStatistics.empty(history) : lastTraffic.snapshot(history);
+    java.util.Map<String, Object> traffic() {
+        return lastTraffic == null ? com.blacicada.proxy.TrafficStatistics.empty() : lastTraffic.snapshot();
     }
 
     /** 运行时诊断与转发共用生效快照；停止时读取待启动的配置。 */

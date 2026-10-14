@@ -14,7 +14,6 @@ public final class TrafficStatistics {
     private final long startedNanos;
     private long previousNanos, previousSent, previousReceived;
     private long minuteStart, minuteUpdatedAt, minuteDuration, minuteSent, minuteReceived;
-    private final ArrayDeque<Map<String, Object>> history = new ArrayDeque<>();
     private Map<String, Object> current;
     private boolean stopped;
     private java.util.function.Consumer<Map<String, Object>> recorder;
@@ -31,7 +30,6 @@ public final class TrafficStatistics {
         minuteStart = Math.floorDiv(startedAt, 60_000) * 60_000;
         minuteUpdatedAt = startedAt;
         current = point(startedAt, 0, 0, 0, 0);
-        history.add(current);
     }
     private Map<String, Object> point(long time, long send, long receive, double upload, double download) {
         return Map.of("sampledAt", time, "sentBytes", send, "receivedBytes", receive,
@@ -92,23 +90,18 @@ public final class TrafficStatistics {
                 ending || seconds <= 0 ? 0 : (upload - previousSent) / seconds,
                 ending || seconds <= 0 ? 0 : (download - previousReceived) / seconds);
         previousNanos = now; previousSent = upload; previousReceived = download;
-        if (((Number) history.getLast().get("sampledAt")).longValue() == time) history.removeLast();
-        history.add(current);
-        while (history.size() > 3601 || history.size() > 1
-                && ((Number) history.getFirst().get("sampledAt")).longValue() < time - 3_600_000) history.removeFirst();
+
     }
-    public synchronized Map<String, Object> snapshot(boolean includeHistory) {
+    public synchronized Map<String, Object> snapshot() {
         var result = new LinkedHashMap<String, Object>(current);
         result.put("sessionId", sessionId); result.put("startedAt", startedAt);
-        if (includeHistory) result.put("history", List.copyOf(history));
         return Collections.unmodifiableMap(result);
     }
-    public static Map<String, Object> empty(boolean includeHistory) {
+    public static Map<String, Object> empty() {
         var result = new LinkedHashMap<String, Object>();
         result.put("sessionId", ""); result.put("startedAt", 0L); result.put("sampledAt", 0L);
         result.put("sentBytes", 0L); result.put("receivedBytes", 0L);
         result.put("sendBytesPerSecond", 0.0); result.put("receiveBytesPerSecond", 0.0);
-        if (includeHistory) result.put("history", List.of());
         return result;
     }
 }

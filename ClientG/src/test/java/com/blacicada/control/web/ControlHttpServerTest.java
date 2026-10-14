@@ -95,13 +95,16 @@ class ControlHttpServerTest {
         assertEquals(0, status.getAsJsonObject("tun").get("interfaceIndex").getAsInt());
     }
 
-    @Test void trafficSummaryValidatesCalendarBoundaries() throws Exception {
-        var data = ok("POST", "/traffic/summary", "{\"boundaries\":[0,60000,120000]}", 200).getAsJsonObject("data");
-        assertEquals(2, data.getAsJsonArray("buckets").size());
-        assertEquals(0, data.get("recordCount").getAsInt());
-        for (String boundaries : List.of("[]", "[0]", "[1,1]", "[2,1]", "[-1,1]", "[0,0.5]", "[0,\"1\"]", "[0,9223372036854775808]", "[0,2851200000]"))
-            assertEquals(400, request("POST", "/traffic/summary", "{\"boundaries\":" + boundaries + "}").statusCode());
-        assertEquals(400, request("POST", "/traffic/summary", "{}").statusCode());
+    @Test void trafficWindowsAreDefinedByKernelAndExcludeUnfinishedHours() throws Exception {
+        var minutes = ok("GET", "/traffic/trend", null, 200).getAsJsonObject("data");
+        assertEquals(1440, minutes.getAsJsonArray("buckets").size());
+        assertEquals("minute", minutes.get("interval").getAsString());
+        assertEquals(java.time.ZoneId.systemDefault().getId(), minutes.get("zoneId").getAsString());
+        var hours = ok("GET", "/traffic/history", null, 200).getAsJsonObject("data");
+        assertEquals("hour", hours.get("interval").getAsString());
+        assertTrue(hours.getAsJsonArray("buckets").size() >= 28 * 24 - 1);
+        assertTrue(hours.getAsJsonArray("buckets").size() <= 31 * 24 + 1);
+        assertTrue(hours.get("to").getAsLong() <= System.currentTimeMillis());
     }
     String profile(String id, String protocol, int port) {
         return "{\"id\":\"" + id + "\",\"name\":\"测试连接\",\"config\":{\"protocol\":\"" + protocol
@@ -173,15 +176,15 @@ class ControlHttpServerTest {
     @Test void trafficApiRetainsStoppedHistoryAndResetsOnStart() throws Exception {
         var empty = ok("GET", "/traffic", null, 200).getAsJsonObject("data");
         assertEquals("", empty.get("sessionId").getAsString());
-        assertTrue(empty.getAsJsonArray("history").isEmpty());
+        assertFalse(empty.has("history"));
         ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
         ok("PATCH", "/settings", "{\"port\":0}", 200);
         var started = ok("POST", "/proxy/start", null, 200).getAsJsonObject("data").getAsJsonObject("traffic");
         assertFalse(started.has("history"));
         Thread.sleep(1100);
         var live = ok("GET", "/traffic", null, 200).getAsJsonObject("data");
-        assertTrue(live.getAsJsonArray("history").size() >= 2);
-        assertTrue(((Map<?, ?>) control.snapshot().get("traffic")).containsKey("history"));
+        assertTrue(live.get("sampledAt").getAsLong() > live.get("startedAt").getAsLong());
+        assertFalse(((Map<?, ?>) control.snapshot().get("traffic")).containsKey("history"));
         var stopped = ok("POST", "/proxy/stop", null, 200).getAsJsonObject("data").getAsJsonObject("traffic");
         assertEquals(started.get("sessionId"), stopped.get("sessionId"));
         assertEquals(0, stopped.get("sendBytesPerSecond").getAsDouble());
@@ -189,23 +192,18 @@ class ControlHttpServerTest {
         assertNotEquals(started.get("sessionId"), next.get("sessionId"));
         assertEquals(0, next.get("sentBytes").getAsLong());
     }
-    @Test void historyEndpointsValidateRangesAndPaginatePersistentMinutes() throws Exception {
+    @Test void historyEndpointsMergeMinutesAndValidateAccessQueries() throws Exception {
         ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
         ok("PATCH", "/settings", "{\"port\":0}", 200);
         ok("POST", "/proxy/start", null, 200); ok("POST", "/proxy/stop", null, 200);
         ok("POST", "/proxy/start", null, 200); ok("POST", "/proxy/stop", null, 200);
-        var page = ok("GET", "/traffic/history?limit=1", null, 200).getAsJsonObject("data");
-        assertEquals(1, page.getAsJsonArray("items").size());
-        assertTrue(page.get("hasMore").getAsBoolean());
-        var older = ok("GET", "/traffic/history?beforeId=" + page.get("nextBeforeId").getAsLong(), null, 200).getAsJsonObject("data");
-        assertFalse(older.getAsJsonArray("items").isEmpty());
+        var page = ok("GET", "/traffic/trend", null, 200).getAsJsonObject("data");
+        assertEquals(1, page.get("recordCount").getAsInt());
         assertTrue(ok("GET", "/access-records?target=example.com", null, 200).getAsJsonObject("data").getAsJsonArray("items").isEmpty());
-        ok("GET", "/traffic/history?limit=501", null, 400);
         ok("GET", "/access-records?from=2&to=1", null, 400);
         ok("GET", "/access-records?beforeId=invalid", null, 400);
         ok("GET", "/access-records?state=failed", null, 200);
         ok("GET", "/access-records?state=unknown", null, 400);
-        ok("GET", "/traffic/history?state=failed", null, 400);
     }
     @Test void tunnelApiAndEventsIncludeDirectConnectionsAndClearOnStop() throws Exception {
         assertTrue(ok("GET", "/tunnels", null, 200).getAsJsonArray("data").isEmpty());

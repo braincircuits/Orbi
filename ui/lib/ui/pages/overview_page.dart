@@ -1,3 +1,5 @@
+import '../traffic_format.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -451,14 +453,7 @@ class _OverviewPageState extends State<OverviewPage> {
       ui.card(
         Column(
           children: [
-            ListenableBuilder(
-              listenable: model.trafficChanges,
-              builder: (context, _) => TrafficChart(
-                traffic: proxy.traffic,
-                connected: proxy.connected,
-                running: running,
-              ),
-            ),
+            TrafficChart(proxy: proxy),
             Align(
               alignment: Alignment.centerRight,
               child: TextButton.icon(

@@ -77,7 +77,7 @@ public final class KernelControl implements AutoCloseable {
         result.put("tun", Map.of("state", tunState, "error", tunError, "interfaceIndex", runtime.interfaceIndex()));
         result.put("defaultConnectionId", config.defaultConnectionId());
         result.put("tunnels", tunnels());
-        result.put("traffic", runtime.traffic(false));
+        result.put("traffic", runtime.traffic());
         result.put("historyStorage", history.status());
         result.put("connections", config.connections().stream().map(p -> Map.of("id", p.id(), "name", p.name(),
                 "protocol", p.config().get("protocol", "http3"),
@@ -88,41 +88,22 @@ public final class KernelControl implements AutoCloseable {
     }
     private boolean active(String id) { return runtime.isRunning() && id.equals(config.defaultConnectionId()); }
     public synchronized List<Map<String, Object>> tunnels() { return runtime.tunnels(); }
-    public synchronized Map<String, Object> traffic() { return runtime.traffic(true); }
-    public synchronized Map<String, Object> trafficSummary(JsonObject body) throws SQLException {
-        ensureOpen();
-        var field = body.get("boundaries");
-        if (field == null || !field.isJsonArray() || field.getAsJsonArray().size() < 2 || field.getAsJsonArray().size() > 63)
-            throw new ControlException(400, "INVALID_QUERY", "统计需要 2 至 63 个递增的毫秒时间边界");
-        var boundaries = new ArrayList<Long>();
-        for (var value : field.getAsJsonArray()) {
-            long time;
-            try {
-                if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) throw new ArithmeticException();
-                time = value.getAsBigDecimal().longValueExact();
-            } catch (ArithmeticException | NumberFormatException e) {
-                throw new ControlException(400, "INVALID_QUERY", "统计时间必须是整数毫秒时间戳");
-            }
-            if (time < 0 || !boundaries.isEmpty() && time <= boundaries.getLast())
-                throw new ControlException(400, "INVALID_QUERY", "统计时间边界必须非负且严格递增");
-            boundaries.add(time);
-        }
-        if (boundaries.getLast() - boundaries.getFirst() > 32L * 86400000)
-            throw new ControlException(400, "INVALID_QUERY", "单次统计范围不能超过 32 天");
-        history.flush();
-        return database.trafficSummary(boundaries);
+    public synchronized Map<String, Object> traffic() { return runtime.traffic(); }
+    /** 时间范围由内核所在时区确定，客户端不自行计算日历边界。 */
+    public synchronized Map<String, Object> trafficSeries(boolean hourly) throws SQLException {
+        ensureOpen(); history.finish();
+        return database.trafficSeries(System.currentTimeMillis(), java.time.ZoneId.systemDefault(), hourly);
     }
-    public synchronized Map<String, Object> history(boolean traffic, long from, long to, long before, int limit, String filter, String state) throws SQLException {
+    public synchronized Map<String, Object> history(long from, long to, long before, int limit, String filter, String state) throws SQLException {
         ensureOpen();
         if (from < 0 || to <= from || before <= 0 || limit < 1 || limit > 500 || filter.length() > 255)
             throw new ControlException(400, "INVALID_QUERY", "历史查询范围、游标或数量无效");
-        if (!Set.of("", "pending", "connected", "failed", "cancelled").contains(state) || traffic && !state.isEmpty())
+        if (!Set.of("", "pending", "connected", "failed", "cancelled").contains(state))
             throw new ControlException(400, "INVALID_QUERY", "访问记录状态筛选无效");
         history.flush();
-        return traffic ? database.trafficHistory(from, to, before, limit, filter)
-                : database.accessHistory(from, to, before, limit, filter, state);
+        return database.accessHistory(from, to, before, limit, filter, state);
     }
-    /** 订阅快照携带完整窗口，后续状态事件只携带最新采样。 */
+    /** 订阅快照与状态事件均携带最新速率；区间流量通过独立接口读取。 */
     public synchronized Map<String, Object> snapshot() {
         var result = status(); result.put("traffic", traffic()); return result;
     }
@@ -296,7 +277,7 @@ public final class KernelControl implements AutoCloseable {
             }
             tunSession = ""; tunState = "failed";
         }
-        if (!storageFailed) history.flush();
+        if (!storageFailed) history.tick();
         Map<String, Object> state = status(); String encoded = JSON.toJson(state);
         if (!encoded.equals(previousState)) { previousState = encoded; events.emit("status", state); }
     }

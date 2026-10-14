@@ -27,14 +27,14 @@ final class ControlApi {
                 case "POST /api/v1/tun/stop" -> { control.stopTun(); data = control.status(); }
                 case "POST /api/v1/tun/finish" -> { control.finishTun(string(body, "session"), string(body, "error")); data = control.status(); }
                 case "GET /api/v1/traffic" -> data = control.traffic();
-                case "POST /api/v1/traffic/summary" -> data = control.trafficSummary(body);
-                case "GET /api/v1/traffic/history", "GET /api/v1/access-records" -> {
+                case "GET /api/v1/traffic/trend" -> data = control.trafficSeries(false);
+                case "GET /api/v1/traffic/history" -> data = control.trafficSeries(true);
+                case "GET /api/v1/access-records" -> {
                     var query = query(uri);
-                    boolean traffic = path.endsWith("/traffic/history");
-                    data = control.history(traffic, Long.parseLong(query.getOrDefault("from", "0")),
+                    data = control.history(Long.parseLong(query.getOrDefault("from", "0")),
                             Long.parseLong(query.getOrDefault("to", Long.toString(Long.MAX_VALUE))),
                             Long.parseLong(query.getOrDefault("beforeId", Long.toString(Long.MAX_VALUE))),
-                            Integer.parseInt(query.getOrDefault("limit", "100")), query.getOrDefault(traffic ? "sessionId" : "target", ""), query.getOrDefault("state", ""));
+                            Integer.parseInt(query.getOrDefault("limit", "100")), query.getOrDefault("target", ""), query.getOrDefault("state", ""));
                 }
                 case "GET /api/v1/tunnels" -> data = control.tunnels();
                 case "POST /api/v1/proxy/start" -> { control.start(); data = control.status(); }

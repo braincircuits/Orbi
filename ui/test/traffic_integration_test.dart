@@ -4,7 +4,6 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:network_ui/models/proxy_profile.dart';
-import 'package:network_ui/models/traffic_summary.dart';
 import 'package:network_ui/services/proxy_controller.dart';
 
 void main() {
@@ -78,13 +77,10 @@ void main() {
           () => proxy.traffic?.current.receivedBytes == payload.length,
         );
         expect(proxy.traffic!.current.sentBytes, payload.length);
-        expect(
-          proxy.traffic!.history.any((sample) => sample.sendBytesPerSecond > 0),
-          isTrue,
-        );
+        expect(proxy.traffic!.current.sendBytesPerSecond, greaterThan(0));
         expect(await observer.attach(), isTrue);
         expect(observer.traffic!.sessionId, session);
-        expect(observer.traffic!.history.length, greaterThan(1));
+        expect(observer.traffic!.current.receivedBytes, payload.length);
         await proxy.stop();
         expect(proxy.traffic!.current.receivedBytes, payload.length);
         expect(proxy.traffic!.current.receiveBytesPerSecond, 0);
@@ -101,25 +97,15 @@ void main() {
           (await proxy.accessHistory()).items.single.target,
           records.items.single.target,
         );
+        final summary = await proxy.trafficSummary(hourly: false);
+        expect(summary.sentBytes, payload.length);
+        expect(summary.receivedBytes, payload.length);
+        expect(summary.recordCount, greaterThanOrEqualTo(1));
         expect(
-          (await proxy.trafficHistory()).items.fold<int>(
-            0,
-            (sum, row) => sum + row.sentBytes,
-          ),
+          summary.buckets.fold<int>(0, (sum, b) => sum + b.sentBytes),
           payload.length,
         );
-        for (final period in TrafficPeriod.values) {
-          final summary = await proxy.trafficSummary(
-            TrafficWindow(period, DateTime.now()),
-          );
-          expect(summary.sentBytes, payload.length);
-          expect(summary.receivedBytes, payload.length);
-          expect(summary.recordCount, greaterThanOrEqualTo(1));
-          expect(
-            summary.buckets.fold<int>(0, (sum, b) => sum + b.sentBytes),
-            payload.length,
-          );
-        }
+        expect((await proxy.trafficSummary()).interval, 'hour');
         await proxy.start(
           proxy.appliedProfile!,
           resources ?? '',

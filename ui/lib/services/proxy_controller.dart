@@ -112,34 +112,12 @@ class ProxyController extends ChangeNotifier {
   List<TunnelStatus> tunnels = const [];
   TrafficSnapshot? traffic;
   String historyStorageWarning = '';
-  Future<TrafficSummary> trafficSummary(TrafficWindow window) async {
+  Future<TrafficSummary> trafficSummary({bool hourly = true}) async {
     final result = await _request(
-      'POST',
-      'traffic/summary',
-      body: {
-        'boundaries': window.boundaries
-            .map((time) => time.millisecondsSinceEpoch)
-            .toList(),
-      },
+      'GET',
+      hourly ? 'traffic/history' : 'traffic/trend',
     );
     return TrafficSummary.fromJson(result['data'] as Map<String, dynamic>);
-  }
-
-  Future<TrafficRecordPage> trafficHistory({
-    int? from,
-    int? to,
-    int? beforeId,
-  }) async {
-    final query = Uri(
-      queryParameters: {
-        'limit': '100',
-        if (from != null) 'from': '$from',
-        if (to != null) 'to': '$to',
-        if (beforeId != null) 'beforeId': '$beforeId',
-      },
-    ).query;
-    final result = await _request('GET', 'traffic/history?$query');
-    return TrafficRecordPage.fromJson(result['data'] as Map<String, dynamic>);
   }
 
   Future<AccessRecordPage> accessHistory({

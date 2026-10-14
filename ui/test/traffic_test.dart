@@ -1,3 +1,4 @@
+import 'package:network_ui/ui/traffic_format.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:network_ui/models/kernel_status.dart';
@@ -5,77 +6,42 @@ import 'package:network_ui/ui/desktop_theme.dart';
 import 'package:network_ui/ui/widgets/traffic_chart.dart';
 
 import 'traffic_fixture.dart';
+import 'traffic_summary_test.dart' show SummaryKernel;
 
 void main() {
-  test('流量历史去重、拒绝旧采样、保持一小时窗口并按启动会话重置', () {
-    var traffic = TrafficSnapshot.merge(null, trafficFixture(time: 100000));
-    expect(traffic.history.length, 61);
-    traffic = TrafficSnapshot.merge(
-      traffic,
-      trafficFixture(time: 100000, history: false),
+  test('实时快照去重、拒绝旧采样并按启动会话重置', () {
+    final first = TrafficSnapshot.merge(null, trafficFixture(time: 100000));
+    expect(
+      TrafficSnapshot.merge(first, trafficFixture(time: 100000)),
+      same(first),
     );
-    expect(traffic.history.length, 61);
-    traffic = TrafficSnapshot.merge(
-      traffic,
-      trafficFixture(time: 99000, history: false),
+    expect(
+      TrafficSnapshot.merge(first, trafficFixture(time: 99000)),
+      same(first),
     );
-    expect(traffic.current.sampledAt, 100000);
-    for (var i = 1; i <= 4000; i++) {
-      traffic = TrafficSnapshot.merge(
-        traffic,
-        trafficFixture(time: 100000 + i * 1000, history: false),
-      );
-    }
-    expect(traffic.history.length, 3601);
-    expect(traffic.history.first.sampledAt, 500000);
-    traffic = TrafficSnapshot.merge(
-      traffic,
-      trafficFixture(session: '新的启动', time: 600000, history: false),
+    final next = TrafficSnapshot.merge(first, trafficFixture(time: 200000));
+    expect(next.current.sampledAt, 200000);
+    final restarted = TrafficSnapshot.merge(
+      next,
+      trafficFixture(session: '新的启动', time: 300000),
     );
-    expect(traffic.history.length, 1);
-    expect(traffic.sessionId, '新的启动');
-    expect(() => traffic.history.clear(), throwsUnsupportedError);
-  });
-  test('快照恢复断线历史，不把缺失采样伪造成零流量', () {
-    final first = TrafficSnapshot.merge(
-      null,
-      trafficFixture(time: 100000, history: false),
-    );
-    final restored = TrafficSnapshot.merge(first, trafficFixture(time: 200000));
-    expect(restored.history.length, 61);
-    expect(restored.history.first.sampledAt, 140000);
+    expect(restarted.sessionId, '新的启动');
     expect(formatTrafficBytes(2460000), '2.46 MB');
     expect(formatTrafficBytes(128000), '128 KB');
   });
-  testWidgets('趋势范围、图例、悬停与离线和停止状态', (tester) async {
-    var connected = true, running = true;
-    final traffic = TrafficSnapshot.merge(null, trafficFixture(time: 300000));
-    Future<void> pump() => tester.pumpWidget(
+  testWidgets('分钟趋势切换范围不重复请求，离线保留数据', (tester) async {
+    final kernel = SummaryKernel()..connected = true;
+    addTearDown(kernel.dispose);
+    await tester.pumpWidget(
       MaterialApp(
         theme: desktopTheme(Brightness.light),
-        home: Scaffold(
-          body: SizedBox(
-            width: 500,
-            child: TrafficChart(
-              traffic: traffic,
-              connected: connected,
-              running: running,
-            ),
-          ),
-        ),
+        home: Scaffold(body: TrafficChart(proxy: kernel)),
       ),
     );
-    await pump();
-    expect(find.text('流量趋势'), findsOneWidget);
-    expect(
-      tester
-          .widget<SegmentedButton<int>>(
-            find.byKey(const ValueKey('traffic-range')),
-          )
-          .selected,
-      {60},
-    );
-    await tester.tap(find.text('5 分钟'));
+    await tester.pumpAndSettle();
+    expect(kernel.requests, [false]);
+    expect(find.text('每分钟流量 · 代理与直连'), findsOneWidget);
+    await tester.tap(find.text('24 小时'));
     await tester.pump();
     expect(
       tester
@@ -83,71 +49,18 @@ void main() {
             find.byKey(const ValueKey('traffic-range')),
           )
           .selected,
-      {5},
+      {24},
     );
-    await tester.tap(find.text('1 小时'));
+    expect(kernel.requests, [false]);
+    kernel.connected = false;
+    kernel.publish();
     await tester.pump();
-    expect(
-      tester
-          .widget<SegmentedButton<int>>(
-            find.byKey(const ValueKey('traffic-range')),
-          )
-          .selected,
-      {60},
-    );
-    await tester.tap(find.text('发送'));
-    await tester.tap(find.text('接收'));
-    await tester.pump();
-    expect(find.text('选择发送或接收以显示曲线'), findsOneWidget);
-    await tester.tap(find.text('接收'));
-    await tester.pump();
-    final rect = tester.getRect(find.byKey(const ValueKey('traffic-plot')));
-    await tester.tapAt(Offset(rect.right - 20, rect.top + 70));
-    await tester.pump();
-    expect(find.text('接收 2.46 MB/s'), findsOneWidget);
-    running = false;
-    await pump();
-    expect(find.text('服务已停止 · 保留最近记录'), findsOneWidget);
-    connected = false;
-    await pump();
-    expect(find.text('内核未连接，流量数据不可用'), findsOneWidget);
-    expect(find.text('接收 2.46 MB/s'), findsNothing);
+    expect(find.text('内核未连接，保留最近读取的分钟趋势。'), findsOneWidget);
+    kernel.connected = true;
+    kernel.publish();
+    await tester.pumpAndSettle();
+    expect(kernel.requests, [false, false]);
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
   });
-  for (final platform in [
-    TargetPlatform.macOS,
-    TargetPlatform.windows,
-    TargetPlatform.linux,
-  ]) {
-    for (final brightness in Brightness.values) {
-      testWidgets('一小时趋势在 $platform / $brightness 的窄布局和单点启动状态不溢出', (
-        tester,
-      ) async {
-        for (final width in [320.0, 1000.0]) {
-          tester.view.physicalSize = Size(width, 640);
-          tester.view.devicePixelRatio = 1;
-          await tester.pumpWidget(
-            MaterialApp(
-              theme: desktopTheme(brightness).copyWith(platform: platform),
-              home: Scaffold(
-                body: TrafficChart(
-                  traffic: TrafficSnapshot.merge(null, {
-                    ...trafficFixture(time: 60000, history: false),
-                    'startedAt': 60000,
-                  }),
-                  connected: true,
-                  running: true,
-                ),
-              ),
-            ),
-          );
-          await tester.pump();
-          expect(find.text('1 小时'), findsOneWidget);
-          expect(tester.takeException(), isNull);
-        }
-        addTearDown(tester.view.resetPhysicalSize);
-        addTearDown(tester.view.resetDevicePixelRatio);
-      });
-    }
-  }
 }

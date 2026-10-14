@@ -107,8 +107,8 @@ class RouteUpdateIntegrationTest {
                 assertArrayEquals(response, browser.getInputStream().readNBytes(response.length));
             }
             long expected = uploaded;
-            await(() -> { fixture.proxy.traffic().sample(); return fixture.proxy.traffic().snapshot(false).get("sentBytes").equals(expected); });
-            assertEquals((long) response.length, fixture.proxy.traffic().snapshot(false).get("receivedBytes"));
+            await(() -> { fixture.proxy.traffic().sample(); return fixture.proxy.traffic().snapshot().get("sentBytes").equals(expected); });
+            assertEquals((long) response.length, fixture.proxy.traffic().snapshot().get("receivedBytes"));
         }
     }
 
@@ -124,16 +124,16 @@ class RouteUpdateIntegrationTest {
                 }
                 await(() -> {
                     fixture.proxy.traffic().sample();
-                    return fixture.proxy.traffic().snapshot(false).get("sentBytes").equals(65536L);
+                    return fixture.proxy.traffic().snapshot().get("sentBytes").equals(65536L);
                 });
-                assertEquals(65536L, fixture.proxy.traffic().snapshot(false).get("receivedBytes"));
+                assertEquals(65536L, fixture.proxy.traffic().snapshot().get("receivedBytes"));
                 var recorded = fixture.access.stream().filter(item -> item.get("state").equals("connected")).toList();
                 assertEquals(2, recorded.size());
                 assertEquals(Set.of("direct", "proxy"), recorded.stream().map(item -> item.get("route")).collect(java.util.stream.Collectors.toSet()));
                 assertTrue(recorded.stream().allMatch(item -> item.get("method").equals("CONNECT")));
-                String session = (String) fixture.proxy.traffic().snapshot(false).get("sessionId");
+                String session = (String) fixture.proxy.traffic().snapshot().get("sessionId");
                 fixture.rules("");
-                assertEquals(session, fixture.proxy.traffic().snapshot(false).get("sessionId"));
+                assertEquals(session, fixture.proxy.traffic().snapshot().get("sessionId"));
             }
         }
     }

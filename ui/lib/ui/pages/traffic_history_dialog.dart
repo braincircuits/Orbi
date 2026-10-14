@@ -3,8 +3,7 @@ import 'package:flutter/material.dart';
 import '../../models/traffic_summary.dart';
 import '../../services/proxy_controller.dart';
 import '../desktop_theme.dart';
-import '../widgets/desktop_select.dart';
-import '../widgets/traffic_chart.dart';
+import '../traffic_format.dart';
 import '../widgets/traffic_summary_chart.dart';
 
 class TrafficHistoryDialog extends StatefulWidget {
@@ -15,7 +14,6 @@ class TrafficHistoryDialog extends StatefulWidget {
 }
 
 class _TrafficHistoryDialogState extends State<TrafficHistoryDialog> {
-  TrafficWindow window = TrafficWindow(TrafficPeriod.day, DateTime.now());
   TrafficSummary? summary;
   String error = '';
   bool loading = false;
@@ -26,16 +24,14 @@ class _TrafficHistoryDialogState extends State<TrafficHistoryDialog> {
     _load();
   }
 
-  Future<void> _load([TrafficWindow? next]) async {
+  Future<void> _load() async {
     final current = ++request;
     setState(() {
-      if (next != null) window = next;
       loading = true;
-      summary = null;
       error = '';
     });
     try {
-      final result = await widget.proxy.trafficSummary(window);
+      final result = await widget.proxy.trafficSummary();
       if (!mounted || current != request) return;
       setState(() {
         summary = result;
@@ -50,100 +46,10 @@ class _TrafficHistoryDialogState extends State<TrafficHistoryDialog> {
     }
   }
 
-  Future<void> _pickDate() async {
-    final now = DateTime.now();
-    DateTime? value;
-    if (window.period == TrafficPeriod.month) {
-      var year = window.start.year;
-      value = await showDialog<DateTime>(
-        context: context,
-        builder: (context) => StatefulBuilder(
-          builder: (context, update) => AlertDialog(
-            title: Row(
-              children: [
-                IconButton(
-                  tooltip: '上一年',
-                  onPressed: year > 1971 ? () => update(() => year--) : null,
-                  icon: const Icon(Icons.chevron_left),
-                ),
-                Expanded(child: Text('$year 年', textAlign: TextAlign.center)),
-                IconButton(
-                  tooltip: '下一年',
-                  onPressed: year < now.year
-                      ? () => update(() => year++)
-                      : null,
-                  icon: const Icon(Icons.chevron_right),
-                ),
-              ],
-            ),
-            content: SizedBox(
-              width: 300,
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (var month = 1; month <= 12; month++)
-                    SizedBox(
-                      width: 86,
-                      child: OutlinedButton(
-                        onPressed: DateTime(year, month).isAfter(now)
-                            ? null
-                            : () =>
-                                  Navigator.pop(context, DateTime(year, month)),
-                        child: Text('$month 月'),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('取消'),
-              ),
-            ],
-          ),
-        ),
-      );
-    } else {
-      value = await showDatePicker(
-        context: context,
-        initialDate: window.start,
-        firstDate: DateTime(1971),
-        lastDate: now,
-        helpText: '选择统计日期',
-        cancelText: '取消',
-        confirmText: '确定',
-      );
-    }
-    if (!mounted || value == null) return;
-    var anchor = DateTime(
-      value.year,
-      value.month,
-      value.day,
-      window.period == TrafficPeriod.hour ? window.start.hour : 0,
-    );
-    if (anchor.isAfter(now)) anchor = now;
-    _load(TrafficWindow(window.period, anchor));
-  }
-
-  void _open(TrafficBucket bucket) {
-    final period = switch (window.period) {
-      TrafficPeriod.month => TrafficPeriod.day,
-      TrafficPeriod.day => TrafficPeriod.hour,
-      TrafficPeriod.hour => null,
-    };
-    if (period != null) _load(TrafficWindow(period, bucket.from));
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final data = summary;
-    final now = DateTime.now();
-    final today = TrafficWindow(window.period, now);
-    final current = window.start == today.start;
-    final hours = TrafficWindow(TrafficPeriod.day, window.start).boundaries;
     return Dialog(
       insetPadding: const EdgeInsets.all(20),
       child: ConstrainedBox(
@@ -159,109 +65,25 @@ class _TrafficHistoryDialogState extends State<TrafficHistoryDialog> {
                     child: Text('历史流量', style: theme.textTheme.titleLarge),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.pop(context),
+                    tooltip: '刷新统计',
+                    onPressed: loading ? null : _load,
+                    icon: const Icon(Icons.refresh),
+                  ),
+                  IconButton(
                     tooltip: '关闭历史流量',
+                    onPressed: () => Navigator.pop(context),
                     icon: const Icon(Icons.close),
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               Expanded(
                 child: SingleChildScrollView(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Wrap(
-                        spacing: 12,
-                        runSpacing: 10,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          SegmentedButton<TrafficPeriod>(
-                            key: const ValueKey('history-period'),
-                            showSelectedIcon: false,
-                            segments: [
-                              for (final period in TrafficPeriod.values)
-                                ButtonSegment(
-                                  value: period,
-                                  label: Text(period.label),
-                                ),
-                            ],
-                            selected: {window.period},
-                            onSelectionChanged: (values) => _load(
-                              TrafficWindow(values.single, window.anchor),
-                            ),
-                          ),
-                          Text(
-                            '按${window.period.bucketLabel}统计 · 长期保留',
-                            style: theme.textTheme.bodySmall,
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 8,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          IconButton(
-                            tooltip: '上一${window.period.label}',
-                            onPressed: window.shift(-1).start.year >= 1971
-                                ? () => _load(window.shift(-1))
-                                : null,
-                            icon: const Icon(Icons.chevron_left),
-                          ),
-                          OutlinedButton.icon(
-                            key: const ValueKey('history-date'),
-                            onPressed: _pickDate,
-                            icon: const Icon(
-                              Icons.calendar_month_outlined,
-                              size: 18,
-                            ),
-                            label: Text(window.title),
-                          ),
-                          IconButton(
-                            tooltip: '下一${window.period.label}',
-                            onPressed: window.shift(1).start.isAfter(now)
-                                ? null
-                                : () => _load(window.shift(1)),
-                            icon: const Icon(Icons.chevron_right),
-                          ),
-                          if (window.period == TrafficPeriod.hour)
-                            SizedBox(
-                              width: 150,
-                              child: DesktopSelect<DateTime>(
-                                value: window.start,
-                                options: [
-                                  for (final hour in hours.take(
-                                    hours.length - 1,
-                                  ))
-                                    if (!hour.isAfter(now))
-                                      (
-                                        hour,
-                                        '${trafficTime(hour)} ${hour.timeZoneName}',
-                                      ),
-                                ],
-                                onSelected: (value) {
-                                  if (value != null) {
-                                    _load(TrafficWindow(window.period, value));
-                                  }
-                                },
-                              ),
-                            ),
-                          TextButton(
-                            onPressed: current ? null : () => _load(today),
-                            child: Text(window.period.currentLabel),
-                          ),
-                          IconButton(
-                            tooltip: '刷新统计',
-                            onPressed: loading ? null : () => _load(),
-                            icon: const Icon(Icons.refresh),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
                       Text(
-                        '本地时间 · ${now.timeZoneName} · 包含历次运行记录',
+                        '最近 1 个月 · 按小时统计 · 保留最近 12 个月',
                         style: theme.textTheme.bodySmall,
                       ),
                       const SizedBox(height: 12),
@@ -271,12 +93,14 @@ class _TrafficHistoryDialogState extends State<TrafficHistoryDialog> {
                           '统计加载失败：$error',
                           style: TextStyle(color: theme.colorScheme.error),
                         ),
-                        TextButton(
-                          onPressed: () => _load(),
-                          child: const Text('重试'),
-                        ),
+                        TextButton(onPressed: _load, child: const Text('重试')),
                       ],
                       if (data != null) ...[
+                        Text(
+                          '内核时区 · ${data.zoneId}',
+                          style: theme.textTheme.bodySmall,
+                        ),
+                        const SizedBox(height: 12),
                         Wrap(
                           spacing: 24,
                           runSpacing: 12,
@@ -299,30 +123,15 @@ class _TrafficHistoryDialogState extends State<TrafficHistoryDialog> {
                           ],
                         ),
                         const SizedBox(height: 20),
-                        if (data.recordCount == 0)
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 16),
-                            child: Text('此时间段暂无分钟记录'),
-                          ),
-                        TrafficSummaryChart(
-                          summary: data,
-                          window: window,
-                          onOpen: _open,
-                        ),
+                        if (data.recordCount == 0) const Text('最近一个月暂无小时记录'),
+                        TrafficSummaryChart(summary: data),
                         const SizedBox(height: 16),
                         Text(
-                          current
-                              ? '当前时间段尚未结束，显示已保存数据；点击刷新更新统计。'
-                              : '显示所选时间段的已保存流量。',
+                          '仅显示已完成小时；每个整点汇总上一小时，未记录时段不作估算。',
                           style: theme.textTheme.bodySmall,
                         ),
-                        if (data.latestMinuteStart > 0)
-                          Text(
-                            '最近保存分钟：${DateTime.fromMillisecondsSinceEpoch(data.latestMinuteStart).toString().split('.').first}',
-                            style: theme.textTheme.bodySmall,
-                          ),
                         Text(
-                          '包含代理与直连流量；每分钟结束或正常停止时保存，未记录时段不作估算。',
+                          '过期历史在内核启动时及每天凌晨 03:00 清理。',
                           style: theme.textTheme.bodySmall,
                         ),
                       ],

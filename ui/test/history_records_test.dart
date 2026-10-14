@@ -125,27 +125,6 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
-  test('分钟历史保留不同启动会话的增量，分页游标由内核决定', () {
-    final page = TrafficRecordPage.fromJson({
-      'items': [
-        for (var id = 3; id >= 1; id--)
-          {
-            'id': id,
-            'sessionId': id == 1 ? '旧会话' : '新会话',
-            'minuteStart': 60000,
-            'activeDurationMillis': 15000,
-            'sentBytes': 100,
-            'receivedBytes': 200,
-          },
-      ],
-      'nextBeforeId': 1,
-    });
-    expect(page.items, hasLength(3));
-    expect(page.items.last.sessionId, '旧会话');
-    expect(page.items.first.activeDurationMillis, 15000);
-    expect(page.nextBeforeId, 1);
-    expect(() => page.items.clear(), throwsUnsupportedError);
-  });
   testWidgets('访问记录分页、查询、失败恢复和窄窗口布局', (tester) async {
     final kernel = HistoryKernel()..connected = true;
     addTearDown(kernel.dispose);

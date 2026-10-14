@@ -22,7 +22,7 @@ class TrafficStatisticsTest {
         var future = channel.writeAndFlush(Unpooled.wrappedBuffer(new byte[100]));
         assertFalse(future.isSuccess());
         nanos.set(1_000_000_000L); traffic.sample();
-        assertEquals(0L, traffic.snapshot(false).get("sentBytes"));
+        assertEquals(0L, traffic.snapshot().get("sentBytes"));
         channel.finishAndReleaseAll();
     }
     @Test void countsOnceWithoutChangingBuffersAndUsesElapsedTime() {
@@ -35,28 +35,26 @@ class TrafficStatisticsTest {
             channel.writeOutbound(sent); channel.writeInbound(received);
             assertSame(sent, channel.readOutbound()); assertSame(received, channel.readInbound());
             nanos.set(2_000_000_000L); traffic.sample();
-            var snapshot = traffic.snapshot(true);
+            var snapshot = traffic.snapshot();
             assertEquals(300L, snapshot.get("sentBytes")); assertEquals(600L, snapshot.get("receivedBytes"));
             assertEquals(150.0, snapshot.get("sendBytesPerSecond")); assertEquals(300.0, snapshot.get("receiveBytesPerSecond"));
             assertEquals(12_000L, snapshot.get("sampledAt"));
             nanos.addAndGet(1_000_000_000L); traffic.sample();
-            assertEquals(0.0, traffic.snapshot(false).get("sendBytesPerSecond"));
+            assertEquals(0.0, traffic.snapshot().get("sendBytesPerSecond"));
             traffic.stop();
-            assertEquals(600L, traffic.snapshot(false).get("receivedBytes"));
-            var stopped = traffic.snapshot(true); traffic.sample(); assertEquals(stopped, traffic.snapshot(true));
+            assertEquals(600L, traffic.snapshot().get("receivedBytes"));
+            var stopped = traffic.snapshot(); traffic.sample(); assertEquals(stopped, traffic.snapshot());
         } finally { sent.release(); received.release(); channel.finishAndReleaseAll(); }
     }
-    @Test void keepsOnlyOneHourAndSnapshotsAreImmutable() {
+    @Test void rateSnapshotsAreImmutableAndDoNotRetainSecondHistory() {
         var nanos = new AtomicLong();
         var traffic = new TrafficStatistics(nanos::get, () -> 10_000L);
-        var initial = traffic.snapshot(true);
-        for (int i = 0; i < 4000; i++) { nanos.addAndGet(1_000_000_000L); traffic.sample(); }
-        var history = (List<?>) traffic.snapshot(true).get("history");
-        assertEquals(3601, history.size());
-        assertEquals(410_000L, ((Map<?, ?>) history.getFirst()).get("sampledAt"));
-        assertEquals(1, ((List<?>) initial.get("history")).size());
-        assertThrows(UnsupportedOperationException.class, history::clear);
-        assertNotEquals(initial.get("sessionId"), new TrafficStatistics().snapshot(false).get("sessionId"));
+        var initial = traffic.snapshot();
+        nanos.addAndGet(4_000_000_000L); traffic.sample();
+        assertEquals(14_000L, traffic.snapshot().get("sampledAt"));
+        assertEquals(10_000L, initial.get("sampledAt"));
+        assertFalse(initial.containsKey("history"));
+        assertThrows(UnsupportedOperationException.class, initial::clear);
     }
     @Test void minutesFollowByteArrivalAndFlushOnlyAtBoundaryOrStop() {
         var nanos = new AtomicLong();
@@ -79,8 +77,8 @@ class TrafficStatisticsTest {
             assertEquals(60_000L, minutes.getLast().get("minuteStart"));
             assertEquals(15_000L, minutes.getLast().get("activeDurationMillis"));
             assertEquals(500L, minutes.getLast().get("receivedBytes"));
-            assertEquals(100L, traffic.snapshot(false).get("sentBytes"));
-            assertEquals(500L, traffic.snapshot(false).get("receivedBytes"));
+            assertEquals(100L, traffic.snapshot().get("sentBytes"));
+            assertEquals(500L, traffic.snapshot().get("receivedBytes"));
         } finally { channel.finishAndReleaseAll(); }
     }
     @Test void delayedSamplerKeepsZeroTrafficMinutesAndExactBoundaryStopHasNoExtraRow() {

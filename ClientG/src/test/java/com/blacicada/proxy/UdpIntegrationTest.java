@@ -176,7 +176,7 @@ class UdpIntegrationTest {
             }
             assertEquals(4, fixture.received.size());
             long expected = bytes;
-            await(() -> { fixture.client.traffic().sample(); var stats = fixture.client.traffic().snapshot(false);
+            await(() -> { fixture.client.traffic().sample(); var stats = fixture.client.traffic().snapshot();
                 return stats.get("sentBytes").equals(expected) && stats.get("receivedBytes").equals(expected); });
             assertEquals(direct ? 0 : 1, fixture.client.connectionCount());
             assertTrue(fixture.access.stream().anyMatch(item -> item.get("method").equals("CONNECT-UDP") && item.get("state").equals("connected")));

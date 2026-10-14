@@ -55,10 +55,10 @@ class DatabaseBackendsTest {
                     sample("甲", time + 60_000, 30L), sample("乙", time, 7L));
             db.writeHistory(samples, List.of(access("a", time, "pending"), access("b", time + 1, "failed"), access("c", time + 2, "failed")));
             db.writeHistory(samples, List.of(access("a", time, "connected")));
-            var summary = db.trafficSummary(List.of(time, time + 60_000, time + 120_000, time + 180_000));
-            assertEquals(5_000_000_047L, summary.get("sentBytes")); assertEquals(3L, summary.get("recordCount"));
-            assertEquals(0L, db.trafficSummary(List.of(time + 180_000, time + 240_000)).get("recordCount"));
-            assertEquals(4, ((List<?>) db.trafficHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 10, "").get("items")).size());
+            var summary = db.trafficSeries(time + 180_000, java.time.ZoneOffset.UTC, false);
+            assertEquals(10_000_000_047L, summary.get("sentBytes")); assertEquals(3L, summary.get("recordCount"));
+            db.maintainTraffic(time + 3_600_000, java.time.ZoneOffset.UTC, true);
+            assertEquals(10_000_000_047L, db.trafficSeries(time + 3_600_000, java.time.ZoneOffset.UTC, true).get("sentBytes"));
             var page = db.accessHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 1, "EXAMPLE_%", "failed");
             assertEquals(true, page.get("hasMore"));
             var next = db.accessHistory(0, Long.MAX_VALUE, (long) page.get("nextBeforeId"), 1, "example_%", "failed");
@@ -69,7 +69,7 @@ class DatabaseBackendsTest {
             // 批处理中任一记录失败时，整批必须回滚。
             var invalid = new HashMap<>(access("invalid", time, "failed")); invalid.put("target", null);
             assertThrows(SQLException.class, () -> db.writeHistory(List.of(sample("失败批次", time, 999)), List.of(invalid)));
-            assertEquals(0, ((List<?>) db.trafficHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 10, "失败批次").get("items")).size());
+            assertEquals(10_000_000_047L, db.trafficSeries(time + 180_000, java.time.ZoneOffset.UTC, false).get("sentBytes"));
             db.stage(configuration(), 1);
         }
         try (var db = new KernelDatabase(config)) {
@@ -84,11 +84,11 @@ class DatabaseBackendsTest {
                 String columns = config.type() == StorageConfig.Type.POSTGRESQL
                         ? "SELECT COUNT(*) FROM pg_attribute WHERE attrelid='traffic_minutes'::regclass AND attnum>0 AND NOT attisdropped AND col_description(attrelid,attnum) IS NOT NULL"
                         : "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='traffic_minutes' AND column_comment<>''";
-                try (var rows = query.executeQuery(columns)) { assertTrue(rows.next()); assertEquals(6, rows.getInt(1)); }
+                try (var rows = query.executeQuery(columns)) { assertTrue(rows.next()); assertEquals(10, rows.getInt(1)); }
                 String table = config.type() == StorageConfig.Type.POSTGRESQL
                         ? "SELECT obj_description('traffic_minutes'::regclass)"
                         : "SELECT table_comment FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='traffic_minutes'";
-                try (var rows = query.executeQuery(table)) { assertTrue(rows.next()); assertTrue(rows.getString(1).contains("分钟业务流量")); }
+                try (var rows = query.executeQuery(table)) { assertTrue(rows.next()); assertTrue(rows.getString(1).contains("自然分钟")); }
             }
             try (var connection = config.connect(); var query = connection.createStatement()) { query.executeUpdate("UPDATE storage_format SET version=99"); }
             assertThrows(IOException.class, () -> new KernelDatabase(config));

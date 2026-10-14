@@ -92,10 +92,10 @@ class KernelDatabaseTest {
                     minute("甲", 120_000, 10, 100), minute("乙", 60_000, 25, 50),
                     minute("乙", 180_000, 0, 0), minute("乙", 300_000, 999, 999)), List.of());
             database.writeHistory(List.of(minute("甲", 60_000, 50, 100)), List.of());
-            var result = database.trafficSummary(List.of(60_000L, 120_000L, 180_000L, 240_000L, 300_000L));
-            assertEquals(85L, result.get("sentBytes")); assertEquals(250L, result.get("receivedBytes"));
-            assertEquals(4L, result.get("recordCount")); assertEquals(180_000L, result.get("latestMinuteStart"));
-            var buckets = (List<?>) result.get("buckets");
+            var result = database.trafficSeries(360_000L, java.time.ZoneOffset.UTC, false);
+            assertEquals(1184L, result.get("sentBytes")); assertEquals(2249L, result.get("receivedBytes"));
+            assertEquals(5L, result.get("recordCount"));
+            var buckets = ((List<?>) result.get("buckets")).stream().map(item -> (Map<?, ?>) item).filter(item -> ((Number) item.get("from")).longValue() >= 60_000).toList();
             assertEquals(75L, ((Map<?, ?>) buckets.get(0)).get("sentBytes"));
             assertEquals(10L, ((Map<?, ?>) buckets.get(1)).get("sentBytes"));
             assertEquals(1L, ((Map<?, ?>) buckets.get(2)).get("recordCount"));
@@ -103,14 +103,14 @@ class KernelDatabaseTest {
             assertEquals(0L, ((Map<?, ?>) buckets.get(2)).get("sentBytes"));
             assertThrows(SQLException.class, () -> database.writeHistory(List.of(minute("无效", 60_001, 1, 1)), List.of()));
             try (var row = sql.executeQuery("SELECT sql FROM sqlite_master WHERE name='traffic_minutes'")) {
-                assertTrue(row.next()); assertTrue(row.getString(1).contains("统计分钟起点"));
-                assertTrue(row.getString(1).contains("分钟业务流量统计"));
+                assertTrue(row.next()); assertTrue(row.getString(1).contains("minute_start"));
+                assertTrue(row.getString(1).contains("按自然分钟合并业务流量"));
             }
         }
         try (var database = new KernelDatabase(file); var connection = DriverManager.getConnection("jdbc:sqlite:" + file);
              var sql = connection.createStatement(); var rows = sql.executeQuery("SELECT original FROM traffic_samples")) {
             assertTrue(rows.next()); assertEquals("保留旧记录", rows.getString(1)); assertFalse(rows.next());
-            assertEquals(1184L, database.trafficSummary(List.of(0L, 360_000L)).get("sentBytes"));
+            assertEquals(1184L, database.trafficSeries(360_000L, java.time.ZoneOffset.UTC, false).get("sentBytes"));
         }
     }
     @Test void databaseJournalAndLockArePrivate() throws Exception {

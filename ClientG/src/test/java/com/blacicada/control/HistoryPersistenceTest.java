@@ -28,18 +28,18 @@ class HistoryPersistenceTest {
             var config = new com.blacicada.config.KernelConfig(new com.blacicada.common.ProxyConfig(properties, directory), List.of(), "");
             try (var runtime = new ProxyRuntime(recorder)) {
                 runtime.start(config);
-                String session = (String) runtime.traffic(true).get("sessionId");
-                Object started = runtime.traffic(true).get("startedAt");
+                String session = (String) runtime.traffic().get("sessionId");
+                Object started = runtime.traffic().get("startedAt");
                 // 使用默认出口重建监听即可验证生命周期，不修改系统路由或启动真实 TUN。
                 runtime.bindInterface(0, config);
-                assertEquals(session, runtime.traffic(true).get("sessionId"));
-                assertEquals(started, runtime.traffic(true).get("startedAt"));
+                assertEquals(session, runtime.traffic().get("sessionId"));
+                assertEquals(started, runtime.traffic().get("startedAt"));
                 runtime.stop(); recorder.finish();
-                assertEquals(session, runtime.traffic(true).get("sessionId"));
-                assertFalse(items(db.trafficHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 100, session)).isEmpty());
+                assertEquals(session, runtime.traffic().get("sessionId"));
+                assertTrue(((Number) db.trafficSeries(System.currentTimeMillis() + 60000, java.time.ZoneId.systemDefault(), false).get("recordCount")).longValue() > 0);
                 runtime.start(config);
-                assertNotEquals(session, runtime.traffic(true).get("sessionId"));
-                assertEquals(0L, runtime.traffic(true).get("sentBytes"));
+                assertNotEquals(session, runtime.traffic().get("sessionId"));
+                assertEquals(0L, runtime.traffic().get("sentBytes"));
             }
         }
     }
@@ -69,7 +69,7 @@ class HistoryPersistenceTest {
     @Test void failedBatchRetriesWithoutLosingDataAndConfigurationRemainsIndependent() throws Exception {
         var path = directory.resolve("kernel.db");
         try (var db = new KernelDatabase(path); var external = DriverManager.getConnection("jdbc:sqlite:" + path); var sql = external.createStatement()) {
-            var recorder = new HistoryRecorder(db);
+            var recorder = new HistoryRecorder(db, java.time.Clock.fixed(java.time.Instant.ofEpochMilli(2_000_000L), java.time.ZoneOffset.UTC));
             recorder.traffic(traffic(10));
             sql.execute("CREATE TRIGGER reject_history BEFORE INSERT ON traffic_minutes BEGIN SELECT RAISE(FAIL, '测试写入失败'); END");
             assertFalse(recorder.flush());
@@ -79,14 +79,12 @@ class HistoryPersistenceTest {
             sql.execute("DROP TRIGGER reject_history");
             assertTrue(recorder.flush());
             recorder.traffic(traffic(10)); recorder.traffic(traffic(20)); recorder.traffic(traffic(30)); recorder.finish();
-            var page = db.trafficHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 2, "会话一");
-            assertTrue((boolean) page.get("hasMore")); assertEquals(2, items(page).size());
-            var next = db.trafficHistory(0, Long.MAX_VALUE, ((Number) page.get("nextBeforeId")).longValue(), 2, "会话一");
-            assertEquals(1, items(next).size()); assertEquals(600_000L, items(next).getFirst().get("minuteStart"));
+            var result = db.trafficSeries(2_000_000L, java.time.ZoneOffset.UTC, false);
+            assertEquals(3L, result.get("recordCount"));
+            assertEquals(384L, result.get("sentBytes"));
         }
         try (var db = new KernelDatabase(path)) {
-            assertEquals(3, items(db.trafficHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "")).size());
-            assertEquals(384L, db.trafficSummary(List.of(0L, 2_000_000L)).get("sentBytes"));
+            assertEquals(384L, db.trafficSeries(2_000_000L, java.time.ZoneOffset.UTC, false).get("sentBytes"));
         }
     }
 
@@ -121,22 +119,22 @@ class HistoryPersistenceTest {
                 assertTrue(new String(browser.getInputStream().readAllBytes(), StandardCharsets.US_ASCII).startsWith("HTTP/1.1 502"));
             }
             control.stop();
-            var failed = items(control.history(false, 0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "localhost:" + unavailable, ""));
+            var failed = items(control.history(0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "localhost:" + unavailable, ""));
             assertEquals(1, failed.size()); assertEquals("failed", failed.getFirst().get("state"));
-            var records = items(control.history(false, 0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "localhost:" + origin.getLocalPort(), ""));
+            var records = items(control.history(0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "localhost:" + origin.getLocalPort(), ""));
             assertEquals(1, records.size()); var record = records.getFirst();
             assertEquals("localhost:" + origin.getLocalPort(), record.get("target"));
             assertEquals("GET", record.get("method")); assertEquals("direct", record.get("route"));
             assertEquals("connected", record.get("state")); assertFalse(record.toString().contains("secret"));
             assertFalse(record.toString().contains("/private"));
             assertTrue(((Number) control.traffic().get("sentBytes")).longValue() > 0);
-            assertThrows(ControlException.class, () -> control.history(false, 0, 1, 0, 100, "", ""));
+            assertThrows(ControlException.class, () -> control.history(0, 1, 0, 100, "", ""));
         }
         try (var control = new KernelControl(path)) {
             assertEquals("", control.traffic().get("sessionId"));
-            assertEquals(2, items(control.history(false, 0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "", "")).size());
+            assertEquals(2, items(control.history(0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "", "")).size());
             control.start(); assertNotEquals(session, control.traffic().get("sessionId")); control.stop();
-            assertFalse(items(control.history(true, 0, Long.MAX_VALUE, Long.MAX_VALUE, 100, session, "")).isEmpty());
+            assertEquals("minute", control.trafficSeries(false).get("interval"));
         }
     }
 }

@@ -96,8 +96,8 @@ UI 通过 `error.code` 判断行为，通过中文 `message` 展示原因，不�
 | `POST /overview/websites` | 按当前路由依次测试 GitHub、Google、YouTube 的 HTTPS 响应耗时，返回 202 | — |
 | `POST /overview/exit-ip` | 从当前路由查询出口公网 IP、归属地和运营商，返回 202 | — |
 | `GET /traffic` | 当前或最近一次代理启动的累计量、速率及最近一小时历史 | — |
-| `POST /traffic/summary` | 按指定日历边界汇总所有启动会话的流量 | — |
-| `GET /traffic/history` | 分页查询长期保存的流量采样 | — |
+| `GET /traffic/trend` | 最近24小时的分钟区间流量 | — |
+| `GET /traffic/history` | 最近一个自然月的已完成小时流量 | — |
 | `GET /access-records` | 分页查询长期保存的访问目标和连接结果 | — |
 | `PUT /routing/default` | `{"profileId":"节点ID"}`，切换默认连接并关闭旧代理会话 | 是 |
 | `PUT /routing/direct-rules` | `{"rules":"example.com\n10.0.0.0/8"}`，替换内联直连规则 | 是 |
@@ -252,44 +252,34 @@ python3 scripts/web-smoke-test.py
 
 ## 流量统计
 
-`info.capabilities` 包含 `traffic`。`GET /traffic` 返回 `sessionId`、`startedAt`、`sampledAt`、`sentBytes`、`receivedBytes`、`sendBytesPerSecond`、`receiveBytesPerSecond` 和 `history`。时间均为 Unix 毫秒，累计值为字节，速率为字节／秒。`history` 最多 3601 个样本，每项含 `sampledAt`、累计值与两种速率。本次内核尚未启动代理时会话标识为空、时间和计数为零、历史为空。
+`GET /traffic` 返回 `sessionId`、`startedAt`、`sampledAt`、`sentBytes`、`receivedBytes`、`sendBytesPerSecond`、`receiveBytesPerSecond`。时间为 Unix 毫秒，累计值为字节，速率为字节／秒。每秒采样，只保留最新速率；状态响应与 SSE 快照结构一致，不再传输秒级历史窗口。
 
-内核每秒采样，使用单调时钟的实际采样间隔计算速率。普通状态响应与 SSE `status` 在 `traffic` 中只携带最新采样和会话信息；首次订阅或事件历史失效后的 SSE `snapshot` 携带完整一小时窗口。客户端连接时可通过 `GET /traffic` 补齐历史，重复时间戳去重，禁止将采样空档填成零速率。
+统计涵盖接入内核的代理与直连业务流量，不包含本地 CONNECT 握手、代理认证、协议帧、TLS／QUIC 封装与重传。发送统计成功写入业务流的字节，接收统计业务流读入字节。停止代理归零速率并保留本次累计值；再次启动创建新会话。切换路由、默认连接、TUN 出口或重建监听保持同一运行会话。
 
-统计涵盖本地 HTTP 代理接入的代理与直连业务：发送为成功提交给目标连接或 HTTP/2、HTTP/3 业务流的字节，接收为从业务流收到的字节。普通 HTTP 包含转发后的请求头和响应头，CONNECT 仅统计隧道建立后的负载；不包含本地 CONNECT 握手、代理认证、代理协议帧、TLS／QUIC 封装与重传。内核通过本地代理执行的出口查询和网站测试也会计入。它不是网卡吞吐量或 TLS 解密后的内容大小。
+### 分钟趋势与小时历史
 
-停止代理会将当前速率归零并在内存保留累计量及最近一小时窗口；用户再次启动服务创建新的 `sessionId` 并清零。切换路由、默认连接、TUN 出口或重建监听保持同一运行会话。UI 重连通过快照恢复曲线；退出内核后秒级曲线不持久化，下次内核启动时概览为空，历史流量仍可查询。
+- `GET /traffic/trend`：返回最近24小时的分钟区间，包括当前分钟的位置。正常停止时保存的不足一分钟记录可见，仍未结束的区间在标签中标注；运行中尚未保存的字节不计入图表。
+- `GET /traffic/history`：仅返回最近一个自然月内已经完成的小时，从当前整点按自然月回推。数据库实际保留最近12个月的小时数据，界面不提供更早月份入口。
 
-历史只写 `traffic_minutes`，按自然分钟保存字节增量，每个运行会话的同一分钟唯一。内核在字节实际读取或成功写入时确定分钟归属，每分钟结束及正常停止时入队保存；零流量但服务仍运行的分钟也保存。时间从启动时的 Unix 毫秒加单调时钟经过时间计算，避免系统时钟校准造成倒序。当前未结束分钟不出现在历史中，异常退出最多可能丢失当前未完成分钟，以及因存储失败尚未提交的记录。旧 `traffic_samples` 原样保留，不读取、不合并、不迁移、不继续写入；旧数据由用户自行处理。
+两个接口的范围均由内核时区计算，不接收客户端日历边界或分页游标。响应 `data` 包含 `from`、`to`（左闭右开 Unix 毫秒）、`zoneId`、`interval`（`minute`／`hour`）、`sentBytes`、`receivedBytes`、`recordCount` 和 `buckets`。
 
+每个桶包含 `from`、`to`、`sentBytes`、`receivedBytes`、`recordCount`、`label`、`shortLabel`。标签由内核按自身时区格式化，详细标签含 UTC 偏移，以区分夏令时回拨时的重复小时。桶有记录时 `recordCount=1`，缺失时为0；整个范围的计数为有效桶数。纵轴为区间流量，缺失区间断开，运行但无流量的区间显示0。分钟趋势提供1小时、6小时、24小时查看范围；小时历史固定最近1个月。
 
-## 长期流量与访问记录
+实际字节按发生时间归入自然分钟，每分钟结束或正常停止时入队落库，不定时保存未结束分钟。同一分钟跨启动会话合并到唯一记录；保存各会话最终快照，使重复批次幂等。整点将上一小时尚未汇总的增量写入小时表，小时值与分钟汇总检查点在同一事务提交；延迟写入可补算，重复维护不重复累计。
 
-`info.capabilities` 增加 `persistentHistory`。历史使用同一个 `kernel.db`，配置更新、删除连接、切换模式、停止或重新启动均不会清理历史。记录从更新后的内核开始运行后产生，不补造之前的访问。
+每分钟维护清理超过24小时、且已成功汇总的分钟数据。每次内核启动及内核时区凌晨03:00清理12个自然月之前的小时数据；先补算，再清理。停机错过计划则启动时补做。数据库失败时保留待写入批次，汇总失败不删除对应分钟数据。异常退出可能丢失当前尚未结束的分钟及存储失败时的队列数据。
 
-- `GET /traffic/history`：查询全部启动会话的流量采样，支持可选 `sessionId`。
-- `GET /access-records`：查询访问地址，支持可选 `target`（域名/IP/端口的不区分大小写字面子串，不使用 SQL 通配符）和 `state`（pending/connected/failed/cancelled；省略或空值表示全部）。状态与目标条件在数据库中联合筛选后再分页；下一页需携带相同条件。无效状态返回 400 / INVALID_QUERY。
-- 两者支持 `from`（含）、`to`（不含）的 Unix 毫秒范围、`beforeId` 游标与 `limit`（1～500，默认 100）。省略时间范围查询所有历史，省略游标从最新记录开始。响应 `data` 含 `items`、`hasMore`、`nextBeforeId`。按自增 ID 倒序返回；将 `nextBeforeId` 传入下一页，无更多记录时为 0。
+旧历史由用户手动处理，不读取、迁移或删除旧格式记录。现有 `traffic_minutes` 表结构不匹配时明确拒绝启动；不要将本次结构调整视作旧数据迁移。
 
-流量历史的每项包含 `id`、`sessionId`、`minuteStart`、`activeDurationMillis`、`sentBytes`、`receivedBytes`。`minuteStart` 为整分钟起点的 Unix 毫秒；`activeDurationMillis` 为本次运行在该分钟内的有效统计时长；字节值为本条分钟记录的增量，可以相加。分页仅查询新分钟表，时间筛选按 `minuteStart` 左闭右开。实时秒级采样仅在内存保留最近一小时。
+## 访问记录
 
-访问表 `access_records` 按一次本地 HTTP 请求或 CONNECT 隧道记录，包含 `id`、`requestId`、`sessionId`、`createdAt`、`completedAt`、`target`、`source`、`method`、`route`、`protocol`、`profileId`、`profileName`、`state`。请求首先写为 `pending`，连接结果更新同一条记录为 `connected`、`failed` 或 `cancelled`；`connected` 只表示目标连接建立，不代表网站 HTTP 状态成功。未完成记录的 `completedAt` 为 0，异常退出前尚未完成的请求保留 `pending`，不能据此认定仍有活跃隧道。
+`GET /access-records` 保持游标分页，支持 `target`（域名/IP/端口的不区分大小写字面子串）和 `state`（pending/connected/failed/cancelled；空值表示全部），在数据库筛选后分页。支持 `from`（含）、`to`（不含）、`beforeId` 和 `limit`（1～500，默认100）；响应含 `items`、`hasMore`、`nextBeforeId`，按自增ID倒序返回。
 
-UDP 本地接入记录为 `method=CONNECT-UDP`，这是项目专用接入的展示标签，实际 HTTP 方法是 `CONNECT`。`connected` 表示 UDP 关联准备好，不保证目标可达。流量只统计报文负载，不包含长度前缀。接入协议与示例见 [UDP 本地接入](../README.md#udp-本地接入与可靠流封装)。
+每条记录含 `id`、`requestId`、`sessionId`、`createdAt`、`completedAt`、`target`、`source`、`method`、`route`、`protocol`、`profileId`、`profileName`、`state`。请求先保存为 `pending`，连接结果更新同一条记录。`connected` 只表示连接建立，不代表网页返回成功。UDP接入以 `CONNECT-UDP` 展示，实际方法为 `CONNECT`，不保证远端可达。
 
-记录覆盖接入本地代理的直连和代理请求，也包含内核通过该入口执行的网络/IP 检测。不记录 URL 路径、查询参数、请求头、密码或正文；HTTPS 隧道内的网页路径不可见。协议解析失败且没有有效目标地址的输入不记录为访问。
+只记录目标地址，不记录 URL路径、查询参数、请求头、密码或正文。访问记录不受本次流量保留策略影响。
 
-Netty 线程仅入队，控制线程每 250 毫秒最多批量提交 2048 条事件，锁竞争立即返回、失败批次保留重试。正常退出先停止转发再排空队列；强制终止或断电可能丢失尚未提交的尾部记录。队列容量为 65536，超过容量会记录错误并累计丢弃数量，不静默声称全部保存。`status.historyStorage` 提供 `pendingRecords`、`droppedRecords`、`error`；写入失败同时输出中文错误日志。记录长期保留，不执行过期清理。
-
-
-### 历史流量的时、日、月汇总
-
-`POST /traffic/summary` 是只读查询，不需要 `If-Match`。请求体为 `{"boundaries":[起始毫秒时间戳,下一边界,...,结束毫秒时间戳]}`。边界必须是 2～63 个非负、严格递增的整数，整体不超过 32 天。界面按本地日历生成边界：一小时分为 60 分钟，一天按小时切分（夏令时可能有 23 或 25 小时），一个月按实际天数切分。区间左闭右开。
-
-响应 `data` 包含 `buckets`、`sentBytes`、`receivedBytes`、`recordCount` 和 `latestMinuteStart`。每个桶含 `from`、`to`、`sentBytes`、`receivedBytes`、`recordCount`；整个范围及桶的流量均为字节总量，不是速率。`recordCount` 为分钟记录数，同一分钟的不同运行会话分别计数；`latestMinuteStart` 为最近保存的分钟起点。无记录桶返回零计数，界面标为“无分钟记录”，与运行但零流量区分。
-
-在数据库内对分钟增量求和，同一分钟多次启停的记录合并展示。分钟依据 `minuteStart` 归入统计桶，建议边界按分钟对齐；不进行秒级拆分或缺失时段估算。查询只返回至多 62 个统计桶，不向界面传输逐秒曲线。
-
+转发线程仅入队，控制线程每250毫秒最多批量提交2048条已产生事件；这不是分钟流量的采样落库周期。队列容量65536，超限计入丢弃数量。`status.historyStorage` 提供 `pendingRecords`、`droppedRecords`、`error`，保存或汇总失败有中文错误日志。
 
 ## macOS TUN 生命周期
 

@@ -18,18 +18,16 @@ class TrafficSample {
   final double sendBytesPerSecond, receiveBytesPerSecond;
 }
 
-/// 每次启动拥有独立会话；初始快照补齐历史，后续状态只合并最新采样。
+/// 每次启动拥有独立会话；只保留实时速率，分钟趋势从持久化接口读取。
 class TrafficSnapshot {
   const TrafficSnapshot({
     required this.sessionId,
     required this.startedAt,
     required this.current,
-    required this.history,
   });
   final String sessionId;
   final int startedAt;
   final TrafficSample current;
-  final List<TrafficSample> history;
 
   static TrafficSnapshot merge(
     TrafficSnapshot? previous,
@@ -42,7 +40,6 @@ class TrafficSnapshot {
       return previous;
     }
     if (sameSession &&
-        value['history'] == null &&
         current.sampledAt == previous!.current.sampledAt &&
         current.sentBytes == previous.current.sentBytes &&
         current.receivedBytes == previous.current.receivedBytes &&
@@ -51,31 +48,10 @@ class TrafficSnapshot {
             previous.current.receiveBytesPerSecond) {
       return previous;
     }
-    final samples = <int, TrafficSample>{};
-    final history = value['history'] as List?;
-    final source = history != null
-        ? history.map(
-            (item) => TrafficSample.fromJson(item as Map<String, dynamic>),
-          )
-        : sameSession
-        ? previous!.history
-        : const <TrafficSample>[];
-    for (final sample in source) {
-      if (sample.sampledAt >= current.sampledAt - 3600000 &&
-          sample.sampledAt <= current.sampledAt) {
-        samples[sample.sampledAt] = sample;
-      }
-    }
-    if (session.isNotEmpty) samples[current.sampledAt] = current;
-    final ordered = samples.values.toList()
-      ..sort((a, b) => a.sampledAt.compareTo(b.sampledAt));
     return TrafficSnapshot(
       sessionId: session,
       startedAt: value['startedAt'] as int,
       current: current,
-      history: List.unmodifiable(
-        ordered.skip(ordered.length > 3601 ? ordered.length - 3601 : 0),
-      ),
     );
   }
 }
@@ -121,31 +97,6 @@ class AccessRecordPage {
       ),
       nextBeforeId = value['nextBeforeId'] as int;
   final List<AccessRecord> items;
-  final int nextBeforeId;
-}
-
-/// 每条历史记录为一个运行会话在一个自然分钟内的流量增量。
-class TrafficMinute {
-  TrafficMinute.fromJson(Map<String, dynamic> value)
-    : id = value['id'] as int,
-      sessionId = value['sessionId'] as String,
-      minuteStart = value['minuteStart'] as int,
-      activeDurationMillis = value['activeDurationMillis'] as int,
-      sentBytes = value['sentBytes'] as int,
-      receivedBytes = value['receivedBytes'] as int;
-  final int id, minuteStart, activeDurationMillis, sentBytes, receivedBytes;
-  final String sessionId;
-}
-
-class TrafficRecordPage {
-  TrafficRecordPage.fromJson(Map<String, dynamic> value)
-    : items = List.unmodifiable(
-        (value['items'] as List).map(
-          (item) => TrafficMinute.fromJson(item as Map<String, dynamic>),
-        ),
-      ),
-      nextBeforeId = value['nextBeforeId'] as int;
-  final List<TrafficMinute> items;
   final int nextBeforeId;
 }
 
