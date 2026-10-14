@@ -14,6 +14,94 @@ const options = [
 ];
 
 void main() {
+  testWidgets('实时刷新发生在按下与松开之间仍能选中筛选项', (tester) async {
+    String? selected = 'direct';
+    late StateSetter refresh;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: desktopTheme(Brightness.light),
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, update) {
+              refresh = update;
+              return SizedBox(
+                width: 160,
+                child: DesktopSelect<String>(
+                  value: selected,
+                  options: [('all', '全部路由'), ('proxy', '代理'), ('direct', '直连')],
+                  onSelected: (value) => update(() => selected = value),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byType(TextField));
+    await tester.pumpAndSettle();
+    final item = find.widgetWithText(MenuItemButton, '代理').hitTestable();
+    final gesture = await tester.startGesture(
+      tester.getCenter(item),
+      kind: ui.PointerDeviceKind.mouse,
+    );
+    refresh(() {});
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(selected, 'proxy');
+    expect(find.byType(MenuItemButton).hitTestable(), findsNothing);
+  });
+
+  testWidgets('选项改名、外部选中值和主题变化及时更新', (tester) async {
+    var selected = 'http2';
+    var label = '原名称';
+    var brightness = Brightness.light;
+    late StateSetter refresh;
+    await tester.pumpWidget(
+      StatefulBuilder(
+        builder: (context, update) {
+          refresh = update;
+          return MaterialApp(
+            theme: desktopTheme(brightness),
+            home: Scaffold(
+              body: DesktopSelect<String>(
+                value: selected,
+                options: [('http2', label), ('http3', '另一个选项')],
+                onSelected: (value) => update(() => selected = value!),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    refresh(() => label = '修改后的名称');
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '修改后的名称',
+    );
+    refresh(() {
+      selected = 'http3';
+      brightness = Brightness.dark;
+    });
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '另一个选项',
+    );
+    await tester.tap(find.byType(TextField));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<Icon>(find.byIcon(Icons.check)).color,
+      desktopTheme(Brightness.dark).colorScheme.primary,
+    );
+    await tester.tap(
+      find.widgetWithText(MenuItemButton, '修改后的名称').hitTestable(),
+    );
+    await tester.pumpAndSettle();
+    expect(selected, 'http2');
+  });
+
   for (final brightness in Brightness.values) {
     for (final width in [720.0, 260.0]) {
       testWidgets('菜单紧凑且从输入框下方展开：${brightness.name} / $width', (tester) async {

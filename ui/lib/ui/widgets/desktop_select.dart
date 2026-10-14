@@ -1,10 +1,11 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widget_previews.dart';
 
 import '../desktop_theme.dart';
 
 /// 统一桌面选择框，仅组合官方菜单组件和应用主题。
-class DesktopSelect<T> extends StatelessWidget {
+class DesktopSelect<T> extends StatefulWidget {
   const DesktopSelect({
     super.key,
     required this.value,
@@ -17,17 +18,51 @@ class DesktopSelect<T> extends StatelessWidget {
   final ValueChanged<T?>? onSelected;
 
   @override
+  State<DesktopSelect<T>> createState() => _DesktopSelectState<T>();
+}
+
+class _DesktopSelectState<T> extends State<DesktopSelect<T>> {
+  List<(T, String)> _options = [];
+  List<DropdownMenuEntry<T>> _entries = [];
+  T? _value;
+  Color? _selectionColor;
+
+  @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final width = constraints.maxWidth.clamp(0.0, DesktopDesign.menuWidth);
       final theme = Theme.of(context);
+      // DropdownMenu 会在选项列表对象变化时重建菜单项，导致刷新期间的点击丢失。
+      // 仅在选项、选中值或勾选颜色变化时更新列表，保留正在进行的鼠标和键盘操作。
+      if (!listEquals(_options, widget.options) ||
+          _value != widget.value ||
+          _selectionColor != theme.colorScheme.primary) {
+        _options = List.of(widget.options);
+        _value = widget.value;
+        _selectionColor = theme.colorScheme.primary;
+        _entries = [
+          for (final option in _options)
+            DropdownMenuEntry(
+              value: option.$1,
+              label: option.$2,
+              labelWidget: Text(
+                option.$2,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailingIcon: option.$1 == widget.value
+                  ? Icon(Icons.check, size: 16, color: _selectionColor)
+                  : const SizedBox(width: 16),
+            ),
+        ];
+      }
       return DropdownMenu<T>(
         key: ValueKey((
-          value,
-          options.where((option) => option.$1 == value).firstOrNull?.$2,
+          widget.value,
+          _options.where((option) => option.$1 == widget.value).firstOrNull?.$2,
         )),
-        enabled: onSelected != null,
-        initialSelection: value,
+        enabled: widget.onSelected != null,
+        initialSelection: widget.value,
         expandedInsets: EdgeInsets.zero,
         selectOnly: true,
         requestFocusOnTap: true,
@@ -44,27 +79,9 @@ class DesktopSelect<T> extends StatelessWidget {
         menuStyle: theme.dropdownMenuTheme.menuStyle!.copyWith(
           maximumSize: WidgetStatePropertyAll(Size(width, 320)),
         ),
-        dropdownMenuEntries: [
-          for (final option in options)
-            DropdownMenuEntry(
-              value: option.$1,
-              label: option.$2,
-              labelWidget: Text(
-                option.$2,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              trailingIcon: option.$1 == value
-                  ? Icon(
-                      Icons.check,
-                      size: 16,
-                      color: theme.colorScheme.primary,
-                    )
-                  : const SizedBox(width: 16),
-            ),
-        ],
+        dropdownMenuEntries: _entries,
         onSelected: (next) {
-          if (next != null) onSelected?.call(next);
+          if (next != null) widget.onSelected?.call(next);
         },
       );
     },
