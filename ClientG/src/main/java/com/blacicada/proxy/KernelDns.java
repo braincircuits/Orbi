@@ -1,6 +1,8 @@
 package com.blacicada.proxy;
 
 import com.blacicada.common.OutboundNetwork;
+import com.blacicada.common.DnsTunnel;
+import com.blacicada.config.DirectRoutes;
 import com.blacicada.common.UdpTunnel;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -23,7 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import org.apache.logging.log4j.LogManager;
 
-/** TUN 的普通 DNS 服务；与代理共用单个 EventLoop，所有上游连接均绑定真实出口。 */
+/** TUN 普通 DNS 按查询域名分流；代理使用服务端系统 DNS，直连使用本机系统 DNS。 */
 final class KernelDns {
     static final String SOURCE_HEADER = "x-network-source";
     private static final int MAX_QUERIES = 256, MAX_CACHE = 1024, MAX_NAMES = 8192;
@@ -34,17 +36,32 @@ final class KernelDns {
     private final LongSupplier clock;
     private final Map<String, Association> names = new LinkedHashMap<>();
     private final Map<String, Cached> cache = new LinkedHashMap<>();
-    private int pending;
+    private final SessionRouter session;
+    private DirectRoutes routes;
+    private final Map<Promise<byte[]>, byte[]> pending = new HashMap<>();
     private record Association(String domain, long expires) {}
     private record Cached(byte[] bytes, DnsMessage message, long created, long expires) {}
 
-    KernelDns(OutboundNetwork network, DnsAddressResolverGroup resolver, DnsServerAddressStreamProvider servers) {
-        this(network, resolver, servers, 3000, System::nanoTime);
+    KernelDns(OutboundNetwork network, DnsAddressResolverGroup resolver, DnsServerAddressStreamProvider servers,
+              SessionRouter session, DirectRoutes routes) {
+        this(network, resolver, servers, 3000, System::nanoTime, session, routes);
     }
     KernelDns(OutboundNetwork network, DnsAddressResolverGroup resolver, DnsServerAddressStreamProvider servers,
               int timeoutMillis, LongSupplier clock) {
+        this(network, resolver, servers, timeoutMillis, clock, null, null);
+    }
+    private KernelDns(OutboundNetwork network, DnsAddressResolverGroup resolver, DnsServerAddressStreamProvider servers,
+                      int timeoutMillis, LongSupplier clock, SessionRouter session, DirectRoutes routes) {
         this.network = network; this.resolver = resolver; this.servers = servers;
-        this.timeoutMillis = timeoutMillis; this.clock = clock;
+        this.timeoutMillis = timeoutMillis; this.clock = clock; this.session = session; this.routes = routes;
+    }
+    /** 配置切换在共用事件循环中执行；旧回答不能更新新出口下的缓存和域名关联。 */
+    void apply(DirectRoutes routes) { this.routes = routes; reset(); }
+    void reset() {
+        // 应用可能仍缓存真实 IP；保留尚未过期的关联，便于新连接按最新域名规则分流。
+        cache.clear();
+        for (var request : List.copyOf(pending.entrySet()))
+            request.getKey().trySuccess(DnsMessage.failure(request.getValue(), 2));
     }
 
     String domain(String ip) {
@@ -86,7 +103,7 @@ final class KernelDns {
         @Override protected void channelRead0(ChannelHandlerContext ctx, ByteBuf data) {
             if (!ctx.channel().isWritable() || requests.size() >= 32) { ctx.close(); return; }
             byte[] bytes = new byte[data.readableBytes()]; data.readBytes(bytes);
-            Future<byte[]> request = query(ctx.channel().eventLoop(), bytes, udp);
+            Future<byte[]> request = query(ctx.channel().eventLoop(), bytes, udp, ctx.channel());
             requests.add(request);
             request.addListener(done -> {
                 requests.remove(request);
@@ -108,13 +125,20 @@ final class KernelDns {
         @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) { ctx.close(); }
     }
 
-    Future<byte[]> query(EventLoop loop, byte[] bytes, boolean udp) {
+    Future<byte[]> query(EventLoop loop, byte[] bytes, boolean udp) { return query(loop, bytes, udp, null); }
+    private Future<byte[]> query(EventLoop loop, byte[] bytes, boolean udp, Channel browser) {
         DnsMessage question;
         try { question = new DnsMessage(bytes, false); }
         catch (RuntimeException e) { return loop.newSucceededFuture(DnsMessage.failure(bytes, 1)); }
-        if (pending >= MAX_QUERIES) return loop.newSucceededFuture(DnsMessage.failure(bytes, 2));
-        List<InetSocketAddress> upstreams = new ArrayList<>();
+        if (pending.size() >= MAX_QUERIES) return loop.newSucceededFuture(DnsMessage.failure(bytes, 2));
+        // DNS 尚无结果 IP，不为匹配网段规则额外发起一次本机解析。
+        final boolean proxy;
         try {
+            proxy = session != null && !routes.matches(question.question.name());
+            if (proxy) new DnsTunnel(question.question.name(), 0);
+        } catch (IllegalArgumentException e) { return loop.newSucceededFuture(DnsMessage.failure(bytes, 1)); }
+        List<InetSocketAddress> upstreams = new ArrayList<>();
+        if (!proxy) try {
             var stream = servers.nameServerAddressStream(question.question.name());
             for (int i = 0; i < Math.min(stream.size(), 4); i++) {
                 var address = stream.next();
@@ -123,9 +147,9 @@ final class KernelDns {
         } catch (RuntimeException e) {
             LogManager.getLogger(KernelDns.class).warn("读取系统 DNS 失败：{}", e.toString());
         }
-        if (upstreams.isEmpty()) return loop.newSucceededFuture(DnsMessage.failure(bytes, 2));
+        if (!proxy && upstreams.isEmpty()) return loop.newSucceededFuture(DnsMessage.failure(bytes, 2));
         // 只缓存无附加选项的标准查询，避免跨请求复用 EDNS Cookie、签名等状态。
-        String key = question.additional == 0 ? udp + ":" + upstreams + ":"
+        String key = question.additional == 0 ? proxy + ":" + udp + ":" + upstreams + ":"
                 + Base64.getEncoder().encodeToString(Arrays.copyOfRange(bytes, 2, bytes.length)) : null;
         long now = clock.getAsLong();
         cache.entrySet().removeIf(entry -> now - entry.getValue().expires >= 0);
@@ -142,9 +166,9 @@ final class KernelDns {
             remember(new DnsMessage(answer, true));
             return loop.newSucceededFuture(answer);
         }
-        Promise<byte[]> result = loop.newPromise(); pending++;
-        result.addListener(done -> pending--);
-        new Exchange(loop, bytes, udp, upstreams, key, result).next();
+        Promise<byte[]> result = loop.newPromise(); pending.put(result, bytes);
+        result.addListener(done -> pending.remove(result));
+        new Exchange(loop, bytes, udp, upstreams, key, result, proxy, browser).next();
         return result;
     }
 
@@ -152,7 +176,8 @@ final class KernelDns {
         final EventLoop loop;
         final byte[] original, outgoing;
         final DnsMessage question;
-        final boolean udp;
+        final boolean udp, proxy;
+        final Channel browser;
         final List<InetSocketAddress> upstreams;
         final String cacheKey;
         final Promise<byte[]> result;
@@ -161,9 +186,10 @@ final class KernelDns {
         Future<Channel> opening;
         ScheduledFuture<?> timer;
         Exchange(EventLoop loop, byte[] bytes, boolean udp,
-                 List<InetSocketAddress> upstreams, String cacheKey, Promise<byte[]> result) {
+                 List<InetSocketAddress> upstreams, String cacheKey, Promise<byte[]> result, boolean proxy, Channel browser) {
             this.loop = loop; original = bytes; outgoing = bytes.clone(); this.udp = udp;
             this.upstreams = upstreams; this.cacheKey = cacheKey; this.result = result;
+            this.proxy = proxy; this.browser = browser;
             int id = ThreadLocalRandom.current().nextInt(65536);
             outgoing[0] = (byte) (id >>> 8); outgoing[1] = (byte) id;
             question = new DnsMessage(outgoing, false);
@@ -178,14 +204,18 @@ final class KernelDns {
         void next() {
             cleanup();
             if (result.isDone()) return;
-            if (index == upstreams.size()) {
-                LogManager.getLogger(KernelDns.class).warn("系统 DNS 查询失败：域名={}，传输={}", question.question.name(), udp ? "UDP" : "TCP");
+            if (index == (proxy ? DnsTunnel.MAX_SERVERS : upstreams.size())) {
+                LogManager.getLogger(KernelDns.class).warn("系统 DNS 查询失败：域名={}，传输={}，路由={}", question.question.name(), udp ? "UDP" : "TCP", proxy ? "代理" : "直连");
                 result.trySuccess(DnsMessage.failure(original, 2)); return;
             }
-            InetSocketAddress address = upstreams.get(index++);
+            int serverIndex = index++;
             int attempt = generation;
-            timer = loop.schedule(this::next, timeoutMillis, TimeUnit.MILLISECONDS);
-            if (udp) opening = UdpTunnel.connect(loop, resolver, address, network);
+            long openingTimeout = proxy ? Math.max(timeoutMillis,
+                    session.config().profile(session.config().defaultConnectionId()).config().connectTimeoutMillis() * 2L) : timeoutMillis;
+            timer = loop.schedule(this::next, openingTimeout, TimeUnit.MILLISECONDS);
+            InetSocketAddress address = proxy ? null : upstreams.get(serverIndex);
+            if (proxy) opening = session.openDns(new DnsTunnel(question.question.name(), serverIndex), browser, udp);
+            else if (udp) opening = UdpTunnel.connect(loop, resolver, address, network);
             else {
                 var connecting = new Bootstrap().group(loop).channelFactory(network::tcp)
                         .option(ChannelOption.AUTO_READ, false).option(ChannelOption.CONNECT_TIMEOUT_MILLIS, timeoutMillis)
@@ -206,6 +236,11 @@ final class KernelDns {
                 opening = null;
                 if (!done.isSuccess()) { next(); return; }
                 Channel upstream = request.getNow(); channel = upstream;
+                if (proxy) {
+                    timer.cancel(false);
+                    timer = loop.schedule(this::next, timeoutMillis, TimeUnit.MILLISECONDS);
+                }
+                if (udp && proxy) UdpTunnel.addFraming(upstream.pipeline());
                 if (!udp) framing(upstream.pipeline());
                 upstream.pipeline().addLast(new SimpleChannelInboundHandler<ByteBuf>() {
                     @Override protected void channelRead0(ChannelHandlerContext ctx, ByteBuf data) {

@@ -21,6 +21,8 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
     private final ProxyConfig config;
     private final ProxyCredentials credentials;
     private final DnsAddressResolverGroup resolver;
+    private final io.netty.resolver.dns.DnsServerAddressStreamProvider dnsServers;
+    private DnsTunnel dns;
     private final ArrayDeque<ByteBuf> pending = new ArrayDeque<>();
     private int pendingBytes;
     private boolean receivedHeaders;
@@ -28,8 +30,9 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
     private Channel target;
     private ScheduledFuture<?> timeout;
 
-    ServerConnectHandler(ProxyConfig config, ProxyCredentials credentials, DnsAddressResolverGroup resolver) {
-        this.config = config; this.credentials = credentials; this.resolver = resolver;
+    ServerConnectHandler(ProxyConfig config, ProxyCredentials credentials, DnsAddressResolverGroup resolver,
+                         io.netty.resolver.dns.DnsServerAddressStreamProvider dnsServers) {
+        this.config = config; this.credentials = credentials; this.resolver = resolver; this.dnsServers = dnsServers;
     }
 
     @Override public void handlerAdded(ChannelHandlerContext ctx) {
@@ -50,12 +53,16 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
             try {
                 authority = Authority.parse(frame.headers().authority().toString(), -1);
                 udp = UdpTunnel.requested(frame.headers().getAll(UdpTunnel.HEADER));
+                dns = DnsTunnel.requested(frame.headers().getAll(DnsTunnel.HEADER), authority);
             }
             catch (RuntimeException e) { fail(ctx, "400"); return; }
             requestedTarget = authority;
             ctx.channel().config().setAutoRead(false);
+            final java.net.InetSocketAddress destination;
+            try { destination = dns == null ? authority.unresolved() : dns.upstream(dnsServers); }
+            catch (RuntimeException e) { fail(ctx, "502"); return; }
             if (udp) {
-                var opening = UdpTunnel.connect(ctx.channel().eventLoop(), resolver, authority.unresolved());
+                var opening = UdpTunnel.connect(ctx.channel().eventLoop(), resolver, destination);
                 ctx.channel().closeFuture().addListener(ignored -> opening.cancel(false));
                 opening.addListener(f -> connected(ctx, f.isSuccess() ? (Channel) f.getNow() : null, f.cause(), true));
                 return;
@@ -64,7 +71,7 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
                     .resolver(resolver).option(ChannelOption.CONNECT_TIMEOUT_MILLIS, config.connectTimeoutMillis())
                     .option(ChannelOption.AUTO_READ, false).option(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     .option(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK)
-                    .handler(new ChannelInboundHandlerAdapter()).connect(authority.unresolved());
+                    .handler(new ChannelInboundHandlerAdapter()).connect(destination);
             target = connecting.channel();
             connecting.addListener((ChannelFutureListener) f -> connected(ctx, f.isSuccess() ? f.channel() : null, f.cause(), false));
         } else if (msg instanceof Http3DataFrame frame && receivedHeaders) {
@@ -82,6 +89,7 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
         if (failure != null) { fail(ctx, "502"); return; }
         var response = new DefaultHttp3HeadersFrame(); response.headers().status("200");
         if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
+        if (dns != null) response.headers().set(DnsTunnel.HEADER, dns.header());
         ctx.writeAndFlush(response).addListener(write -> {
             if (finished) { target.close(); ctx.close(); return; }
             if (!write.isSuccess() || !ctx.channel().isActive()) { fail(ctx, "502"); return; }

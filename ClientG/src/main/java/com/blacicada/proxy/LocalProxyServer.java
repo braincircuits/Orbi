@@ -21,7 +21,8 @@ public final class LocalProxyServer implements AutoCloseable {
     private final OutboundNetwork network;
     private final EventLoopGroup group;
     private final DnsAddressResolverGroup resolver;
-    private final KernelDns dns;
+    private KernelDns dns;
+    private final io.netty.resolver.dns.DnsServerAddressStreamProvider dnsServers;
     private final DefaultChannelGroup clients = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
     private SessionRouter session;
     private final KernelConfig initial;
@@ -55,7 +56,7 @@ public final class LocalProxyServer implements AutoCloseable {
                      TrafficStatistics traffic, io.netty.resolver.dns.DnsServerAddressStreamProvider dnsServers) {
         this.traffic = traffic;
         network = new OutboundNetwork(interfaceIndex); group = network.newGroup(); resolver = network.resolver();
-        dns = new KernelDns(network, resolver, dnsServers);
+        this.dnsServers = dnsServers;
         this.initial = config; this.config = config.local();
         this.trafficRecorder = trafficRecorder; this.accessRecorder = accessRecorder;
     }
@@ -65,7 +66,7 @@ public final class LocalProxyServer implements AutoCloseable {
             throw new IllegalArgumentException("修改本地监听需要重启代理");
         DirectRoutes updated = DirectRoutes.load(next.local());
         session.apply(next, () -> {
-            config = next.local(); routes = updated;
+            config = next.local(); routes = updated; dns.apply(updated);
             // 浏览器连接和路由器共用当前唯一的 EventLoop，无需另建会话集合。
             for (Channel browser : clients) {
                 LocalSession local = browser.attr(LocalSession.KEY).get();
@@ -73,7 +74,10 @@ public final class LocalProxyServer implements AutoCloseable {
             }
         });
     }
-    public void disconnect() throws Exception { session.disconnect(); }
+    public void disconnect() throws Exception {
+        session.disconnect();
+        group.next().submit(dns::reset).syncUninterruptibly();
+    }
     public KernelConfig configuration() { return session.config(); }
     public DirectRoutes routes() { return routes; }
 
@@ -82,6 +86,7 @@ public final class LocalProxyServer implements AutoCloseable {
         try {
             session = new SessionRouter(group.next(), resolver, initial, network);
             routes = DirectRoutes.load(config);
+            dns = new KernelDns(network, resolver, dnsServers, session, routes);
             listener = new ServerBootstrap().group(group).channelFactory(network::listener)
                     .childOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK)

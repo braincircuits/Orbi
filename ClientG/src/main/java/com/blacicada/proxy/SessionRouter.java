@@ -1,6 +1,7 @@
 package com.blacicada.proxy;
 
 import com.blacicada.common.Authority;
+import com.blacicada.common.DnsTunnel;
 import com.blacicada.common.OutboundNetwork;
 import com.blacicada.config.KernelConfig;
 import io.netty.channel.*;
@@ -32,13 +33,15 @@ public final class SessionRouter implements AutoCloseable {
     private ProxySession create(KernelConfig.Profile profile) throws Exception {
         return ProxySessionFactory.create(loop, profile.config(), resolver, network);
     }
-    public Future<Channel> open(Authority target, Channel browser, boolean udp) {
+    public Future<Channel> open(Authority target, Channel browser, boolean udp) { return open(target, browser, udp, null); }
+    public Future<Channel> openDns(DnsTunnel dns, Channel browser, boolean udp) { return open(DnsTunnel.TARGET, browser, udp, dns); }
+    private Future<Channel> open(Authority target, Channel browser, boolean udp, DnsTunnel dns) {
         Promise<Channel> result = loop.newPromise();
         loop.execute(() -> {
             if (closed || session == null || !browser.isActive() || result.isDone()) { result.cancel(false); return; }
             if (browsers.add(browser)) browser.closeFuture().addListener(f -> browsers.remove(browser));
             pending.add(result); pendingCount = pending.size();
-            Future<? extends Channel> opening = session.open(target, udp);
+            Future<? extends Channel> opening = session.open(target, udp, dns);
             result.addListener(f -> { pending.remove(result); pendingCount = pending.size(); if (!f.isSuccess()) opening.cancel(false); });
             opening.addListener(f -> {
                 if (f.isSuccess()) {

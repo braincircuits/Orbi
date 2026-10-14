@@ -10,6 +10,8 @@ import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.handler.codec.http3.*;
 import io.netty.handler.codec.quic.*;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
+import io.netty.resolver.dns.DnsServerAddressStreamProvider;
+import io.netty.resolver.dns.DnsServerAddressStreamProviders;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -29,6 +31,9 @@ public final class Http3ProxyServer implements AutoCloseable {
     private final ChannelHandler codec;
 
     public Http3ProxyServer(ProxyConfig config) throws java.io.IOException {
+        this(config, DnsServerAddressStreamProviders.platformDefault());
+    }
+    public Http3ProxyServer(ProxyConfig config, DnsServerAddressStreamProvider dnsServers) throws java.io.IOException {
         this.config = config;
         ProxyCredentials credentials = ProxyCredentials.loadServer(config);
         Quic.ensureAvailability();
@@ -67,7 +72,7 @@ public final class Http3ProxyServer implements AutoCloseable {
                                         stream.pipeline().addFirst("streamCleanup", new QuicStreamCleanupHandler());
                                         stream.config().setAllowHalfClosure(true);
                                         stream.config().setWriteBufferWaterMark(Transport.WATERMARK);
-                                        stream.pipeline().addLast(new ServerConnectHandler(config, credentials, resolver));
+                                        stream.pipeline().addLast(new ServerConnectHandler(config, credentials, resolver, dnsServers));
                                     }
                                 }, null, null, settings, true));
                     }

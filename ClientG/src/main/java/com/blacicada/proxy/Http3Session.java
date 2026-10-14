@@ -66,7 +66,7 @@ public final class Http3Session implements ProxySession {
                 .bind(0).sync().channel();
     }
 
-    @Override public Future<QuicStreamChannel> open(Authority target, boolean udpTunnel) {
+    @Override public Future<QuicStreamChannel> open(Authority target, boolean udpTunnel, DnsTunnel dns) {
         Promise<QuicStreamChannel> result = loop.newPromise();
         loop.execute(() -> {
             if (result.isDone()) return;
@@ -83,7 +83,7 @@ public final class Http3Session implements ProxySession {
                 if (result.isDone()) { streams--; return; }
                 if (!f.isSuccess()) { streams--; result.tryFailure(f.cause()); return; }
                 QuicChannel parent = (QuicChannel) f.getNow();
-                var response = new ConnectResponse(result, target, udpTunnel);
+                var response = new ConnectResponse(result, target, udpTunnel, dns);
                 Future<QuicStreamChannel> creation = createWhenAllowed(parent, response);
                 result.addListener(done -> { if (!done.isSuccess()) creation.cancel(false); });
                 creation.addListener(created -> {
@@ -95,6 +95,7 @@ public final class Http3Session implements ProxySession {
                     request.headers().method("CONNECT").authority(target.toString())
                             .set("proxy-authorization", authorization);
                     if (udpTunnel) request.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
+                    if (dns != null) request.headers().set(DnsTunnel.HEADER, dns.header());
                     stream.writeAndFlush(request).addListener(write -> {
                         if (!write.isSuccess()) result.tryFailure(write.cause());
                     });
@@ -260,10 +261,11 @@ public final class Http3Session implements ProxySession {
         private ScheduledFuture<?> timeout;
         private final Authority target;
         private final boolean udpTunnel;
+        private final DnsTunnel dns;
         private long receivedBefore = -1;
         private long sentBefore = -1;
-        ConnectResponse(Promise<QuicStreamChannel> result, Authority target, boolean udpTunnel) {
-            this.result = result; this.target = target; this.udpTunnel = udpTunnel;
+        ConnectResponse(Promise<QuicStreamChannel> result, Authority target, boolean udpTunnel, DnsTunnel dns) {
+            this.result = result; this.target = target; this.udpTunnel = udpTunnel; this.dns = dns;
         }
         @Override public void handlerAdded(ChannelHandlerContext ctx) {
             ctx.pipeline().addFirst("streamCleanup", new QuicStreamCleanupHandler());
@@ -289,6 +291,9 @@ public final class Http3Session implements ProxySession {
                 if (status.length() == 3 && status.charAt(0) == '2') {
                     if (udpTunnel && !UdpTunnel.requested(headers.headers().getAll(UdpTunnel.HEADER))) {
                         result.tryFailure(new IOException("服务端未确认 UDP 隧道")); ctx.close(); return;
+                    }
+                    if (dns != null && !dns.confirmed(headers.headers().getAll(DnsTunnel.HEADER))) {
+                        result.tryFailure(new IOException("服务端未确认系统 DNS 隧道，请更新服务端")); ctx.close(); return;
                     }
                     if (ctx.channel().parent() == connection) lastError = "";
                     timeout.cancel(false);

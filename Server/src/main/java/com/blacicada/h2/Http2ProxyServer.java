@@ -11,6 +11,8 @@ import io.netty.handler.codec.http2.*;
 import io.netty.handler.ssl.*;
 import io.netty.handler.timeout.*;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
+import io.netty.resolver.dns.DnsServerAddressStreamProvider;
+import io.netty.resolver.dns.DnsServerAddressStreamProviders;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
@@ -19,6 +21,7 @@ import java.util.concurrent.atomic.*;
 /** TLS 与 ALPN 成功后才接收 HTTP/2 CONNECT。 */
 public final class Http2ProxyServer implements AutoCloseable {
     private final ProxyConfig config;
+    private final DnsServerAddressStreamProvider dnsServers;
     private final SslContext ssl;
     private final ProxyCredentials credentials;
     private final EventLoopGroup group = new NioEventLoopGroup(1);
@@ -30,7 +33,10 @@ public final class Http2ProxyServer implements AutoCloseable {
     private static final org.apache.logging.log4j.Logger LOG = org.apache.logging.log4j.LogManager.getLogger(Http2ProxyServer.class);
 
     public Http2ProxyServer(ProxyConfig config) throws Exception {
-        this.config = config;
+        this(config, DnsServerAddressStreamProviders.platformDefault());
+    }
+    public Http2ProxyServer(ProxyConfig config, DnsServerAddressStreamProvider dnsServers) throws Exception {
+        this.config = config; this.dnsServers = dnsServers;
         try {
             credentials = ProxyCredentials.loadServer(config);
             ssl = SslContextBuilder.forServer(config.path("tls.cert", "certs/server.crt").toFile(),
@@ -73,7 +79,7 @@ public final class Http2ProxyServer implements AutoCloseable {
                                     ctx.pipeline().addLast(new Http2MultiplexHandler(new ChannelInitializer<Http2StreamChannel>() {
                                         @Override protected void initChannel(Http2StreamChannel stream) {
                                             stream.config().setWriteBufferWaterMark(Transport.WATERMARK);
-                                            stream.pipeline().addLast(new H2ServerConnectHandler(config, credentials, resolver));
+                                            stream.pipeline().addLast(new H2ServerConnectHandler(config, credentials, resolver, dnsServers));
                                         }
                                     }));
                                 }

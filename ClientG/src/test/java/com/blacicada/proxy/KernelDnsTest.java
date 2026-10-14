@@ -23,7 +23,7 @@ class KernelDnsTest {
         var bytes = new ByteArrayOutputStream(); var out = new DataOutputStream(bytes);
         out.writeShort(id); out.writeShort(0x0100); out.writeShort(1);
         out.writeShort(0); out.writeShort(0); out.writeShort(0);
-        for (String label : name.split("\\.")) { out.writeByte(label.length()); out.writeBytes(label); }
+        for (String label : name.isEmpty() ? new String[0] : name.split("\\.")) { out.writeByte(label.length()); out.writeBytes(label); }
         out.writeByte(0); out.writeShort(type); out.writeShort(1); return bytes.toByteArray();
     }
     static byte[] answer(byte[] query, String ip, int ttl) throws Exception {
@@ -57,6 +57,7 @@ class KernelDnsTest {
         final List<byte[]> requests = new CopyOnWriteArrayList<>();
         volatile String ip = "127.0.0.1";
         volatile int ttl = 60;
+        volatile int delayMillis;
         volatile boolean truncated, wrongFirst;
         Upstream() throws Exception {
             workers.submit(() -> {
@@ -84,6 +85,7 @@ class KernelDnsTest {
             });
         }
         byte[] reply(byte[] query) throws Exception {
+            if (delayMillis > 0) Thread.sleep(delayMillis);
             byte[] result = answer(query, ip, ttl);
             if (truncated) { result[2] |= 2; result = Arrays.copyOf(result, query.length); }
             return result;

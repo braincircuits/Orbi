@@ -44,6 +44,7 @@ public final class Http2Session implements ProxySession {
     private final class Request {
         final Authority target;
         final boolean udp;
+        final DnsTunnel dns;
         final Promise<Channel> result = loop.newPromise();
         Channel parent;
         Http2StreamChannel stream;
@@ -51,7 +52,7 @@ public final class Http2Session implements ProxySession {
         String phase = "等待 HTTP/2 流额度";
         long waitingSince, phaseSince;
         ScheduledFuture<?> timeout;
-        Request(Authority target, boolean udp) { this.target = target; this.udp = udp; }
+        Request(Authority target, boolean udp, DnsTunnel dns) { this.target = target; this.udp = udp; this.dns = dns; }
     }
     public Http2Session(EventLoop loop, ProxyConfig config, DnsAddressResolverGroup resolver) throws Exception {
         this(loop, config, resolver, OutboundNetwork.DEFAULT);
@@ -70,8 +71,8 @@ public final class Http2Session implements ProxySession {
         if (!config.get("tls.ca", "").isEmpty()) builder.trustManager(config.path("tls.ca", "").toFile());
         ssl = builder.build();
     }
-    @Override public Future<Channel> open(Authority target, boolean udp) {
-        Request r = new Request(target, udp);
+    @Override public Future<Channel> open(Authority target, boolean udp, DnsTunnel dns) {
+        Request r = new Request(target, udp, dns);
         loop.execute(() -> {
             if (r.result.isDone()) return;
             if (closed) {
@@ -146,6 +147,7 @@ public final class Http2Session implements ProxySession {
                                 var headers = new DefaultHttp2Headers().method("CONNECT").authority(r.target.toString())
                                         .set("proxy-authorization", authorization);
                                 if (r.udp) headers.set(UdpTunnel.HEADER, UdpTunnel.VALUE);
+                                if (r.dns != null) headers.set(DnsTunnel.HEADER, r.dns.header());
                                 r.stream.writeAndFlush(new DefaultHttp2HeadersFrame(headers))
                                     .addListener(w -> {
                                         if (!w.isSuccess()) r.result.tryFailure(w.cause());
@@ -250,6 +252,9 @@ public final class Http2Session implements ProxySession {
                 if (status.matches("2[0-9]{2}") && !headers.isEndStream()) {
                     if (request.udp && !UdpTunnel.requested(headers.headers().getAll(UdpTunnel.HEADER))) {
                         request.result.tryFailure(new IOException("服务端未确认 UDP 隧道")); ctx.close(); return;
+                    }
+                    if (request.dns != null && !request.dns.confirmed(headers.headers().getAll(DnsTunnel.HEADER))) {
+                        request.result.tryFailure(new IOException("服务端未确认系统 DNS 隧道，请更新服务端")); ctx.close(); return;
                     }
                     if (request.parent == connection) error = "";
                     ctx.channel().config().setAutoRead(false);
