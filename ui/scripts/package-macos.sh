@@ -4,11 +4,15 @@ set -eu
 UI_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CORE_ROOT=${CORE_ROOT:-"$UI_ROOT/.."}
 FLUTTER=${FLUTTER:-flutter}
-OUTPUT=${1:-"$UI_ROOT/dist/Network.app"}
-if [ -e "$OUTPUT" ]; then
-  printf '%s\n' "输出目录已存在，拒绝覆盖：$OUTPUT" >&2
+if [ "$#" -ne 0 ]; then
+  printf '%s\n' '打包脚本不接受输出路径参数，应用固定输出到 release/ui/Network.app。' >&2
   exit 1
 fi
+OUTPUT="$CORE_ROOT/release/ui/Network.app"
+mkdir -p "$UI_ROOT/build"
+PACKAGE_DIR=$(mktemp -d "$UI_ROOT/build/package-macos.XXXXXX")
+trap 'rm -rf "$PACKAGE_DIR"' EXIT HUP INT TERM
+STAGED_APP="$PACKAGE_DIR/Network.app"
 if [ -z "${NATIVE_CORE:-}" ]; then
   printf '%s\n' '正在构建原生代理内核…'
   sh "$CORE_ROOT/scripts/build-native.sh"
@@ -20,9 +24,8 @@ if [ ! -x "$NATIVE_CORE" ]; then
 fi
 printf '%s\n' '正在构建 macOS 界面…'
 (cd "$UI_ROOT" && "$FLUTTER" build macos --release)
-mkdir -p "$(dirname "$OUTPUT")"
-ditto "$UI_ROOT/build/macos/Build/Products/Release/network_ui.app" "$OUTPUT"
-ASSETS="$OUTPUT/Contents/Resources/proxy"
+ditto "$UI_ROOT/build/macos/Build/Products/Release/network_ui.app" "$STAGED_APP"
+ASSETS="$STAGED_APP/Contents/Resources/proxy"
 mkdir -p "$ASSETS"
 sh "$CORE_ROOT/scripts/build-tun.sh"
 cp "$CORE_ROOT/target/network-tun" "$ASSETS/network-tun"
@@ -33,6 +36,10 @@ for library in "$(dirname "$NATIVE_CORE")"/*.dylib; do
   [ ! -f "$library" ] || cp "$library" "$ASSETS/"
 done
 printf '%s\n' '正在进行本机临时签名…'
-codesign --force --deep --sign - "$OUTPUT"
-codesign --verify --deep --strict "$OUTPUT"
+codesign --force --deep --sign - "$STAGED_APP"
+codesign --verify --deep --strict "$STAGED_APP"
+# 构建和签名通过后才替换应用；UI 运行数据保存在 Application Support/NetworkUI。
+mkdir -p "$(dirname "$OUTPUT")"
+rm -rf "$OUTPUT"
+mv "$STAGED_APP" "$OUTPUT"
 printf '%s\n' "应用已生成：$OUTPUT" '应用使用本机临时签名；公开分发前需使用 Developer ID 签名并公证。'

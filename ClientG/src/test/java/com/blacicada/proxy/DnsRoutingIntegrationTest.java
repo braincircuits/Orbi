@@ -35,10 +35,14 @@ class DnsRoutingIntegrationTest {
         volatile InetSocketAddress firstRemote;
         volatile boolean unavailable;
         Fixture(String protocol, boolean wrongPassword) throws Exception {
+            this(protocol, wrongPassword, 1024);
+        }
+        Fixture(String protocol, boolean wrongPassword, int maxStreams) throws Exception {
             local.ip = "192.0.2.10"; remote.ip = "198.51.100.20";
             Properties values = new Properties();
             values.setProperty("bind", "127.0.0.1"); values.setProperty("port", "0"); values.setProperty("password", "dns-test-secret");
             values.setProperty("tls.cert", resource("localhost.crt")); values.setProperty("tls.key", resource("localhost.key"));
+            values.setProperty("maxStreams", Integer.toString(maxStreams));
             DnsServerAddressStreamProvider remoteDns = name -> {
                 remoteNames.add(name);
                 if (unavailable) throw new IllegalStateException("测试服务端 DNS 不可用");
@@ -79,6 +83,27 @@ class DnsRoutingIntegrationTest {
             assertTrue(lookup(domain, udp, 123).addresses().containsKey(expected), "DNS 回答必须来自规则选定的出口");
         }
         @Override public void close() throws Exception { client.close(); server.close(); local.close(); remote.close(); }
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
+    void repeatedDnsQueriesReplenishPeerStreamCredit(String protocol) throws Exception {
+        try (var f = new Fixture(protocol, false, 4);
+             var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            for (boolean udp : List.of(true, false)) {
+                for (int i = 0; i < 40; i++) {
+                    f.address("query" + udp + i + ".example", udp, f.remote.ip);
+                }
+                // 同时请求数超过服务端额度，验证排队唤醒及 DNS 短流关闭后的额度回收。
+                var requests = new ArrayList<java.util.concurrent.Future<?>>();
+                for (int i = 0; i < 16; i++) {
+                    String domain = "burst" + udp + i + ".example";
+                    requests.add(executor.submit(() -> { f.address(domain, udp, f.remote.ip); return null; }));
+                }
+                for (var request : requests) request.get(10, TimeUnit.SECONDS);
+            }
+            assertEquals(112, f.remote.requests.size());
+            assertEquals(1, f.client.connectionCount(), "DNS 查询关闭后必须归还流额度并复用连接");
+        }
     }
 
     @ParameterizedTest @ValueSource(strings = {"http2", "http3"})

@@ -422,7 +422,8 @@ class Http3IntegrationTest {
     }
 
     @Test void closedTunnelsReplenishStreamCredit() throws Exception {
-        // 请求总数超过服务端默认额度，且每次只保留少量活跃流。
+        useSinglePeerStream();
+        // 显式限制服务端额度，确保请求总数超过额度并验证关闭后的回收。
         for (int i = 0; i < 600; i++) {
             try (Socket current = tunnel(client, echo.port())) {
                 send(current, "x");
@@ -517,6 +518,32 @@ class Http3IntegrationTest {
                     send(next, "b"); assertEquals('b', next.getInputStream().read());
                 }
                 assertEquals(2, proxy.connectionCount(), "无回包超时后应淘汰失效连接，让新请求重新连接");
+            }
+        }
+    }
+
+    @Test void reconnectsAfterSilentPacketLossWhileWaitingForStreamCredit() throws Exception {
+        useSinglePeerStream();
+        try (var relay = new DatagramRelay(server.address())) {
+            var options = clientConfig("integration-test-secret", "localhost", false, 32).values();
+            options.setProperty("server.port", Integer.toString(relay.port()));
+            options.setProperty("connectTimeoutMillis", "1000");
+            try (var proxy = proxy(new ProxyConfig(options, directory)).start();
+                 Socket active = tunnel(proxy, echo.port());
+                 Socket waiting = socket(proxy)) {
+                send(active, "a"); assertEquals('a', active.getInputStream().read());
+                Thread.sleep(300);
+                relay.drop = true;
+                send(waiting, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+                // 请求已经在等待额度时，现有隧道发包却收不到任何确认。
+                Thread.sleep(200);
+                send(active, "lost");
+                assertTrue(headers(waiting.getInputStream()).startsWith("HTTP/1.1 502"));
+                relay.drop = false;
+                try (Socket next = tunnel(proxy, echo.port())) {
+                    send(next, "b"); assertEquals('b', next.getInputStream().read());
+                }
+                assertEquals(2, proxy.connectionCount(), "额度等待期间无回包的失效连接也必须能重连");
             }
         }
     }

@@ -105,14 +105,20 @@ public final class Http3Session implements ProxySession {
         return result;
     }
 
-    private Future<QuicStreamChannel> createWhenAllowed(QuicChannel parent, ChannelHandler handler) {
+    private Future<QuicStreamChannel> createWhenAllowed(QuicChannel parent, ConnectResponse handler) {
         Promise<QuicStreamChannel> promise = loop.newPromise();
         var request = new StreamRequest(parent, handler, promise);
+        handler.observeConnection(parent);
         waitingStreams.add(request);
-        var timeout = loop.schedule(() -> promise.tryFailure(new IOException("等待 QUIC 流额度超时：连接 ID=" + parent.id().asShortText()
-                + "，对端剩余额度=" + parent.peerAllowedStreams(QuicStreamType.BIDIRECTIONAL)
-                + "，本地占用=" + streams + "，排队=" + waitingStreams.size())),
-                config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
+        var timeout = loop.schedule(() -> {
+            var failure = new IOException("等待 QUIC 流额度超时：连接 ID=" + parent.id().asShortText()
+                    + "，目标=" + handler.target + "，原始协议=" + (handler.udpTunnel ? "UDP" : "TCP")
+                    + "，对端剩余额度=" + parent.peerAllowedStreams(QuicStreamType.BIDIRECTIONAL)
+                    + "，本地占用（含排队）=" + streams + "，排队=" + waitingStreams.size()
+                    + "，超时预算=" + config.connectTimeoutMillis() + "ms");
+            checkUnresponsiveConnection(parent, handler.receivedBefore, handler.sentBefore, "等待 QUIC 流额度");
+            promise.tryFailure(failure);
+        }, config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
         promise.addListener(done -> {
             timeout.cancel(false);
             waitingStreams.remove(request);
@@ -238,16 +244,16 @@ public final class Http3Session implements ProxySession {
         return attempt;
     }
 
-    private void checkUnresponsiveConnection(QuicChannel parent, long receivedBefore, long sentBefore) {
+    private void checkUnresponsiveConnection(QuicChannel parent, long receivedBefore, long sentBefore, String phase) {
         if (receivedBefore < 0 || sentBefore < 0 || connection != parent || !parent.isActive()) return;
         parent.collectStats().addListener(done -> {
             if (!done.isSuccess() || connection != parent || !parent.isActive()) return;
             QuicConnectionStats stats = (QuicConnectionStats) done.getNow();
             // 单个目标慢、或流额度已用完都不能作为关闭共享连接的依据。
-            // 仅在整个 CONNECT 等待期间有发包却完全无回包时淘汰疑似失效连接。
+            // 等待流额度和 CONNECT 响应都要检查；仅在整个等待期间有发包却完全无回包时淘汰疑似失效连接。
             if (stats.recv() == receivedBefore && stats.sent() > sentBefore) {
-                LOGGER.warn("CONNECT 等待期间 QUIC 连接无回包，关闭连接供后续请求重连：服务端={}，连接 ID={}，发送包增量={}",
-                        server, parent.id().asShortText(), stats.sent() - sentBefore);
+                LOGGER.warn("{}期间 QUIC 连接无回包，关闭连接供后续请求重连：服务端={}，连接 ID={}，发送包增量={}",
+                        phase, server, parent.id().asShortText(), stats.sent() - sentBefore);
                 connection = null;
                 connectionState = "failed";
                 lastError = "服务端连接无响应，后续请求将重新连接";
@@ -267,18 +273,22 @@ public final class Http3Session implements ProxySession {
         ConnectResponse(Promise<QuicStreamChannel> result, Authority target, boolean udpTunnel, DnsTunnel dns) {
             this.result = result; this.target = target; this.udpTunnel = udpTunnel; this.dns = dns;
         }
-        @Override public void handlerAdded(ChannelHandlerContext ctx) {
-            ctx.pipeline().addFirst("streamCleanup", new QuicStreamCleanupHandler());
-            QuicStreamChannel stream = (QuicStreamChannel) ctx.channel();
-            QuicChannel parent = stream.parent();
+        private void observeConnection(QuicChannel parent) {
+            receivedBefore = sentBefore = -1;
             parent.collectStats().addListener(done -> {
                 if (done.isSuccess()) {
                     QuicConnectionStats stats = (QuicConnectionStats) done.getNow();
                     receivedBefore = stats.recv(); sentBefore = stats.sent();
                 }
             });
+        }
+        @Override public void handlerAdded(ChannelHandlerContext ctx) {
+            ctx.pipeline().addFirst("streamCleanup", new QuicStreamCleanupHandler());
+            QuicStreamChannel stream = (QuicStreamChannel) ctx.channel();
+            QuicChannel parent = stream.parent();
+            observeConnection(parent);
             timeout = ctx.executor().schedule(() -> {
-                checkUnresponsiveConnection(parent, receivedBefore, sentBefore);
+                checkUnresponsiveConnection(parent, receivedBefore, sentBefore, "等待 CONNECT 响应");
                 result.tryFailure(new IOException("等待 CONNECT 响应超时：目标=" + target
                         + "，连接 ID=" + parent.id().asShortText() + "，流 ID=" + stream.streamId()));
                 Transport.abort(stream);

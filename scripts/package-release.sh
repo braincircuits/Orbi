@@ -1,18 +1,31 @@
 #!/bin/sh
-# 构建不压缩的发布目录，客户端与服务端分别存放。
+# 构建并更新固定发布目录；已有配置、数据库和证书保持不变。
 set -eu
 umask 077
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-release_dir=${1:-"$project_dir/release"}
-if [ -e "$release_dir" ]; then
-    echo "拒绝覆盖已有发布目录：$release_dir" >&2
+if [ "$#" -ne 0 ]; then
+    printf '%s\n' '用法：sh scripts/package-release.sh（产物固定输出到 release/client 和 release/server）' >&2
     exit 1
 fi
-command -v openssl >/dev/null
-command -v python3 >/dev/null
+release_dir="$project_dir/release"
+# 只有客户端和服务端目录均不存在时才初始化新部署，UI 目录不影响判断。
+initialize=true
+if [ -e "$release_dir/client" ] || [ -e "$release_dir/server" ]; then
+    initialize=false
+fi
+if [ "$initialize" = true ]; then
+    command -v openssl >/dev/null
+    command -v python3 >/dev/null
+fi
 (cd "$project_dir" && mvn -B -ntp package)
-mkdir -p "$release_dir"
-release_dir=$(CDPATH= cd -- "$release_dir" && pwd)
+mkdir -p "$release_dir/client" "$release_dir/server"
+cp "$project_dir/Server/target/Server-1.0-SNAPSHOT.jar" "$release_dir/server/server.jar"
+cp "$project_dir/ClientG/target/clientG-1.0-SNAPSHOT.jar" "$release_dir/client/client.jar"
+if [ "$initialize" = false ]; then
+    printf '发布产物已更新：%s/client/client.jar、%s/server/server.jar\n' "$release_dir" "$release_dir"
+    printf '%s\n' '已有配置、数据库、证书和启动脚本保持不变。'
+    exit 0
+fi
 for app in server client; do
     mkdir -p "$release_dir/$app/config" "$release_dir/$app/certs"
     config_name=server.properties
@@ -22,8 +35,6 @@ for app in server client; do
     cp "$project_dir/scripts/release/background.sh.template" "$release_dir/$app/background.sh"
     chmod 700 "$release_dir/$app/start.sh" "$release_dir/$app/background.sh"
 done
-cp "$project_dir/Server/target/Server-1.0-SNAPSHOT.jar" "$release_dir/server/server.jar"
-cp "$project_dir/ClientG/target/clientG-1.0-SNAPSHOT.jar" "$release_dir/client/client.jar"
 
 # 为本次发布生成凭证，不复用公开的测试私钥。
 openssl req -x509 -newkey rsa:2048 -nodes \

@@ -30,6 +30,15 @@
 
 - 只有收到用户明确的 AOT / Native Image 编译命令时才执行原生编译；日常开发和验证使用 JAR，不自动触发 AOT 构建。
 
+## 打包产物目录要求
+
+- 最终交付的打包产物统一放在项目根目录的 `release/` 下，按 UI、客户端内核和服务端分别存放，不直接堆放在 `release/` 根目录。
+- UI 应用放在 `release/ui/`，macOS 应用路径为 `release/ui/Network.app`；应用仍内置客户端内核、Java 运行时和 TUN 辅助程序，可独立运行。
+- 独立客户端内核 JAR 放在 `release/client/client.jar`。
+- 服务端 JAR 放在 `release/server/server.jar`。
+- 构建中间文件可保留在 `target/`、`ui/build/` 等构建目录，但打包完成后的交付路径必须遵循上述规则。
+- 打包和更新产物时保留已有配置、数据库和证书，不因整理发布目录而覆盖或删除这些数据。
+
 ## 提交要求
 
 - Codex 创建新提交必须使用 `sh scripts/commit.sh -m "中文标题" [-m "中文正文" ...]`，或使用 `sh scripts/commit.sh -F 提交备注文件`。脚本只提交已暂存内容，不自动暂存或推送，不接受额外 Git 选项。

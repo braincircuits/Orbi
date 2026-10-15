@@ -57,7 +57,7 @@ mvn -DskipTests package
 
 ## 发布目录启动与远程部署
 
-在项目根目录执行以下命令。脚本会构建并运行测试，生成未压缩的发布目录：
+在项目根目录执行以下命令。脚本会构建并运行测试，将 JAR 固定输出到 `release/client/client.jar` 和 `release/server/server.jar`：
 
 ```sh
 sh scripts/package-release.sh
@@ -66,6 +66,8 @@ sh scripts/package-release.sh
 ```text
 release/
 ├── README.md
+├── ui/
+│   └── Network.app  # 由 UI 打包脚本生成
 ├── server/
 │   ├── server.jar
 │   ├── start.sh / start.cmd / background.sh
@@ -100,9 +102,9 @@ release/
 4. 保持客户端 `username`、`password` 与服务端账号文件对应。使用脚本生成的证书时，保留 `tls.serverName=localhost` 和 `tls.ca=certs/server.crt`；连接地址与证书验证名称是两个独立配置。
 5. 先启动服务端，再启动代理内核；通过管理接口调用 `/api/v1/proxy/start` 开启转发，然后将浏览器/应用的 HTTP 和 HTTPS 代理地址均设为 `127.0.0.1:8080`。本地代理入口使用 HTTP，HTTPS 网站通过 CONNECT 隧道访问。
 
-每次打包生成默认账号 `client1` 的随机密码及有效期 365 天的自签名证书。客户端只需要公开证书，私钥保留在服务端。更换证书时需同步客户端信任证书及 `tls.serverName`，名称必须匹配新证书的 SAN；证书到期需要手动更新。客户端目录含访问凭证，只分发给获准使用代理的用户。
+首次打包且客户端、服务端目录均不存在时，生成默认账号 `client1` 的随机密码及有效期 365 天的自签名证书。客户端只需要公开证书，私钥保留在服务端。更换证书时需同步客户端信任证书及 `tls.serverName`，名称必须匹配新证书的 SAN；证书到期需要手动更新。客户端目录含访问凭证，只分发给获准使用代理的用户。
 
-发布目录已被 Git 忽略。脚本拒绝覆盖已有目录；再次生成可使用 `sh scripts/package-release.sh /tmp/network-release-next`。升级现有部署时，停止两端进程，将新构建的两个 JAR 分别替换为 `server/server.jar` 和 `client/client.jar`，保留 SQLite 数据库、服务端配置和证书后重启；旧 JSON/PAC 配置不会自动迁移，需通过管理接口重新录入。不要混用不同次打包生成的密码或证书。
+发布目录已被 Git 忽略。重复执行脚本会更新两个 JAR，保留已有配置、数据库、证书和启动脚本；不接受自定义输出路径。只要客户端或服务端目录已存在，就不自动生成或补齐运行配置。升级正在运行的部署时，停止两端进程后更新并重启。旧 JSON/PAC 配置不会自动迁移，需通过管理接口重新录入。
 
 发布目录自带的说明来源于 [发布使用说明模板](scripts/release/README.md)。
 
@@ -566,8 +568,8 @@ sh scripts/build-tun.sh
 # 开发运行，同时构建 JAR 和辅助进程
 sh ui/scripts/run-dev.sh
 
-# 打包内置 JAR、Java 运行时、辅助进程的 macOS 应用
-sh ui/scripts/package-macos-jar.sh /目标目录/Network-JAR.app
+# 打包到 release/ui/Network.app，并更新 release/client/client.jar 和 release/server/server.jar
+sh ui/scripts/package-macos-jar.sh
 ```
 
 已安装系统服务后，可执行 `python3 scripts/check-tun-service.py /应用路径/Contents/Resources/proxy/network-tun`，校验权限、版本一致性和连续两次无提权调用；验证在启动标识校验处中止，不创建 TUN 或改动路由。

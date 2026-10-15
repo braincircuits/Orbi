@@ -139,7 +139,8 @@ public final class Http2Session implements ProxySession {
                             r.stream.closeFuture().addListener(ignored -> {
                                 c.active--; requests.remove(r);
                                 if (c.draining && c.active == 0) parent.close();
-                                else drain(parent);
+                                // 子通道关闭回调先于 HTTP/2 编解码器的额度回收，下一轮再分配新流。
+                                else loop.execute(() -> drain(parent));
                             });
                             if (r.result.isDone()) r.stream.close();
                             else {

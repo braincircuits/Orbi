@@ -2,7 +2,7 @@
 
 Flutter 桌面客户端，界面以 Flutter Material 和基础组件实现统一桌面侧栏、分层概览、工具栏与侧边编辑；当前已接入 macOS 原生宿主。通过本机 HTTP API 管理代理内核，通过 SSE 接收状态、活跃隧道、日志与诊断进度。接口依据 [内核 Web API](../docs/web-api.md)，要求支持 `--web` 的 API v1 内核。
 
-本目录是 `network` 仓库的 `ui/`，与 Java 内核统一由根目录 Git 管理。以下命令均在 `ui/` 中执行，脚本默认以内核所在的父目录为 `CORE_ROOT`；Flutter 包名仍为 `network_ui`。提交统一在仓库根目录使用 `sh scripts/commit.sh`。构建缓存和 `dist/` 应用包不纳入版本控制，首次检出后需要重新构建。
+本目录是 `network` 仓库的 `ui/`，与 Java 内核统一由根目录 Git 管理。以下命令均在 `ui/` 中执行，脚本默认以内核所在的父目录为 `CORE_ROOT`；Flutter 包名仍为 `network_ui`。提交统一在仓库根目录使用 `sh scripts/commit.sh`。构建缓存和根目录 `release/` 发布产物不纳入版本控制，首次检出后需要重新构建。
 
 ## 界面
 
@@ -117,20 +117,20 @@ sh scripts/run-dev.sh
 
 ```sh
 JDK_HOME=/实际路径/jdk-25 FLUTTER=/实际路径/flutter \
-  sh scripts/package-macos-jar.sh "$PWD/dist/Network-macOS-overview-20261011.app"
+  sh scripts/package-macos-jar.sh
 ```
 
-此脚本只编译 JAR 和 Flutter Release 界面，并进行本机临时签名；输出目录已存在时拒绝覆盖。以下 Native Image 打包流程仅在明确需要原生内核时执行。
+此脚本编译 JAR、TUN 辅助程序和 Flutter Release 界面，并进行本机临时签名。应用固定输出到根目录 `release/ui/Network.app`，同时更新 `release/client/client.jar` 和 `release/server/server.jar`；不接受自定义输出路径。应用先在构建目录完成组装和签名校验，通过后才替换已有应用。已有发布配置、数据库、证书以及 `Application Support/NetworkUI` 中的 UI 运行数据保持不变。以下 Native Image 打包流程仅在明确需要原生内核时执行。
 
 ### Native Image 内核应用包
 
 要求 Flutter、GraalVM 25（含 native-image）、Maven、Xcode。UI 位于仓库 `ui/`，内核位于其父目录；仅在明确需要 AOT / Native Image 编译时执行：
 
 ```sh
-GRAALVM_HOME=/实际路径/graalvm-25 sh scripts/package-macos.sh "$PWD/dist/Network-macOS-v1.5.15.app"
+GRAALVM_HOME=/实际路径/graalvm-25 sh scripts/package-macos.sh
 ```
 
-可通过 `FLUTTER`、`CORE_ROOT`、`GRAALVM_HOME` 指定工具位置，`MAVEN_OFFLINE=1` 使用本地 Maven 缓存。`NATIVE_CORE` 可指定已经编译并验证过的原生内核，避免再次编译；程序旁的 GraalVM `.dylib` 一起打包。输出目录存在时拒绝覆盖。应用包含原生内核及所需动态库，不包含 JAR/JRE；仅构建当前机器架构。目前使用本机临时签名，公开分发仍需正式签名、公证。
+可通过 `FLUTTER`、`CORE_ROOT`、`GRAALVM_HOME` 指定工具位置，`MAVEN_OFFLINE=1` 使用本地 Maven 缓存。`NATIVE_CORE` 可指定已经编译并验证过的原生内核，避免再次编译；程序旁的 GraalVM `.dylib` 一起打包。应用同样固定输出到 `release/ui/Network.app`，构建和签名校验通过后替换已有应用。应用包含原生内核及所需动态库，不包含 JAR/JRE；仅构建当前机器架构。目前使用本机临时签名，公开分发仍需正式签名、公证。
 
 ## 验证
 
@@ -149,7 +149,7 @@ flutter test
 未指定上述环境变量时，普通测试跳过真实内核联调。联调使用临时目录、本机服务和仓库测试证书，不读取用户实际代理配置。JAR 回归探针仍使用完整 JDK。原生应用包使用下列命令验证启动、自动开启代理、配置保存和脱离 UI 后的接管：
 
 ```sh
-NATIVE_CORE="$PWD/dist/Network-macOS-v1.5.15.app/Contents/Resources/proxy/network-core" \
+NATIVE_CORE="$PWD/../release/ui/Network.app/Contents/Resources/proxy/network-core" \
 flutter test test/native_kernel_integration_test.dart
 ```
 

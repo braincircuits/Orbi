@@ -5,23 +5,26 @@ UI_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CORE_ROOT=${CORE_ROOT:-"$UI_ROOT/.."}
 FLUTTER=${FLUTTER:-flutter}
 JDK_HOME=${JDK_HOME:-${JAVA_HOME:-}}
-OUTPUT=${1:-"$UI_ROOT/dist/Network-JAR.app"}
-if [ -e "$OUTPUT" ]; then
-  printf '输出目录已存在，拒绝覆盖：%s\n' "$OUTPUT" >&2
+if [ "$#" -ne 0 ]; then
+  printf '%s\n' '打包脚本不接受输出路径参数，应用固定输出到 release/ui/Network.app。' >&2
   exit 1
 fi
+OUTPUT="$CORE_ROOT/release/ui/Network.app"
+mkdir -p "$UI_ROOT/build"
+PACKAGE_DIR=$(mktemp -d "$UI_ROOT/build/package-macos.XXXXXX")
+trap 'rm -rf "$PACKAGE_DIR"' EXIT HUP INT TERM
+STAGED_APP="$PACKAGE_DIR/Network.app"
 if [ ! -x "$JDK_HOME/bin/jlink" ]; then
   printf '%s\n' '请通过 JDK_HOME 指定 Java 25 JDK。' >&2
   exit 1
 fi
-printf '%s\n' '正在构建 JAR 代理内核…'
-(cd "$CORE_ROOT" && JAVA_HOME="$JDK_HOME" mvn -q -pl ClientG -am -DskipTests package)
+printf '%s\n' '正在构建客户端和服务端 JAR…'
+(cd "$CORE_ROOT" && JAVA_HOME="$JDK_HOME" mvn -q -DskipTests package)
 sh "$CORE_ROOT/scripts/build-tun.sh"
 printf '%s\n' '正在构建 macOS 界面…'
 (cd "$UI_ROOT" && "$FLUTTER" build macos --release -t lib/main.dart)
-mkdir -p "$(dirname "$OUTPUT")"
-ditto "$UI_ROOT/build/macos/Build/Products/Release/network_ui.app" "$OUTPUT"
-ASSETS="$OUTPUT/Contents/Resources/proxy"
+ditto "$UI_ROOT/build/macos/Build/Products/Release/network_ui.app" "$STAGED_APP"
+ASSETS="$STAGED_APP/Contents/Resources/proxy"
 mkdir -p "$ASSETS"
 cp "$CORE_ROOT/ClientG/target/clientG-1.0-SNAPSHOT.jar" "$ASSETS/client.jar"
 cp "$CORE_ROOT/target/network-tun" "$ASSETS/network-tun"
@@ -41,7 +44,15 @@ exec "$KERNEL_ROOT/runtime/bin/java" --enable-native-access=ALL-UNNAMED \
 LAUNCHER
 chmod 755 "$ASSETS/network-core"
 printf '%s\n' '正在进行本机临时签名…'
-codesign --force --deep --sign - "$OUTPUT"
-codesign --verify --deep --strict "$OUTPUT"
+codesign --force --deep --sign - "$STAGED_APP"
+codesign --verify --deep --strict "$STAGED_APP"
+# 构建和签名通过后才替换应用；UI 运行数据保存在 Application Support/NetworkUI。
+mkdir -p "$(dirname "$OUTPUT")"
+rm -rf "$OUTPUT"
+mv "$STAGED_APP" "$OUTPUT"
+mkdir -p "$CORE_ROOT/release/client" "$CORE_ROOT/release/server"
+cp "$CORE_ROOT/ClientG/target/clientG-1.0-SNAPSHOT.jar" "$CORE_ROOT/release/client/client.jar"
+cp "$CORE_ROOT/Server/target/Server-1.0-SNAPSHOT.jar" "$CORE_ROOT/release/server/server.jar"
 printf '应用已生成：%s\n' "$OUTPUT"
+printf 'JAR 已更新：%s/release/client/client.jar、%s/release/server/server.jar\n' "$CORE_ROOT" "$CORE_ROOT"
 printf '%s\n' '应用内置 JAR 与 Java 运行时，使用本机临时签名。'

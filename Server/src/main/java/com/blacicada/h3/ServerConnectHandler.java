@@ -29,6 +29,7 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
     private boolean finished;
     private Channel target;
     private ScheduledFuture<?> timeout;
+    private String phase = "等待 CONNECT 请求头";
 
     ServerConnectHandler(ProxyConfig config, ProxyCredentials credentials, DnsAddressResolverGroup resolver,
                          io.netty.resolver.dns.DnsServerAddressStreamProvider dnsServers) {
@@ -36,7 +37,9 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
     }
 
     @Override public void handlerAdded(ChannelHandlerContext ctx) {
-        timeout = ctx.executor().schedule(() -> fail(ctx, "504"), config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
+        timeout = ctx.executor().schedule(() -> fail(ctx, "504", new java.io.IOException(
+                "CONNECT 处理超时：阶段=" + phase + "，超时预算=" + config.connectTimeoutMillis() + "ms")),
+                config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
     }
 
     @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
@@ -47,7 +50,9 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
                 fail(ctx, "407"); return;
             }
             if (!"CONNECT".contentEquals(frame.headers().method()) || frame.headers().scheme() != null
-                    || frame.headers().path() != null) { fail(ctx, "400"); return; }
+                    || frame.headers().path() != null) {
+                fail(ctx, "400", new IllegalArgumentException("请求必须为 CONNECT，且不能包含 scheme 或 path")); return;
+            }
             final Authority authority;
             final boolean udp;
             try {
@@ -55,12 +60,13 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
                 udp = UdpTunnel.requested(frame.headers().getAll(UdpTunnel.HEADER));
                 dns = DnsTunnel.requested(frame.headers().getAll(DnsTunnel.HEADER), authority);
             }
-            catch (RuntimeException e) { fail(ctx, "400"); return; }
+            catch (RuntimeException e) { fail(ctx, "400", e); return; }
             requestedTarget = authority;
             ctx.channel().config().setAutoRead(false);
             final java.net.InetSocketAddress destination;
             try { destination = dns == null ? authority.unresolved() : dns.upstream(dnsServers); }
             catch (RuntimeException e) { fail(ctx, "502", e); return; }
+            phase = udp ? "建立 UDP 目标通道（含地址解析）" : "建立 TCP 目标连接（含地址解析）";
             if (udp) {
                 var opening = UdpTunnel.connect(ctx.channel().eventLoop(), resolver, destination);
                 ctx.channel().closeFuture().addListener(ignored -> opening.cancel(false));
@@ -90,9 +96,10 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
         var response = new DefaultHttp3HeadersFrame(); response.headers().status("200");
         if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
         if (dns != null) response.headers().set(DnsTunnel.HEADER, dns.header());
+        phase = "发送 CONNECT 成功响应";
         ctx.writeAndFlush(response).addListener(write -> {
             if (finished) { target.close(); ctx.close(); return; }
-            if (!write.isSuccess() || !ctx.channel().isActive()) { fail(ctx, "502"); return; }
+            if (!write.isSuccess() || !ctx.channel().isActive()) { fail(ctx, "502", write.cause()); return; }
             finished = true;
             timeout.cancel(false);
             ctx.pipeline().addAfter(ctx.name(), "data", new H3DataCodec());
