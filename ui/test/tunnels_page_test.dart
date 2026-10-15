@@ -26,6 +26,21 @@ class _Desktop extends NativeBridge {
 }
 
 class _Kernel extends ProxyController {
+  @override
+  Future<AccessRecordPage> accessHistory({
+    String target = '',
+    bool failedOnly = false,
+    String order = 'recent',
+    bool ascending = false,
+    int? beforeValue,
+    String afterHost = '',
+  }) async => AccessRecordPage.fromJson({
+    'items': <Map<String, dynamic>>[],
+    'hasMore': false,
+    'nextValue': 0,
+    'nextHost': '',
+  });
+
   void publish(List<TunnelStatus> values) {
     tunnels = values;
     notifyListeners();
@@ -63,6 +78,81 @@ TunnelStatus _tunnel(
 );
 
 void main() {
+  testWidgets('切换访问记录后搜索文字与隧道筛选保持一致，清空搜索恢复全部路由', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 780);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final kernel = _Kernel()..connected = true;
+    final model = _RoutingModel(proxy: kernel)..loading = false;
+    addTearDown(model.dispose);
+    final tunnels = [
+      _tunnel('a', 'api.bilibili.com:443', 'direct', 'active'),
+      _tunnel('b', 'live.bilibili.com:443', 'proxy', 'active'),
+      _tunnel('c', 'example.com:443', 'proxy', 'active'),
+    ];
+    kernel.publish(tunnels);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: desktopTheme(Brightness.light),
+        home: Scaffold(body: TunnelsPage(model: model)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final search = find.byKey(const ValueKey('tunnel-search'));
+    await tester.enterText(search, 'bilibili');
+    await tester.pumpAndSettle();
+    expect(find.text('共 3 条 · 活跃 3 · 等待 0 · 当前显示 2 条'), findsOneWidget);
+
+    await tester.tap(find.text('访问记录'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('access-search')), '历史查询');
+    await tester.tap(find.text('实时隧道'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<EditableText>(
+            find.descendant(of: search, matching: find.byType(EditableText)),
+          )
+          .controller
+          .text,
+      'bilibili',
+    );
+    expect(find.text('全部路由'), findsOneWidget);
+    expect(find.text('example.com:443'), findsNothing);
+    expect(find.text('共 3 条 · 活跃 3 · 等待 0 · 当前显示 2 条'), findsOneWidget);
+
+    await tester.tap(find.text('全部路由'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(MenuItemButton, '直连'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('访问记录'));
+    await tester.pumpAndSettle();
+    kernel.publish([
+      ...tunnels,
+      _tunnel('d', 'chat.bilibili.com:443', 'direct', 'active'),
+    ]);
+    await tester.tap(find.text('实时隧道'));
+    await tester.pumpAndSettle();
+    expect(find.text('共 4 条 · 活跃 4 · 等待 0 · 当前显示 2 条'), findsOneWidget);
+    expect(find.text('chat.bilibili.com:443'), findsOneWidget);
+    expect(find.text('live.bilibili.com:443'), findsNothing);
+
+    await tester.enterText(search, '');
+    await tester.pumpAndSettle();
+    expect(find.text('共 4 条 · 活跃 4 · 等待 0 · 当前显示 2 条'), findsOneWidget);
+    await tester.tap(find.text('直连').hitTestable().first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(MenuItemButton, '全部路由'));
+    await tester.pumpAndSettle();
+    expect(find.text('共 4 条 · 活跃 4 · 等待 0'), findsOneWidget);
+    for (final tunnel in kernel.tunnels) {
+      expect(find.text(tunnel.target), findsOneWidget);
+    }
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('实时表格每列双向排序，推送保持排序且路由操作仍对应原目标', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(1280, 780);

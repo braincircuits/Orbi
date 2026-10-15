@@ -17,10 +17,17 @@ class TunnelsPage extends StatefulWidget {
 }
 
 class _TunnelsPageState extends State<TunnelsPage> {
-  String query = '', route = 'all';
+  final search = TextEditingController();
+  String route = 'all';
   bool history = false;
   int sortColumn = 5;
   bool ascending = false;
+
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
+  }
 
   String _time(DateTime date) =>
       '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}:${date.second.toString().padLeft(2, '0')}';
@@ -178,6 +185,7 @@ class _TunnelsPageState extends State<TunnelsPage> {
             Expanded(
               child: TextField(
                 key: const ValueKey('tunnel-search'),
+                controller: search,
                 decoration: const InputDecoration(
                   hintText: '搜索目标、来源或连接名称',
                   prefixIcon: Icon(
@@ -185,7 +193,7 @@ class _TunnelsPageState extends State<TunnelsPage> {
                     size: DesktopDesign.actionIconSize,
                   ),
                 ),
-                onChanged: (value) => setState(() => query = value),
+                onChanged: (_) => setState(() {}),
               ),
             ),
             const SizedBox(width: 12),
@@ -224,14 +232,14 @@ class _TunnelsPageState extends State<TunnelsPage> {
   Widget _tunnelList(BuildContext context, DesktopWidgets ui) {
     final proxy = widget.model.proxy;
     final all = proxy.tunnels;
-    final search = query.trim().toLowerCase();
+    final query = search.text.trim().toLowerCase();
     final entries = all
         .where(
           (tunnel) =>
               (route == 'all' || tunnel.route == route) &&
               '${tunnel.target} ${tunnel.source} ${tunnel.profileName}'
                   .toLowerCase()
-                  .contains(search),
+                  .contains(query),
         )
         .toList();
     entries.sort((a, b) {
