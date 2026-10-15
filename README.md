@@ -35,6 +35,8 @@ UI 与内核使用同一个 Git 仓库，Maven 和 Flutter 分别构建；`ui/` 
 
 ## 构建与测试
 
+本机构建工具路径统一配置在根目录 `build.local.properties`（Git 忽略）。从 `examples/build.properties` 复制并修改后，构建、打包脚本自动读取；日常执行 `sh ui/scripts/package-macos-jar.sh` 即可，无需每次传入工具路径。配置字段、优先级及固定工具链目录见 [本机构建配置](docs/build-tools.md)。直接运行 `mvn` 或 `flutter` 命令时仍使用当前终端环境。
+
 需要 JDK 25、Maven 3.9。HTTP/3 依赖包含 QUIC 原生库，打包时保留其平台资源。
 
 ```sh
@@ -67,7 +69,7 @@ sh scripts/package-release.sh
 release/
 ├── README.md
 ├── ui/
-│   └── Network.app  # 由 UI 打包脚本生成
+│   └── Network-YYYYMMDD-HHMMSS.app  # 由 UI 打包脚本生成，使用北京时间
 ├── server/
 │   ├── server.jar
 │   ├── start.sh / start.cmd / background.sh
@@ -570,7 +572,7 @@ sh scripts/build-tun.sh
 # 开发运行，同时构建 JAR 和辅助进程
 sh ui/scripts/run-dev.sh
 
-# 打包到 release/ui/Network.app，并更新 release/client/client.jar 和 release/server/server.jar
+# 打包到 release/ui/Network-YYYYMMDD-HHMMSS.app，并更新 release/client/client.jar 和 release/server/server.jar
 sh ui/scripts/package-macos-jar.sh
 ```
 

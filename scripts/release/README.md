@@ -5,7 +5,7 @@
 ```text
 release/
 ├── ui/
-│   └── Network.app  # 由 UI 打包脚本生成，内置 Java 运行时
+│   └── Network-YYYYMMDD-HHMMSS.app  # 由 UI 打包脚本生成，内置 Java 运行时
 ├── server/
 │   ├── server.jar
 │   ├── start.sh / start.cmd / background.sh
@@ -18,7 +18,7 @@ release/
     └── certs/server.crt
 ```
 
-UI 应用位于 `ui/Network.app`，可独立运行；客户端内核和服务端 JAR 分别位于 `client/client.jar`、`server/server.jar`。重复打包只更新交付产物，保留已有运行配置、数据库和证书。
+UI 应用位于 `ui/Network-YYYYMMDD-HHMMSS.app`，使用打包开始时的北京时间，保留已有 UI 版本，可独立运行；客户端内核和服务端 JAR 分别位于 `client/client.jar`、`server/server.jar`。重复打包只更新交付产物，保留已有运行配置、数据库和证书。
 
 ## 命令行启动
 

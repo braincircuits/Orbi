@@ -19,6 +19,9 @@ certs/
 # 本机部署连接信息
 /deploy.local.properties
 
+# 本机构建工具路径
+/build.local.properties
+
 # Python 脚本测试缓存
 __pycache__/
 

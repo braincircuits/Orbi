@@ -3,6 +3,8 @@
 set -eu
 umask 077
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$project_dir/scripts/build-tools.sh"
+load_build_tools "$project_dir"
 if [ "$#" -ne 0 ]; then
     printf '%s\n' '用法：sh scripts/package-release.sh（产物固定输出到 release/client 和 release/server）' >&2
     exit 1
@@ -17,7 +19,7 @@ if [ "$initialize" = true ]; then
     command -v openssl >/dev/null
     command -v python3 >/dev/null
 fi
-(cd "$project_dir" && mvn -B -ntp package)
+(cd "$project_dir" && "$MVN" -B -ntp package)
 mkdir -p "$release_dir/client" "$release_dir/server"
 cp "$project_dir/Server/target/Server-1.0-SNAPSHOT.jar" "$release_dir/server/server.jar"
 cp "$project_dir/ClientG/target/clientG-1.0-SNAPSHOT.jar" "$release_dir/client/client.jar"

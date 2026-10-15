@@ -1,14 +1,20 @@
 #!/bin/sh
 # 生成包含 AOT 原生内核的 macOS 应用；仅构建当前机器架构。
 set -eu
+BUILD_TIMESTAMP=$(TZ=Asia/Shanghai date '+%Y%m%d-%H%M%S')
 UI_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-CORE_ROOT=${CORE_ROOT:-"$UI_ROOT/.."}
-FLUTTER=${FLUTTER:-flutter}
+CORE_ROOT=$(CDPATH= cd -- "${CORE_ROOT:-"$UI_ROOT/.."}" && pwd)
+. "$CORE_ROOT/scripts/build-tools.sh"
+load_build_tools "$CORE_ROOT"
 if [ "$#" -ne 0 ]; then
-  printf '%s\n' '打包脚本不接受输出路径参数，应用固定输出到 release/ui/Network.app。' >&2
+  printf '%s\n' '打包脚本不接受输出路径参数，应用输出到 release/ui/Network-年月日-时分秒.app。' >&2
   exit 1
 fi
-OUTPUT="$CORE_ROOT/release/ui/Network.app"
+OUTPUT="$CORE_ROOT/release/ui/Network-$BUILD_TIMESTAMP.app"
+if [ -e "$OUTPUT" ] || [ -L "$OUTPUT" ]; then
+  printf '同名应用已存在，停止打包以保留已有产物：%s\n' "$OUTPUT" >&2
+  exit 1
+fi
 mkdir -p "$UI_ROOT/build"
 PACKAGE_DIR=$(mktemp -d "$UI_ROOT/build/package-macos.XXXXXX")
 trap 'rm -rf "$PACKAGE_DIR"' EXIT HUP INT TERM
@@ -38,8 +44,12 @@ done
 printf '%s\n' '正在进行本机临时签名…'
 codesign --force --deep --sign - "$STAGED_APP"
 codesign --verify --deep --strict "$STAGED_APP"
-# 构建和签名通过后才替换应用；UI 运行数据保存在 Application Support/NetworkUI。
+# 构建和签名通过后发布新包，保留已有版本；UI 运行数据保存在 Application Support/NetworkUI。
 mkdir -p "$(dirname "$OUTPUT")"
-rm -rf "$OUTPUT"
+if [ -e "$OUTPUT" ] || [ -L "$OUTPUT" ]; then
+  printf '同名应用已存在，停止发布以保留已有产物：%s\n' "$OUTPUT" >&2
+  exit 1
+fi
 mv "$STAGED_APP" "$OUTPUT"
 printf '%s\n' "应用已生成：$OUTPUT" '应用使用本机临时签名；公开分发前需使用 Developer ID 签名并公证。'
+printf '[打开 UI 所在文件夹](<%s/release/ui/>)\n' "$CORE_ROOT"

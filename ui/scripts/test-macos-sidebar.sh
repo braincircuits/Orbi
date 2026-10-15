@@ -2,7 +2,8 @@
 # 使用独立界面验证原生鼠标事件，不读取用户配置或启动代理内核。
 set -eu
 UI_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-FLUTTER=${FLUTTER:-flutter}
+. "$UI_ROOT/../scripts/build-tools.sh"
+load_build_tools "$UI_ROOT/.."
 cd "$UI_ROOT"
 restore_entrypoint() {
   printf '%s\n' '正在恢复正式应用入口…'

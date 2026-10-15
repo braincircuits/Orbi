@@ -2,7 +2,8 @@
 # 构建或测试 Outline 辅助程序；补丁只作用于本次构建副本，不修改 Go 共享缓存。
 set -eu
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-GO=${GO:-go}
+. "$PROJECT_ROOT/scripts/build-tools.sh"
+load_build_tools "$PROJECT_ROOT"
 MODE=${1:-build}
 case "$MODE" in build|--test) ;; *) printf '%s\n' '用法：sh scripts/build-tun.sh [--test]' >&2; exit 1 ;; esac
 if [ "$(uname -s)" != Darwin ]; then

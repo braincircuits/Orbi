@@ -113,6 +113,8 @@ sh scripts/run-dev.sh
 
 ### JAR 内核应用包
 
+打包脚本自动读取仓库根目录 `build.local.properties`。首次配置可参考 `../examples/build.properties`，将 JDK、Maven、Go 和 Flutter 路径填写一次；字段和优先级见 [本机构建配置](../docs/build-tools.md)。配置完成后直接执行 `sh scripts/package-macos-jar.sh`。下面的环境变量写法用于临时覆盖配置。
+
 本次概览更新可使用 `scripts/package-macos-jar.sh` 打包，无需编译 Native Image。应用内置最新 JAR 和由 Java 25 `jlink` 生成的运行时，用户无需安装或指定 Java；`network-core` 是使用包内相对路径启动 JAR 的启动器。内核使用当前 SQLite 配置 `kernel.db`，配置写入成功即已保存。
 
 ```sh
@@ -120,7 +122,9 @@ JDK_HOME=/实际路径/jdk-25 FLUTTER=/实际路径/flutter \
   sh scripts/package-macos-jar.sh
 ```
 
-此脚本编译 JAR、TUN 辅助程序和 Flutter Release 界面，并进行本机临时签名。应用固定输出到根目录 `release/ui/Network.app`，同时更新 `release/client/client.jar` 和 `release/server/server.jar`；不接受自定义输出路径。应用先在构建目录完成组装和签名校验，通过后才替换已有应用。已有发布配置、数据库、证书以及 `Application Support/NetworkUI` 中的 UI 运行数据保持不变。以下 Native Image 打包流程仅在明确需要原生内核时执行。
+此脚本编译 JAR、TUN 辅助程序和 Flutter Release 界面，并进行本机临时签名。应用输出到根目录 `release/ui/Network-YYYYMMDD-HHMMSS.app`，同时更新 `release/client/client.jar` 和 `release/server/server.jar`；不接受自定义输出路径。应用先在构建目录完成组装和签名校验，通过后才发布新包，保留已有 UI 版本。已有发布配置、数据库、证书以及 `Application Support/NetworkUI` 中的 UI 运行数据保持不变。以下 Native Image 打包流程仅在明确需要原生内核时执行。
+
+UI 包名中的时间戳在打包开始时按北京时间（`Asia/Shanghai`）确定，格式为年月日-时分秒，例如 `Network-20261016-103025.app`；同名产物已存在时停止，不覆盖。脚本输出完整产物路径和所在文件夹的 Markdown 链接，交付回复提供可点击的“打开所在文件夹”入口。
 
 ### Native Image 内核应用包
 
@@ -130,7 +134,7 @@ JDK_HOME=/实际路径/jdk-25 FLUTTER=/实际路径/flutter \
 GRAALVM_HOME=/实际路径/graalvm-25 sh scripts/package-macos.sh
 ```
 
-可通过 `FLUTTER`、`CORE_ROOT`、`GRAALVM_HOME` 指定工具位置，`MAVEN_OFFLINE=1` 使用本地 Maven 缓存。`NATIVE_CORE` 可指定已经编译并验证过的原生内核，避免再次编译；程序旁的 GraalVM `.dylib` 一起打包。应用同样固定输出到 `release/ui/Network.app`，构建和签名校验通过后替换已有应用。应用包含原生内核及所需动态库，不包含 JAR/JRE；仅构建当前机器架构。目前使用本机临时签名，公开分发仍需正式签名、公证。
+可通过 `FLUTTER`、`CORE_ROOT`、`GRAALVM_HOME` 指定工具位置，`MAVEN_OFFLINE=1` 使用本地 Maven 缓存。`NATIVE_CORE` 可指定已经编译并验证过的原生内核，避免再次编译；程序旁的 GraalVM `.dylib` 一起打包。应用同样输出到 `release/ui/Network-YYYYMMDD-HHMMSS.app`，构建和签名校验通过后发布新包，保留已有 UI 版本。应用包含原生内核及所需动态库，不包含 JAR/JRE；仅构建当前机器架构。目前使用本机临时签名，公开分发仍需正式签名、公证。
 
 ## 验证
 
@@ -149,7 +153,8 @@ flutter test
 未指定上述环境变量时，普通测试跳过真实内核联调。联调使用临时目录、本机服务和仓库测试证书，不读取用户实际代理配置。JAR 回归探针仍使用完整 JDK。原生应用包使用下列命令验证启动、自动开启代理、配置保存和脱离 UI 后的接管：
 
 ```sh
-NATIVE_CORE="$PWD/../release/ui/Network.app/Contents/Resources/proxy/network-core" \
+# 将下面的时间戳替换为本次 Native Image 应用包的实际时间戳
+NATIVE_CORE="$PWD/../release/ui/Network-YYYYMMDD-HHMMSS.app/Contents/Resources/proxy/network-core" \
 flutter test test/native_kernel_integration_test.dart
 ```
 

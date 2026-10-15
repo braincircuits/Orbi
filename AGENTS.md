@@ -29,15 +29,17 @@
 ## 构建要求
 
 - 只有收到用户明确的 AOT / Native Image 编译命令时才执行原生编译；日常开发和验证使用 JAR，不自动触发 AOT 构建。
+- 构建工具路径统一通过项目根目录的 `build.local.properties` 配置，该文件不提交，示例为 `examples/build.properties`。构建入口复用 `scripts/build-tools.sh`，优先级为命令环境变量、本机配置、默认值；工具链放在固定目录，不使用 `/tmp` 作为长期安装位置。
 
 ## 打包产物目录要求
 
 - 最终交付的打包产物统一放在项目根目录的 `release/` 下，按 UI、客户端内核和服务端分别存放，不直接堆放在 `release/` 根目录。
-- UI 应用放在 `release/ui/`，macOS 应用路径为 `release/ui/Network.app`；应用仍内置客户端内核、Java 运行时和 TUN 辅助程序，可独立运行。
+- UI 应用放在 `release/ui/`，macOS 应用名称为 `Network-YYYYMMDD-HHMMSS.app`，例如 `Network-20261016-103025.app`；时间戳使用北京时间（`Asia/Shanghai`），在打包开始时确定，整个流程保持一致。每次生成新包，保留已有 UI 包；同名产物已存在时停止，不覆盖。JAR 模式应用仍内置客户端内核、Java 运行时和 TUN 辅助程序，可独立运行。
 - 独立客户端内核 JAR 放在 `release/client/client.jar`。
 - 服务端 JAR 放在 `release/server/server.jar`。
 - 构建中间文件可保留在 `target/`、`ui/build/` 等构建目录，但打包完成后的交付路径必须遵循上述规则。
 - 打包和更新产物时保留已有配置、数据库和证书，不因整理发布目录而覆盖或删除这些数据。
+- 打包脚本输出完整产物路径和所在目录；交付回复必须提供指向所在目录的“打开所在文件夹”可点击链接，使用绝对路径，UI 链接指向 `release/ui/`，而非启动 `.app` 本身。
 
 ## 提交要求
 
