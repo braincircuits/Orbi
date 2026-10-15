@@ -25,7 +25,8 @@ class RouteUpdateIntegrationTest {
 
     /** 两种协议共用真实回环网络夹具，不访问公网。 */
     private final class Fixture implements AutoCloseable {
-        final ServerSocket origin = new ServerSocket(0);
+        // 目标明确使用 IPv4 回环监听，避免双栈通配端口与其他 IPv4 服务重叠。
+        final ServerSocket origin = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
         final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
         final AutoCloseable server;
         final LongSupplier accepted;
@@ -93,7 +94,7 @@ class RouteUpdateIntegrationTest {
 
     @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
     void trafficCountsOrdinaryHttpHeadersAndBodyOnce(String protocol) throws Exception {
-        try (var fixture = new Fixture(protocol, 32); var origin = new ServerSocket(0); var browser = new Socket()) {
+        try (var fixture = new Fixture(protocol, 32); var origin = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")); var browser = new Socket()) {
             browser.connect(fixture.proxy.address()); browser.setSoTimeout(5000); origin.setSoTimeout(5000);
             browser.getOutputStream().write(("POST http://127.0.0.1:" + origin.getLocalPort()
                     + "/ HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\nabc").getBytes(StandardCharsets.US_ASCII));
@@ -252,7 +253,7 @@ class RouteUpdateIntegrationTest {
 
     @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
     void ruleChangesAlsoInterruptOrdinaryHttpResponse(String protocol) throws Exception {
-        try (var fixture = new Fixture(protocol, 32); var origin = new ServerSocket(0);
+        try (var fixture = new Fixture(protocol, 32); var origin = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
              Socket browser = new Socket()) {
             browser.connect(fixture.proxy.address()); browser.setSoTimeout(5000); origin.setSoTimeout(5000);
             browser.getOutputStream().write(("GET http://localhost:" + origin.getLocalPort() + "/ HTTP/1.1\r\nHost: localhost\r\n\r\n").getBytes(StandardCharsets.US_ASCII));

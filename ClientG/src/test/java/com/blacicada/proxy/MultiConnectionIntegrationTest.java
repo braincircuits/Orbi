@@ -46,8 +46,8 @@ class MultiConnectionIntegrationTest {
                     catch (IOException e) { break; }
                 }
             });
-            Properties server2 = serverValues(); server2.setProperty("port", "" + h3.address().getPort());
-            try (var h2 = new Http2ProxyServer(new ProxyConfig(server2, directory)).start()) {
+            // TCP 与 UDP 的空闲端口相互独立；切换测试使用各自实际监听地址，不复用随机端口。
+            try (var h2 = new Http2ProxyServer(new ProxyConfig(serverValues(), directory)).start()) {
                 Properties local = new Properties(); local.setProperty("port", "0"); local.setProperty("routesInline", "localhost");
                 var config = new KernelConfig(new ProxyConfig(local, directory), List.of(profile("http3", h3.address().getPort()), profile("http2", h2.address().getPort())), "http3");
                 try (var proxy = new LocalProxyServer(config).start(); Socket direct = tunnel(proxy, origin.getLocalPort(), "localhost")) {
