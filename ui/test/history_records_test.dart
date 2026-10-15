@@ -76,6 +76,60 @@ class PagedHistoryKernel extends HistoryKernel {
 }
 
 void main() {
+  testWidgets('刷新保留记录和布局，阻止重复请求，失败保留结果并可重试', (tester) async {
+    final kernel = PagedHistoryKernel()..connected = true;
+    addTearDown(kernel.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: desktopTheme(Brightness.light),
+        home: Scaffold(body: AccessRecordsPage(proxy: kernel)),
+      ),
+    );
+    kernel.completePage(0, 0);
+    await tester.pumpAndSettle();
+    final list = find.byKey(const ValueKey('access-record-list'));
+    final refresh = find.widgetWithText(OutlinedButton, '查询 / 刷新');
+    final bounds = tester.getRect(list);
+    final row = find.text('page-0-item-0.example');
+    final rowPosition = tester.getTopLeft(row);
+    final count = find.textContaining('已显示 20 个域名 / IP');
+
+    await tester.tap(refresh);
+    await tester.pump();
+    expect(find.text('正在加载访问记录…'), findsNothing);
+    expect(count, findsOneWidget);
+    expect(tester.getRect(list), bounds);
+    expect(tester.getTopLeft(row), rowPosition);
+    expect(tester.widget<OutlinedButton>(refresh).onPressed, isNotNull);
+    await tester.tap(refresh);
+    await tester.pump();
+    expect(kernel.requests.length, 2);
+
+    kernel.completePage(1, 0);
+    await tester.pumpAndSettle();
+    expect(tester.getRect(list), bounds);
+    expect(row, findsNothing);
+    expect(find.text('page-1-item-0.example'), findsOneWidget);
+    expect(count, findsOneWidget);
+
+    await tester.tap(refresh);
+    await tester.pump();
+    kernel.pending[2].completeError(StateError('测试刷新失败'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('测试刷新失败'), findsOneWidget);
+    expect(find.text('page-1-item-0.example'), findsOneWidget);
+    expect(count, findsOneWidget);
+    await tester.tap(refresh);
+    await tester.pump();
+    kernel.completePage(3, 0);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('测试刷新失败'), findsNothing);
+    expect(find.text('page-3-item-0.example'), findsOneWidget);
+    expect(find.text('page-1-item-0.example'), findsNothing);
+    expect(tester.getRect(list), bounds);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('访问表格每列双向查询，切换排序丢弃旧分页响应', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(1200, 800);

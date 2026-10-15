@@ -565,6 +565,22 @@ void main() {
           expect(find.text('原始协议'), findsOneWidget);
           expect(find.text('TCP'), findsOneWidget);
           expect(find.text('UDP'), findsNWidgets(3));
+          final header = find.widgetWithText(TextButton, '目标地址');
+          expect(tester.getSize(header).width, lessThan(120));
+          expect(
+            find.ancestor(of: header, matching: find.byType(Tooltip)),
+            findsNothing,
+          );
+          await tester.tap(header);
+          await tester.pumpAndSettle();
+          final mouse = await tester.createGesture(
+            kind: ui.PointerDeviceKind.mouse,
+          );
+          await mouse.addPointer(location: tester.getCenter(header));
+          await mouse.moveTo(tester.getCenter(header));
+          await tester.pumpAndSettle();
+          await tester.pump(const Duration(seconds: 1));
+          expect(find.textContaining('按目标地址'), findsNothing);
           if (preview != null && platform == TargetPlatform.macOS) {
             final render =
                 boundary.currentContext!.findRenderObject()!
@@ -581,6 +597,7 @@ void main() {
               image.dispose();
             });
           }
+          await mouse.removePointer();
         }
       }
     }

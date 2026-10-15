@@ -75,13 +75,11 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
       error = '';
       if (!more) {
         filter = search.text.trim();
-        records = [];
         cursor = 0;
         cursorHost = '';
         hasMore = false;
       }
     });
-    if (!more && scroll.hasClients) scroll.jumpTo(0);
     try {
       final page = await widget.proxy.accessHistory(
         target: filter,
@@ -93,17 +91,21 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
       );
       if (!mounted || current != request) return;
       setState(() {
-        records = [
-          ...records,
-          ...page.items.where(
-            (item) => !records.any((old) => old.host == item.host),
-          ),
-        ];
+        // 查询完成前保留当前列表，成功后再一次性替换。
+        records = more
+            ? [
+                ...records,
+                ...page.items.where(
+                  (item) => !records.any((old) => old.host == item.host),
+                ),
+              ]
+            : page.items;
         cursor = page.nextValue;
         cursorHost = page.nextHost;
         hasMore = page.hasMore;
         loading = false;
       });
+      if (!more && scroll.hasClients) scroll.jumpTo(0);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _loadNearBottom();
       });
@@ -123,7 +125,7 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final available = widget.proxy.connected && !loading;
+    final available = widget.proxy.connected;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -148,7 +150,11 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
             SizedBox(
               width: 128,
               child: OutlinedButton.icon(
-                onPressed: available ? () => _load() : null,
+                onPressed: available
+                    ? () {
+                        if (!loading) _load();
+                      }
+                    : null,
                 icon: const Icon(Icons.refresh, size: 16),
                 label: const Text('查询 / 刷新'),
               ),
@@ -208,7 +214,10 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
             widget.proxy.historyStorageWarning,
             style: TextStyle(color: theme.colorScheme.error),
           ),
-        if (loading) const LinearProgressIndicator(),
+        SizedBox(
+          height: 4,
+          child: loading ? const LinearProgressIndicator() : null,
+        ),
         Expanded(
           key: const ValueKey('access-record-list'),
           child: SortableTable(

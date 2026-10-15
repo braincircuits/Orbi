@@ -107,37 +107,45 @@ class _SortableTableState extends State<SortableTable> {
                           value: widget.sortColumn == i
                               ? (widget.ascending ? '升序' : '降序')
                               : '未排序',
-                          child: Tooltip(
-                            message:
-                                '按${widget.columns[i]}${widget.sortColumn == i && widget.ascending ? '降序' : '升序'}排列',
-                            child: TextButton(
-                              onPressed: widget.onSort == null
-                                  ? null
-                                  : () => widget.onSort!(i),
-                              style: TextButton.styleFrom(
-                                alignment: Alignment.centerLeft,
-                                foregroundColor: widget.sortColumn == i
-                                    ? scheme.primary
-                                    : scheme.onSurfaceVariant,
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 12,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton(
+                                onPressed: widget.onSort == null
+                                    ? null
+                                    : () => widget.onSort!(i),
+                                style: TextButton.styleFrom(
+                                  alignment: Alignment.centerLeft,
+                                  foregroundColor: widget.sortColumn == i
+                                      ? scheme.primary
+                                      : scheme.onSurfaceVariant,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 8,
+                                  ),
+                                  overlayColor: scheme.onSurface,
                                 ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Flexible(
-                                    child: Text(widget.columns[i], maxLines: 1),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Icon(
-                                    widget.sortColumn == i
-                                        ? (widget.ascending
-                                              ? Icons.arrow_upward
-                                              : Icons.arrow_downward)
-                                        : Icons.unfold_more,
-                                    size: 14,
-                                  ),
-                                ],
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        widget.columns[i],
+                                        maxLines: 1,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Icon(
+                                      widget.sortColumn == i
+                                          ? (widget.ascending
+                                                ? Icons.arrow_upward
+                                                : Icons.arrow_downward)
+                                          : Icons.unfold_more,
+                                      size: 14,
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
