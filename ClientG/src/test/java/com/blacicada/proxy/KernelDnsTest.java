@@ -64,8 +64,8 @@ class KernelDnsTest {
 
     /** 本机双协议 DNS 上游，不依赖系统 DNS 或外部网络，也不占用 53 端口。 */
     static final class Upstream implements AutoCloseable {
-        final ServerSocket tcp = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
-        final DatagramSocket udp = new DatagramSocket(tcp.getLocalSocketAddress());
+        final ServerSocket tcp;
+        final DatagramSocket udp;
         final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
         final List<byte[]> requests = new CopyOnWriteArrayList<>();
         volatile String ip = "127.0.0.1";
@@ -73,6 +73,25 @@ class KernelDnsTest {
         volatile int delayMillis;
         volatile boolean truncated, wrongFirst;
         Upstream() throws Exception {
+            ServerSocket boundTcp = null;
+            DatagramSocket boundUdp = null;
+            for (int attempt = 0; attempt < 16; attempt++) {
+                var candidate = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
+                try {
+                    boundUdp = new DatagramSocket(candidate.getLocalSocketAddress());
+                    boundTcp = candidate;
+                    break;
+                } catch (BindException occupied) {
+                    // TCP 分配的空闲端口可能已被 UDP 占用，释放后重新选择双协议可用端口。
+                    candidate.close();
+                    if (attempt == 15) throw occupied;
+                } catch (Exception failure) {
+                    candidate.close();
+                    throw failure;
+                }
+            }
+            tcp = boundTcp;
+            udp = boundUdp;
             workers.submit(() -> {
                 while (!udp.isClosed()) try {
                     var packet = new DatagramPacket(new byte[65536], 65536); udp.receive(packet);

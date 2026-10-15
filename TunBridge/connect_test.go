@@ -17,6 +17,10 @@ import (
 
 // 本机假内核按实际 CONNECT 线协议回显，不需要管理员权限或公网服务。
 func echoKernel(t *testing.T) (localDialer, <-chan string) {
+	return selectiveEchoKernel(t, "", nil)
+}
+
+func selectiveEchoKernel(t *testing.T, stalledTarget string, release <-chan struct{}) (localDialer, <-chan string) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -48,6 +52,9 @@ func echoKernel(t *testing.T) (localDialer, <-chan string) {
 					return
 				}
 				requests <- request.Host
+				if request.Host == stalledTarget {
+					<-release
+				}
 				if request.Header.Get(udpHeader) == "udp" {
 					io.WriteString(conn, "HTTP/1.1 200 OK\r\nx-network-transport: udp\r\n\r\n")
 					for {
@@ -70,6 +77,69 @@ func echoKernel(t *testing.T) (localDialer, <-chan string) {
 		}
 	}()
 	return localDialer{proxy: listener.Addr().String()}, requests
+}
+
+func TestBlockedUDPConnectDoesNotBlockOtherDestinations(t *testing.T) {
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	dialer, requests := selectiveEchoKernel(t, "198.51.100.9:443", release)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sender, receiver, err := (udpRelay{dialer, ctx}).NewAssociation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); sender.Close() }()
+	returned := make(chan error, 1)
+	input := []byte{1}
+	go func() { returned <- sender.SendPacket(input, netip.MustParseAddrPort("198.51.100.9:443")) }()
+	select {
+	case <-requests:
+	case <-time.After(time.Second):
+		t.Fatal("未发起测试 CONNECT")
+	}
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("等待代理 CONNECT 阻塞了 TUN 报文回调")
+	}
+	input[0] = 9
+	// 填满阻塞目标的有限队列，仍不能拖住同一来源的其他目标。
+	for i := 0; i < 64; i++ {
+		if err := sender.SendPacket([]byte{3}, netip.MustParseAddrPort("198.51.100.9:443")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	received := make(chan receivedPacket, 100)
+	go receiver.ReceivePackets(packetHandlerFunc(func(data []byte, source netip.AddrPort) error {
+		received <- receivedPacket{append([]byte{}, data...), source}
+		return nil
+	}))
+	healthy := netip.MustParseAddrPort("192.0.2.1:53")
+	if err := sender.SendPacket([]byte{2}, healthy); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case reply := <-received:
+		if reply.source != healthy || string(reply.data) != string([]byte{2}) {
+			t.Fatal("其他目标回包错误")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("代理目标阻塞影响了同一来源的其他目标")
+	}
+	unblock()
+	select {
+	case reply := <-received:
+		if reply.source.String() != "198.51.100.9:443" || string(reply.data) != string([]byte{1}) {
+			t.Fatal("排队报文被调用方复用的缓冲区修改")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("解除阻塞后未发送排队报文")
+	}
 }
 
 func TestTCPConnectAndHalfClose(t *testing.T) {

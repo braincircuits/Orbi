@@ -11,10 +11,12 @@ public final class QuicStreamCleanupHandler extends ChannelOutboundHandlerAdapte
     @Override public void close(ChannelHandlerContext ctx, ChannelPromise promise) {
         QuicStreamChannel stream = (QuicStreamChannel) ctx.channel();
         if (stream.isActive() && !stream.isInputShutdown()) {
-            // Netty 的 close 发送 FIN，但未必丢弃尚未读取的接收数据。
-            // 只在完整关闭时停止输入，正常 shutdownOutput 半关闭仍允许对端继续回传。
-            stream.shutdownInput((int) Http3ErrorCode.H3_REQUEST_CANCELLED.code())
-                    .addListener(ignored -> ctx.close(promise));
+            int error = (int) Http3ErrorCode.H3_REQUEST_CANCELLED.code();
+            // 已半关闭输出的流再次完整关闭时，需要重置两个方向。
+            // 否则 FIN 已确认后再停止输入，底层可能不再触发回收，永久占用对端流额度。
+            // 输出尚未关闭时仍保留 FIN 路径，避免丢弃已经写入传输层的响应数据。
+            var shutdown = stream.isOutputShutdown() ? stream.shutdown(error) : stream.shutdownInput(error);
+            shutdown.addListener(ignored -> ctx.close(promise));
         } else {
             ctx.close(promise);
         }

@@ -28,7 +28,7 @@ import org.apache.logging.log4j.LogManager;
 /** TUN 普通 DNS 按查询域名分流；代理使用服务端系统 DNS，直连使用本机系统 DNS。 */
 final class KernelDns {
     static final String SOURCE_HEADER = "x-network-source";
-    private static final int MAX_QUERIES = 256, MAX_CACHE = 1024, MAX_NAMES = 8192;
+    private static final int MAX_QUERIES_PER_ROUTE = 256, MAX_CACHE = 1024, MAX_NAMES = 8192;
     private final OutboundNetwork network;
     private final DnsAddressResolverGroup resolver;
     private final DnsServerAddressStreamProvider servers;
@@ -39,6 +39,7 @@ final class KernelDns {
     private final SessionRouter session;
     private DirectRoutes routes;
     private final Map<Promise<byte[]>, byte[]> pending = new HashMap<>();
+    private int directQueries, proxyQueries;
     private record Association(String domain, long expires) {}
     private record Cached(byte[] bytes, DnsMessage message, long created, long expires) {}
 
@@ -101,7 +102,8 @@ final class KernelDns {
         private boolean inputClosed;
         QueryHandler(boolean udp) { this.udp = udp; }
         @Override protected void channelRead0(ChannelHandlerContext ctx, ByteBuf data) {
-            if (!ctx.channel().isWritable() || requests.size() >= 32) { ctx.close(); return; }
+            // 等待数由 query 按出口统一限制，不能因同一 DNS 通道里的代理积压拒绝直连查询。
+            if (!ctx.channel().isWritable()) { ctx.close(); return; }
             byte[] bytes = new byte[data.readableBytes()]; data.readBytes(bytes);
             Future<byte[]> request = query(ctx.channel().eventLoop(), bytes, udp, ctx.channel());
             requests.add(request);
@@ -130,7 +132,6 @@ final class KernelDns {
         DnsMessage question;
         try { question = new DnsMessage(bytes, false); }
         catch (RuntimeException e) { return loop.newSucceededFuture(DnsMessage.failure(bytes, 1)); }
-        if (pending.size() >= MAX_QUERIES) return loop.newSucceededFuture(DnsMessage.failure(bytes, 2));
         // DNS 尚无结果 IP，不为匹配网段规则额外发起一次本机解析。
         final boolean proxy;
         try {
@@ -166,8 +167,15 @@ final class KernelDns {
             remember(new DnsMessage(answer, true));
             return loop.newSucceededFuture(answer);
         }
+        // 两种出口分别限流，代理等待额度时不能挤占放行域名的 DNS；缓存命中不占等待名额。
+        if ((proxy ? proxyQueries : directQueries) >= MAX_QUERIES_PER_ROUTE)
+            return loop.newSucceededFuture(DnsMessage.failure(bytes, 2));
+        if (proxy) proxyQueries++; else directQueries++;
         Promise<byte[]> result = loop.newPromise(); pending.put(result, bytes);
-        result.addListener(done -> pending.remove(result));
+        result.addListener(done -> {
+            pending.remove(result);
+            if (proxy) proxyQueries--; else directQueries--;
+        });
         new Exchange(loop, bytes, udp, upstreams, key, result, proxy, browser).next();
         return result;
     }

@@ -106,6 +106,43 @@ class DnsRoutingIntegrationTest {
         }
     }
 
+    @org.junit.jupiter.api.Test
+    void blockedProxyDnsDoesNotStarveDirectDomainsOrCachedAnswers() throws Exception {
+        try (var f = new Fixture("http3", false, 1)) {
+            f.address("cached.example", true, f.remote.ip);
+            // 占住唯一代理流，让后续代理 DNS 全部等待额度，不需要访问外网。
+            try (var occupied = connect(f.client, "198.51.100.1:123", true, new byte[0]);
+                 var origin = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+                try (var dns = connect(f.client, "203.0.113.53:53", true, new byte[0])) {
+                    for (int id = 0; id < 256; id++) {
+                        dns.getOutputStream().write(frame(query("blocked" + id + ".example", 1, id)));
+                    }
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                    while (f.client.pendingTunnels() < 256 && System.nanoTime() < deadline) Thread.sleep(5);
+                    assertEquals(256, f.client.pendingTunnels(), "测试必须真实占满代理 DNS 等待额度");
+                    // 同一系统 DNS 通道也必须继续处理放行域名和缓存回答。
+                    dns.getOutputStream().write(frame(query("www.direct.example", 1, 1000)));
+                    var directReply = new DnsMessage(receive(dns), true);
+                    assertEquals(1000, directReply.id);
+                    assertTrue(directReply.addresses().containsKey(f.local.ip));
+                    f.address("www.direct.example", false, f.local.ip);
+                    dns.getOutputStream().write(frame(query("cached.example", 1, 1001)));
+                    var cachedReply = new DnsMessage(receive(dns), true);
+                    assertEquals(1001, cachedReply.id);
+                    assertTrue(cachedReply.addresses().containsKey(f.remote.ip));
+                    assertEquals(1, f.remote.requests.size(), "缓存回答不能重新等待代理流");
+                    origin.setSoTimeout(1000);
+                    try (var direct = connect(f.client, "127.0.0.1:" + origin.getLocalPort(), false, new byte[0]);
+                         var accepted = origin.accept()) {
+                        accepted.setSoTimeout(1000);
+                        direct.getOutputStream().write(42);
+                        assertEquals(42, accepted.getInputStream().read(), "代理额度耗尽不能阻塞直连 TCP");
+                    }
+                }
+            }
+        }
+    }
+
     @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
     void queryDomainRulesChooseClientOrServerSystemDnsForTcpAndUdp(String protocol) throws Exception {
         try (var f = new Fixture(protocol, false)) {

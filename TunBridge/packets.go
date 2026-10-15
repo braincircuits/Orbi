@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"net/netip"
 	"sync"
 	"time"
@@ -23,7 +24,6 @@ type udpRelay struct {
 func (r udpRelay) NewAssociation() (packetrelay.PacketSender, packetrelay.PacketReceiver, error) {
 	ctx, cancel := context.WithCancel(r.context)
 	a := &udpAssociation{dialer: r.dialer, context: ctx, cancel: cancel, peers: make(map[netip.AddrPort]*udpPeer), packets: make(chan receivedPacket, 32)}
-	context.AfterFunc(ctx, func() { a.Close() })
 	return a, a, nil
 }
 
@@ -32,8 +32,10 @@ type receivedPacket struct {
 	source netip.AddrPort
 }
 type udpPeer struct {
-	conn transport.StreamConn
-	mu   sync.Mutex
+	conn     transport.StreamConn
+	context  context.Context
+	cancel   context.CancelFunc
+	outgoing chan []byte
 }
 type udpAssociation struct {
 	dialer  localDialer
@@ -49,48 +51,72 @@ func (a *udpAssociation) SendPacket(data []byte, target netip.AddrPort) error {
 		return fmt.Errorf("UDP 目标或报文长度无效")
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.context.Err() != nil {
-		a.mu.Unlock()
 		return packetrelay.ErrClosed
 	}
 	peer := a.peers[target]
 	if peer == nil {
 		if len(a.peers) >= 64 {
-			a.mu.Unlock()
-			return fmt.Errorf("UDP 来源的目标数量超过上限")
+			// 丢弃超额目标的报文，不让一个来源拖垮其他目标。
+			return nil
 		}
-		conn, err := a.dialer.connect(a.context, target.String(), true)
-		if err != nil {
-			a.mu.Unlock()
-			return err
-		}
-		peer = &udpPeer{conn: conn}
+		ctx, cancel := context.WithCancel(a.context)
+		peer = &udpPeer{context: ctx, cancel: cancel, outgoing: make(chan []byte, 32)}
 		a.peers[target] = peer
-		go a.receive(peer, target)
+		go a.send(peer, target)
 	}
-	a.mu.Unlock()
-	peer.mu.Lock()
-	defer peer.mu.Unlock()
-	frame := make([]byte, len(data)+2)
-	binary.BigEndian.PutUint16(frame, uint16(len(data)))
-	copy(frame[2:], data)
-	peer.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	_, err := io.Copy(peer.conn, bytes.NewReader(frame))
-	if err != nil {
-		peer.conn.Close()
+	// 此方法由 lwIP 输入回调调用，不能等待 CONNECT 或套接字写入。
+	// 每个目标独立排队，队列满时丢包；必须复制协议栈会复用的输入缓冲区。
+	select {
+	case peer.outgoing <- append([]byte{}, data...):
+	default:
 	}
-	return err
+	return nil
 }
 
-func (a *udpAssociation) receive(peer *udpPeer, target netip.AddrPort) {
+func (a *udpAssociation) send(peer *udpPeer, target netip.AddrPort) {
 	defer func() {
-		peer.conn.Close()
+		peer.cancel()
 		a.mu.Lock()
 		if a.peers[target] == peer {
 			delete(a.peers, target)
 		}
 		a.mu.Unlock()
 	}()
+	conn, err := a.dialer.connect(peer.context, target.String(), true)
+	if err != nil {
+		if peer.context.Err() == nil {
+			log.Printf("UDP 目标连接失败：目标=%s，原因=%v", target, err)
+		}
+		return
+	}
+	peer.conn = conn
+	defer conn.Close()
+	stop := context.AfterFunc(peer.context, func() { conn.Close() })
+	defer stop()
+	go a.receive(peer, target)
+	for {
+		select {
+		case <-peer.context.Done():
+			return
+		case data := <-peer.outgoing:
+			frame := make([]byte, len(data)+2)
+			binary.BigEndian.PutUint16(frame, uint16(len(data)))
+			copy(frame[2:], data)
+			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if _, err := io.Copy(conn, bytes.NewReader(frame)); err != nil {
+				if peer.context.Err() == nil {
+					log.Printf("UDP 报文发送失败：目标=%s，原因=%v", target, err)
+				}
+				return
+			}
+		}
+	}
+}
+
+func (a *udpAssociation) receive(peer *udpPeer, target netip.AddrPort) {
+	defer peer.cancel()
 	var prefix [2]byte
 	for {
 		if _, err := io.ReadFull(peer.conn, prefix[:]); err != nil {
@@ -106,7 +132,7 @@ func (a *udpAssociation) receive(peer *udpPeer, target netip.AddrPort) {
 		}
 		select {
 		case a.packets <- receivedPacket{data, target}:
-		case <-a.context.Done():
+		case <-peer.context.Done():
 			return
 		}
 	}
@@ -127,10 +153,5 @@ func (a *udpAssociation) ReceivePackets(handler packetrelay.PacketHandler) error
 }
 func (a *udpAssociation) Close() error {
 	a.cancel()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, peer := range a.peers {
-		peer.conn.Close()
-	}
 	return nil
 }

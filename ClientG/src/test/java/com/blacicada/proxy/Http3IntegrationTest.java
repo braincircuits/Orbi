@@ -368,6 +368,7 @@ class Http3IntegrationTest {
     }
 
     @Test @Timeout(90) void abortedUploadsDoNotExhaustConnectionWindow() throws Exception {
+        useSinglePeerStream();
         try (var upload = new Origin(socket -> {
             assertTrue(socket.getInputStream().read() >= 0);
             Thread.sleep(20);
@@ -397,6 +398,7 @@ class Http3IntegrationTest {
     }
 
     @Test @Timeout(90) void abortedDownloadsDoNotExhaustConnectionWindow() throws Exception {
+        useSinglePeerStream();
         try (var download = new Origin(socket -> {
             byte[] chunk = new byte[64 * 1024];
             try {

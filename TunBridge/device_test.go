@@ -69,7 +69,9 @@ func tcpPacket6(sequence, acknowledgement uint32, flags byte, payload []byte) []
 }
 
 func TestOutlineTranslatesActualIPPackets(t *testing.T) {
-	dialer, requests := echoKernel(t)
+	release := make(chan struct{})
+	defer close(release)
+	dialer, requests := selectiveEchoKernel(t, "198.51.100.2:443", release)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	device, err := lwip2transport.ConfigureDeviceWithRelay(dialer, udpRelay{dialer, ctx})
@@ -163,6 +165,36 @@ func TestOutlineTranslatesActualIPPackets(t *testing.T) {
 		if len(reply) != len(packet) || reply[0]>>4 != packet[0]>>4 {
 			t.Fatalf("空 UDP 回包错误：%x", reply)
 		}
+	}
+	// 已建立的 UDP 来源新增一个一直等待 CONNECT 的目标，模拟代理流额度耗尽。
+	// 后续 UDP 和两个地址族的 TCP 都必须继续通过同一个 lwIP 协议栈。
+	blocked := append([]byte{}, udp...)
+	binary.BigEndian.PutUint16(blocked[2:], 443)
+	written := make(chan error, 1)
+	go func() { _, err := device.Write(ipv4(blocked, 17)); written <- err }()
+	select {
+	case err := <-written:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		// 先解除等待，以便旧实现失败时仍能正常退出测试。
+		cancel()
+		t.Fatal("UDP CONNECT 等待阻塞了整个 TUN 输入")
+	}
+	select {
+	case target := <-requests:
+		if target != "198.51.100.2:443" {
+			t.Fatalf("阻塞目标错误：%s", target)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未发起阻塞目标的 CONNECT")
+	}
+	if _, err := device.Write(ipv4(udp, 17)); err != nil {
+		t.Fatal(err)
+	}
+	if reply := next(); reply[9] != 17 || string(reply[len(reply)-3:]) != string([]byte{1, 2, 3}) {
+		t.Fatal("代理等待期间其他 UDP 目标未正常回包")
 	}
 	for family, makePacket := range []func(uint32, uint32, byte, []byte) []byte{tcpPacket, tcpPacket6} {
 		if _, err := device.Write(makePacket(100, 0, 2, nil)); err != nil {
