@@ -108,6 +108,8 @@ release/
 
 发布目录自带的说明来源于 [发布使用说明模板](scripts/release/README.md)。
 
+更新 Linux 上的服务端 JAR，可使用 [自动部署脚本](docs/deployment.md)：复制 `examples/deploy.properties` 为 `deploy.local.properties`，填写服务器、目标目录和命令后，先执行 `bash scripts/deploy.sh --dry-run` 预览，再执行 `bash scripts/deploy.sh`。默认上传 `release/server/server.jar`，校验并替换文件后按命令编号顺序执行，失败即停止。
+
 ## Linux / macOS 后台运行
 
 发布目录中的客户端和服务端均提供 `background.sh`。支持 Linux 和 macOS，需要 JDK 25。Linux 需要 `flock`（通常由 `util-linux` 提供），macOS 使用系统自带工具。以下命令从发布目录执行，客户端将 `server` 替换为 `client`：

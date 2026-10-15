@@ -16,6 +16,12 @@ dependency-reduced-pom.xml
 certs/
 /release/
 
+# 本机部署连接信息
+/deploy.local.properties
+
+# Python 脚本测试缓存
+__pycache__/
+
 # 本项目的 Codex 本机配置
 /.codex/
 
