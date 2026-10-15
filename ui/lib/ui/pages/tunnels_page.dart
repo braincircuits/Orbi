@@ -5,6 +5,7 @@ import '../../view_models/proxy_view_model.dart';
 import '../desktop_theme.dart';
 import '../widgets/desktop_select.dart';
 import '../widgets/desktop_widgets.dart';
+import '../widgets/sortable_table.dart';
 import 'access_records_page.dart';
 
 class TunnelsPage extends StatefulWidget {
@@ -18,6 +19,8 @@ class TunnelsPage extends StatefulWidget {
 class _TunnelsPageState extends State<TunnelsPage> {
   String query = '', route = 'all';
   bool history = false;
+  int sortColumn = 5;
+  bool ascending = false;
 
   String _time(DateTime date) =>
       '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}:${date.second.toString().padLeft(2, '0')}';
@@ -114,7 +117,7 @@ class _TunnelsPageState extends State<TunnelsPage> {
           ),
           iconAlignment: IconAlignment.end,
           label: SizedBox(
-            width: 100,
+            width: 120,
             child: Row(
               children: [
                 SizedBox(
@@ -167,63 +170,58 @@ class _TunnelsPageState extends State<TunnelsPage> {
 
   Widget _live(BuildContext context) {
     final ui = DesktopWidgets(context, widget.model);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final wide = constraints.maxWidth >= 900;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    key: const ValueKey('tunnel-search'),
-                    decoration: const InputDecoration(
-                      hintText: '搜索目标、来源或连接名称',
-                      prefixIcon: Icon(
-                        Icons.search,
-                        size: DesktopDesign.actionIconSize,
-                      ),
-                    ),
-                    onChanged: (value) => setState(() => query = value),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                SizedBox(
-                  width: 128,
-                  child: DesktopSelect<String>(
-                    value: route,
-                    options: const [
-                      ('all', '全部路由'),
-                      ('proxy', '代理'),
-                      ('direct', '直连'),
-                    ],
-                    onSelected: (value) {
-                      if (value != null) setState(() => route = value);
-                    },
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
             Expanded(
-              child: ListenableBuilder(
-                listenable: widget.model.tunnelChanges,
-                builder: (context, _) => _tunnelList(context, ui, wide),
+              child: TextField(
+                key: const ValueKey('tunnel-search'),
+                decoration: const InputDecoration(
+                  hintText: '搜索目标、来源或连接名称',
+                  prefixIcon: Icon(
+                    Icons.search,
+                    size: DesktopDesign.actionIconSize,
+                  ),
+                ),
+                onChanged: (value) => setState(() => query = value),
               ),
             ),
-            const SizedBox(height: 10),
-            Text(
-              '点击路由可切换该域名或 IP 的所有端口，规则自动保存；路由变化的连接会断开重连。',
-              style: Theme.of(context).textTheme.bodySmall,
+            const SizedBox(width: 12),
+            SizedBox(
+              width: 128,
+              child: DesktopSelect<String>(
+                value: route,
+                options: const [
+                  ('all', '全部路由'),
+                  ('proxy', '代理'),
+                  ('direct', '直连'),
+                ],
+                onSelected: (value) {
+                  if (value != null) setState(() => route = value);
+                },
+              ),
             ),
           ],
-        );
-      },
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          child: ListenableBuilder(
+            listenable: widget.model.tunnelChanges,
+            builder: (context, _) => _tunnelList(context, ui),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          '点击路由可切换该域名或 IP 的所有端口，规则自动保存；路由变化的连接会断开重连。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
     );
   }
 
-  Widget _tunnelList(BuildContext context, DesktopWidgets ui, bool wide) {
+  Widget _tunnelList(BuildContext context, DesktopWidgets ui) {
     final proxy = widget.model.proxy;
     final all = proxy.tunnels;
     final search = query.trim().toLowerCase();
@@ -236,10 +234,23 @@ class _TunnelsPageState extends State<TunnelsPage> {
                   .contains(search),
         )
         .toList();
+    entries.sort((a, b) {
+      final comparison = switch (sortColumn) {
+        0 => a.target.toLowerCase().compareTo(b.target.toLowerCase()),
+        1 => a.originalProtocolLabel.compareTo(b.originalProtocolLabel),
+        2 => a.source.compareTo(b.source),
+        3 => '${a.routeLabel} ${a.protocolLabel}'.compareTo(
+          '${b.routeLabel} ${b.protocolLabel}',
+        ),
+        4 => a.stateLabel.compareTo(b.stateLabel),
+        _ => a.createdAt.compareTo(b.createdAt),
+      };
+      // 值相同时使用稳定标识，实时推送不会打乱同组行的顺序。
+      return comparison == 0
+          ? a.id.compareTo(b.id)
+          : (ascending ? comparison : -comparison);
+    });
     final active = proxy.activeTunnelCount;
-    final indices = {
-      for (final (index, tunnel) in entries.indexed) tunnel.id: index,
-    };
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -258,168 +269,37 @@ class _TunnelsPageState extends State<TunnelsPage> {
         ],
         const SizedBox(height: 14),
         Expanded(
-          child: Container(
-            clipBehavior: Clip.antiAlias,
-            decoration: BoxDecoration(
-              color: ui.panel,
-              border: Border.all(color: ui.line),
-              borderRadius: BorderRadius.circular(DesktopDesign.panelRadius),
+          child: SortableTable(
+            columns: const ['目标地址', '原始协议', '来源地址', '路由 / 协议', '状态', '开始时间'],
+            widths: const [300, 100, 176, 170, 110, 120],
+            sortColumn: sortColumn,
+            ascending: ascending,
+            onSort: (column) => setState(() {
+              ascending = sortColumn == column ? !ascending : true;
+              sortColumn = column;
+            }),
+            rowCount: entries.length,
+            rowKey: (index) => entries[index].id,
+            listKey: const PageStorageKey('tunnels'),
+            empty: ui.empty(
+              Icons.swap_vert,
+              all.isEmpty ? '暂无隧道' : '没有匹配的隧道',
+              all.isEmpty ? '代理请求到达后，会在这里显示当前连接' : '调整搜索内容或路由筛选',
             ),
-            child: entries.isEmpty
-                ? ui.empty(
-                    Icons.swap_vert,
-                    all.isEmpty ? '暂无隧道' : '没有匹配的隧道',
-                    all.isEmpty ? '代理请求到达后，会在这里显示当前连接' : '调整搜索内容或路由筛选',
-                  )
-                : SelectionArea(
-                    child: Column(
-                      children: [
-                        if (wide)
-                          Container(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .surfaceContainerLow,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 10,
-                            ),
-                            child: Row(
-                              children: [
-                                Expanded(child: _text('目标地址', muted: true)),
-                                SizedBox(
-                                  width: 80,
-                                  child: _text('原始协议', muted: true),
-                                ),
-                                SizedBox(
-                                  width: 176,
-                                  child: _text('来源地址', muted: true),
-                                ),
-                                SizedBox(
-                                  width: 156,
-                                  child: _text('路由 / 协议', muted: true),
-                                ),
-                                SizedBox(
-                                  width: 104,
-                                  child: _text('状态', muted: true),
-                                ),
-                                SizedBox(
-                                  width: 88,
-                                  child: _text('开始时间', muted: true),
-                                ),
-                              ],
-                            ),
-                          ),
-                        Expanded(
-                          child: ScrollConfiguration(
-                            behavior: ScrollConfiguration.of(context)
-                                .copyWith(scrollbars: false),
-                            child: ListView.builder(
-                              key: const PageStorageKey('tunnels'),
-                              itemCount: entries.length,
-                              findChildIndexCallback: (key) =>
-                                  key is ValueKey<String>
-                                  ? indices[key.value]
-                                  : null,
-                              itemBuilder: (context, index) {
-                                final tunnel = entries[index];
-                                return Container(
-                                  key: ValueKey(tunnel.id),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 12,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    border: Border(
-                                      bottom: BorderSide(color: ui.line),
-                                    ),
-                                  ),
-                                  child: wide
-                                      ? Row(
-                                          children: [
-                                            Expanded(
-                                              child: Padding(
-                                                padding: const EdgeInsets.only(
-                                                  right: 16,
-                                                ),
-                                                child: _text(tunnel.target),
-                                              ),
-                                            ),
-                                            SizedBox(
-                                              width: 80,
-                                              child: _text(
-                                                tunnel.originalProtocolLabel,
-                                              ),
-                                            ),
-                                            SizedBox(
-                                              width: 176,
-                                              child: _text(
-                                                tunnel.source,
-                                                muted: true,
-                                              ),
-                                            ),
-                                            SizedBox(
-                                              width: 156,
-                                              child: Padding(
-                                                padding: const EdgeInsets.only(
-                                                  right: 12,
-                                                ),
-                                                child: _routeControl(tunnel),
-                                              ),
-                                            ),
-                                            SizedBox(
-                                              width: 104,
-                                              child: _state(tunnel, ui),
-                                            ),
-                                            SizedBox(
-                                              width: 88,
-                                              child: _createdAt(tunnel),
-                                            ),
-                                          ],
-                                        )
-                                      : Column(
-                                          children: [
-                                            Row(
-                                              children: [
-                                                Expanded(
-                                                  child: _text(tunnel.target),
-                                                ),
-                                                const SizedBox(width: 12),
-                                                _routeControl(tunnel),
-                                                const SizedBox(width: 8),
-                                                SizedBox(
-                                                  width: 76,
-                                                  child: _state(tunnel, ui),
-                                                ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 6),
-                                            Row(
-                                              children: [
-                                                _text(
-                                                  '原始 ${tunnel.originalProtocolLabel}',
-                                                  muted: true,
-                                                ),
-                                                const SizedBox(width: 12),
-                                                Expanded(
-                                                  child: _text(
-                                                    tunnel.source,
-                                                    muted: true,
-                                                  ),
-                                                ),
-                                                const SizedBox(width: 12),
-                                                _createdAt(tunnel),
-                                              ],
-                                            ),
-                                          ],
-                                        ),
-                                );
-                              },
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+            cells: (index) {
+              final tunnel = entries[index];
+              return [
+                _text(tunnel.target),
+                _text(tunnel.originalProtocolLabel),
+                _text(tunnel.source, muted: true),
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: _routeControl(tunnel),
+                ),
+                _state(tunnel, ui),
+                _createdAt(tunnel),
+              ];
+            },
           ),
         ),
       ],

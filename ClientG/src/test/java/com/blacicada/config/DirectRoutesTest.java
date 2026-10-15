@@ -10,6 +10,13 @@ import java.util.Properties;
 import static org.junit.jupiter.api.Assertions.*;
 
 class DirectRoutesTest {
+    @Test void mergeKeepsCommentsAndDeduplicatesEquivalentDomainsAndNetworks() throws Exception {
+        String merged = DirectRoutes.mergeText("# 原规则\nExample.COM # 旧备注\n192.168.1.99/24\n::1",
+                "example.com. # 新备注\n192.168.1.0/24\n0:0:0:0:0:0:0:1\nother.test # 新目标");
+        assertTrue(merged.contains("# 原规则")); assertTrue(merged.contains("# 旧备注")); assertFalse(merged.contains("# 新备注"));
+        assertFalse(merged.contains("192.168.1.0/24")); assertFalse(merged.contains("0:0:0:0:0:0:0:1"));
+        assertTrue(merged.contains("other.test # 新目标"));
+    }
     @Test void exactTargetOverridesBeatDomainAndNetworkRulesWithoutDns() throws Exception {
         Properties settings = new Properties();
         settings.setProperty("routesInline", "example.com\n0.0.0.0/0\n::/0");

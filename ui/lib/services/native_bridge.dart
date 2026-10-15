@@ -45,6 +45,8 @@ class NativeBridge {
 
   Future<String?> chooseFile(String kind) =>
       channel.invokeMethod<String>('chooseFile', kind);
+  Future<String?> exportDocument(String name, String text) => channel
+      .invokeMethod<String>('exportDocument', {'name': name, 'text': text});
   Future<String?> exportLogs(String text) =>
       channel.invokeMethod<String>('exportLogs', text);
 }

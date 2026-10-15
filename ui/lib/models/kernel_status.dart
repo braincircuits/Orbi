@@ -56,36 +56,15 @@ class TrafficSnapshot {
   }
 }
 
-/// 访问记录按一次本地 HTTP 请求或 CONNECT 隧道计数，不表示网页请求成功。
+/// 每个完整域名或 IP 的累计连接统计，不保留逐连接明细。
 class AccessRecord {
   AccessRecord.fromJson(Map<String, dynamic> value)
-    : id = value['id'] as int,
-      createdAt = DateTime.fromMillisecondsSinceEpoch(
-        value['createdAt'] as int,
-      ),
-      target = value['target'] as String,
-      source = value['source'] as String,
-      method = value['method'] as String,
-      route = value['route'] as String,
-      protocol = value['protocol'] as String,
-      profileName = value['profileName'] as String,
-      state = value['state'] as String;
-  final int id;
-  final DateTime createdAt;
-  final String target, source, method, route, protocol, profileName, state;
-  String get originalProtocolLabel => method == 'CONNECT-UDP' ? 'UDP' : 'TCP';
-  String get protocolLabel => _protocolLabel(protocol);
-  String get stateLabel => switch (state) {
-    'connected' => '已建立连接',
-    'failed' => '连接失败',
-    'cancelled' => '已取消',
-    _ => '未完成',
-  };
-  String get routeLabel => switch (route) {
-    'direct' => '直连',
-    'proxy' => '代理',
-    _ => '待确定',
-  };
+    : host = value['host'] as String,
+      connectionCount = value['connectionCount'] as int,
+      lastAccessAt = value['lastAccessAt'] as int,
+      lastFailureAt = value['lastFailureAt'] as int;
+  final String host;
+  final int connectionCount, lastAccessAt, lastFailureAt;
 }
 
 class AccessRecordPage {
@@ -95,9 +74,13 @@ class AccessRecordPage {
           (item) => AccessRecord.fromJson(item as Map<String, dynamic>),
         ),
       ),
-      nextBeforeId = value['nextBeforeId'] as int;
+      hasMore = value['hasMore'] as bool,
+      nextValue = value['nextValue'] as int,
+      nextHost = value['nextHost'] as String;
   final List<AccessRecord> items;
-  final int nextBeforeId;
+  final bool hasMore;
+  final int nextValue;
+  final String nextHost;
 }
 
 /// 内核当前的业务隧道快照，包含代理流和直连连接。

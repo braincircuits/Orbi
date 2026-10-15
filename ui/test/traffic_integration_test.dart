@@ -86,16 +86,17 @@ void main() {
         expect(proxy.traffic!.current.receiveBytesPerSecond, 0);
         expect(proxy.traffic!.sessionId, session);
         final records = await proxy.accessHistory();
-        expect(records.items.single.target, '127.0.0.1:${origin.port}');
-        expect(records.items.single.state, 'connected');
+        expect(records.items.single.host, '127.0.0.1');
+        expect(records.items.single.connectionCount, 1);
+        expect(records.items.single.lastFailureAt, 0);
         final profile = proxy.appliedProfile!;
         await proxy.shutdown();
         await proxy.connect(profile, resources ?? '');
         expect(proxy.traffic!.sessionId, '');
         expect(proxy.traffic!.current.receivedBytes, 0);
         expect(
-          (await proxy.accessHistory()).items.single.target,
-          records.items.single.target,
+          (await proxy.accessHistory()).items.single.host,
+          records.items.single.host,
         );
         final summary = await proxy.trafficSummary(hourly: false);
         expect(summary.sentBytes, payload.length);

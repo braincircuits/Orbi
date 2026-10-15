@@ -54,20 +54,19 @@ class DatabaseBackendsTest {
             var samples = List.of(sample("甲", time - 60_000, 5_000_000_000L), sample("甲", time, 5_000_000_010L),
                     sample("甲", time + 60_000, 30L), sample("乙", time, 7L));
             db.writeHistory(samples, List.of(access("a", time, "pending"), access("b", time + 1, "failed"), access("c", time + 2, "failed")));
-            db.writeHistory(samples, List.of(access("a", time, "connected")));
+            db.writeHistory(samples, List.of(access("a", time, "pending"), access("b", time + 1, "failed"), access("c", time + 2, "failed")));
             var summary = db.trafficSeries(time + 180_000, java.time.ZoneOffset.UTC, false);
             assertEquals(10_000_000_047L, summary.get("sentBytes")); assertEquals(3L, summary.get("recordCount"));
             db.maintainTraffic(time + 3_600_000, java.time.ZoneOffset.UTC, true);
             assertEquals(10_000_000_047L, db.trafficSeries(time + 3_600_000, java.time.ZoneOffset.UTC, true).get("sentBytes"));
-            var page = db.accessHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 1, "EXAMPLE_%", "failed");
+            var page = db.accessHistory(1, "EXAMPLE", true, "recent", false, Long.MAX_VALUE, "");
             assertEquals(true, page.get("hasMore"));
-            var next = db.accessHistory(0, Long.MAX_VALUE, (long) page.get("nextBeforeId"), 1, "example_%", "failed");
+            var next = db.accessHistory(1, "example", true, "recent", false, (long) page.get("nextValue"), (String) page.get("nextHost"));
             assertEquals(false, next.get("hasMore"));
             assertEquals(1, ((List<?>) next.get("items")).size());
-            assertEquals(1, ((List<?>) db.accessHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 10, "", "connected").get("items")).size());
-            assertEquals(3, ((List<?>) db.accessHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 10, "", "").get("items")).size());
+            assertEquals(3, ((List<?>) db.accessHistory(10, "", false, "recent", false, Long.MAX_VALUE, "").get("items")).size());
             // 批处理中任一记录失败时，整批必须回滚。
-            var invalid = new HashMap<>(access("invalid", time, "failed")); invalid.put("target", null);
+            var invalid = new HashMap<>(access("invalid", time, "failed")); invalid.put("host", null); invalid.put("batchId", "invalid");
             assertThrows(SQLException.class, () -> db.writeHistory(List.of(sample("失败批次", time, 999)), List.of(invalid)));
             assertEquals(10_000_000_047L, db.trafficSeries(time + 180_000, java.time.ZoneOffset.UTC, false).get("sentBytes"));
             db.stage(configuration(), 1);
@@ -77,7 +76,7 @@ class DatabaseBackendsTest {
             assertEquals("测试连接🔑", db.read().configuration().profile("a").name());
             db.stage(new KernelConfig(new ProxyConfig(new Properties(), directory), List.of(), ""), 1); db.commit();
             assertTrue(db.read().configuration().connections().isEmpty());
-            assertEquals(3, ((List<?>) db.accessHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 10, "", "").get("items")).size());
+            assertEquals(3, ((List<?>) db.accessHistory(10, "", false, "recent", false, Long.MAX_VALUE, "").get("items")).size());
         }
         if (config.type() != StorageConfig.Type.SQLITE) {
             try (var connection = config.connect(); var query = connection.createStatement()) {
@@ -103,9 +102,8 @@ class DatabaseBackendsTest {
     }
     private Map<String, Object> access(String id, long time, String state) {
         Map<String, Object> row = new HashMap<>();
-        row.put("requestId", id); row.put("sessionId", "测试会话"); row.put("createdAt", time); row.put("completedAt", time + 10);
-        row.put("target", "example_%中文.test:443"); row.put("source", "127.0.0.1:1234"); row.put("method", "CONNECT-UDP");
-        row.put("route", "proxy"); row.put("protocol", "HTTP/2"); row.put("profileId", "a"); row.put("profileName", "测试连接🔑"); row.put("state", state);
+        row.put("batchId", "批次一"); row.put("host", id + ".example.test"); row.put("connectionCount", 1L);
+        row.put("lastAccessAt", time); row.put("lastFailureAt", state.equals("failed") ? time + 10 : 0L);
         return row;
     }
 }

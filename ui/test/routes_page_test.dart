@@ -358,14 +358,14 @@ void main() {
     model.accept(kernel.appliedProfile!);
     final original = model.rules.text;
     await mount(tester);
-    await tester.tap(find.text('导入规则'));
+    await tester.tap(find.text('导入直连文本'));
     await tester.pumpAndSettle();
     expect(find.text('导入直连列表'), findsOneWidget);
     expect(model.rules.text, original);
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
     expect(model.rules.text, original);
-    await tester.tap(find.text('导入规则'));
+    await tester.tap(find.text('导入直连文本'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('追加到草稿'));
     await tester.pumpAndSettle();

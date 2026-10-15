@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/proxy_profile.dart';
+import '../models/connection_document.dart';
 import '../models/kernel_status.dart';
 import '../models/database_settings.dart';
 import '../services/native_bridge.dart';
@@ -856,6 +857,96 @@ class ProxyViewModel extends ChangeNotifier {
   void clearLogs() {
     proxy.clearLogs();
     update(() => pausedLines = []);
+  }
+
+  Future<Map<String, dynamic>?> readConfigurationDocument() async {
+    Map<String, dynamic>? document;
+    await action(() async {
+      final path = await native.chooseFile('json');
+      if (path == null) return;
+      final file = File(path);
+      if (await file.length() > 1048576) throw StateError('配置文件不能超过 1 MB');
+      final Object? value;
+      try {
+        value = jsonDecode(await file.readAsString());
+      } on FormatException {
+        throw const FormatException('配置文件不是有效的 JSON，请检查格式');
+      }
+      if (value is! Map<String, dynamic>) {
+        throw const FormatException('配置文件必须是 JSON 对象');
+      }
+      document = value;
+    }, preserveDrafts: true);
+    return document;
+  }
+
+  Future<Map<String, dynamic>?> previewRoutingImport(
+    Map<String, dynamic> document,
+    String strategy,
+    int revision,
+  ) async {
+    Map<String, dynamic>? preview;
+    await action(() async {
+      if (dirty || routesConflict) throw StateError('请先应用或撤销当前草稿，再导入路由规则');
+      preview = await proxy.previewRouting(document, strategy, revision);
+    }, preserveDrafts: true);
+    return preview;
+  }
+
+  Future<void> importRoutingDocument(
+    Map<String, dynamic> document,
+    String strategy,
+    int revision,
+  ) => action(() async {
+    if (dirty || routesConflict) throw StateError('请先应用或撤销当前草稿，再导入路由规则');
+    final applied = await proxy.importRouting(document, strategy, revision);
+    if (!active) return;
+    if (proxy.configurationRevision != applied) {
+      throw StateError('导入后配置已变化，请重新读取配置');
+    }
+    update(() => accept(proxy.appliedProfile!));
+    message('路由规则已导入并保存');
+  }, preserveDrafts: true);
+
+  Future<void> exportRoutingDocument() => action(() async {
+    final document = await proxy.exportRouting();
+    final path = await native.exportDocument(
+      'network-路由规则.json',
+      const JsonEncoder.withIndent('  ').convert(document),
+    );
+    if (path != null) message('已应用的路由规则已导出');
+  }, preserveDrafts: true);
+
+  Future<void> exportConnectionDocument(
+    List<String> ids,
+    bool includePassword,
+  ) => action(() async {
+    final document = await proxy.exportConnections(ids, includePassword);
+    final path = await native.exportDocument(
+      'network-连接配置.json',
+      const JsonEncoder.withIndent('  ').convert(document),
+    );
+    if (path != null) message('已保存的连接配置已导出');
+  }, preserveDrafts: true);
+
+  void importConnectionDrafts(
+    List<ConnectionProfile> incoming,
+    List<String?> replacements,
+  ) {
+    captureConnection();
+    final next = ConnectionDocument.merge(
+      connectionDrafts,
+      incoming,
+      replacements,
+      'node-${DateTime.now().microsecondsSinceEpoch}',
+    );
+    update(() {
+      connectionDrafts = next;
+      if (defaultId.isEmpty) defaultId = next.first.id;
+      showConnection(next.firstWhere((c) => c.id == defaultId));
+      _refreshDirty();
+    });
+    message('连接已导入草稿，请核对密码与证书后应用保存');
   }
 
   Future<String?> readRulesFile() async {

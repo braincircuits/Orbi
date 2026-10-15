@@ -48,19 +48,86 @@ TunnelStatus _tunnel(
   String route,
   String state, {
   String originalProtocol = 'tcp',
+  String source = '[::1]:50123',
+  DateTime? createdAt,
 }) => TunnelStatus(
   id: id,
   target: target,
-  source: '[::1]:50123',
+  source: source,
   route: route,
   state: state,
   profileName: route == 'proxy' ? '默认连接' : '',
   protocol: route == 'proxy' ? 'http3' : originalProtocol,
   originalProtocol: originalProtocol,
-  createdAt: DateTime(2026, 10, 10, 18, 20, 30),
+  createdAt: createdAt ?? DateTime(2026, 10, 10, 18, 20, 30),
 );
 
 void main() {
+  testWidgets('实时表格每列双向排序，推送保持排序且路由操作仍对应原目标', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 780);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final kernel = _Kernel()..connected = true;
+    final model = _RoutingModel(proxy: kernel)..loading = false;
+    addTearDown(model.dispose);
+    final a = _tunnel(
+      'a',
+      'a.example:443',
+      'direct',
+      'active',
+      source: '127.0.0.1:1000',
+      createdAt: DateTime(2026, 1, 1),
+    );
+    final b = _tunnel(
+      'b',
+      'b.example:443',
+      'proxy',
+      'pending',
+      originalProtocol: 'udp',
+      source: '127.0.0.1:2000',
+      createdAt: DateTime(2026, 1, 2),
+    );
+    kernel.publish([a, b]);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: desktopTheme(Brightness.light),
+        home: Scaffold(body: TunnelsPage(model: model)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    bool aFirst() =>
+        tester.getTopLeft(find.text(a.target)).dy <
+        tester.getTopLeft(find.text(b.target)).dy;
+    expect(aFirst(), isFalse);
+    for (final (label, firstAscending) in [
+      ('目标地址', true),
+      ('原始协议', true),
+      ('来源地址', true),
+      ('路由 / 协议', false),
+      ('状态', true),
+      ('开始时间', true),
+    ]) {
+      await tester.tap(find.widgetWithText(TextButton, label));
+      await tester.pumpAndSettle();
+      expect(aFirst(), firstAscending, reason: '$label 升序');
+      await tester.tap(find.widgetWithText(TextButton, label));
+      await tester.pumpAndSettle();
+      expect(aFirst(), !firstAscending, reason: '$label 降序');
+    }
+    kernel.publish([b, a]);
+    await tester.pumpAndSettle();
+    expect(aFirst(), isFalse);
+    await tester.tap(find.byKey(const ValueKey('tunnel-route-a')));
+    await tester.pumpAndSettle();
+    kernel.publish([a, b]);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(MenuItemButton, '切换为代理'));
+    await tester.pumpAndSettle();
+    expect(model.switches.last, (a.target, 'proxy'));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('路由菜单与列表使用一致字体和表面，紧凑布局在明暗主题下可操作', (tester) async {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -79,6 +146,7 @@ void main() {
       debugDisableShadows = false;
       await tester.runAsync(() async {
         for (final font in {
+          DesktopDesign.fontFamily: 'assets/fonts/NotoSansSC-Variable.ttf',
           'NotoSansSC': 'assets/fonts/NotoSansSC-Variable.ttf',
           'MaterialIcons': 'fonts/MaterialIcons-Regular.otf',
         }.entries) {
@@ -113,6 +181,9 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
+        await tester.ensureVisible(
+          find.byKey(const ValueKey('tunnel-route-menu')),
+        );
         await tester.tap(find.byKey(const ValueKey('tunnel-route-menu')));
         await tester.pumpAndSettle();
         final entry = find.widgetWithText(MenuItemButton, '切换为直连');
@@ -223,6 +294,7 @@ void main() {
       ('切换为直连', 'direct'),
       ('恢复自动路由', 'auto'),
     ]) {
+      await tester.ensureVisible(button);
       await tester.tap(button);
       await tester.pumpAndSettle();
       await tester.tap(find.text(label));
@@ -348,6 +420,7 @@ void main() {
               .load();
         }
         for (final font in {
+          DesktopDesign.fontFamily: 'assets/fonts/NotoSansSC-Variable.ttf',
           'NotoSansSC': 'assets/fonts/NotoSansSC-Variable.ttf',
           'MaterialIcons': 'fonts/MaterialIcons-Regular.otf',
         }.entries) {
@@ -365,12 +438,13 @@ void main() {
       tester.view.physicalSize = size;
       debugDefaultTargetPlatformOverride = platform;
       await tester.pumpWidget(
-        MaterialApp(
-          theme: desktopTheme(brightness),
-          home: Scaffold(
-            body: RepaintBoundary(
-              key: boundary,
-              child: Padding(
+        RepaintBoundary(
+          key: boundary,
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: desktopTheme(brightness),
+            home: Scaffold(
+              body: Padding(
                 padding: const EdgeInsets.all(24),
                 child: ListenableBuilder(
                   listenable: model,
@@ -398,14 +472,9 @@ void main() {
           expect(find.text('api.example.com:443'), findsOneWidget);
           expect(find.text('[2001:db8::1]:8080'), findsOneWidget);
           expect(find.text('等待连接'), findsOneWidget);
-          if (size.width >= 900) {
-            expect(find.text('原始协议'), findsOneWidget);
-            expect(find.text('TCP'), findsOneWidget);
-            expect(find.text('UDP'), findsNWidgets(3));
-          } else {
-            expect(find.text('原始 TCP'), findsOneWidget);
-            expect(find.text('原始 UDP'), findsNWidgets(2));
-          }
+          expect(find.text('原始协议'), findsOneWidget);
+          expect(find.text('TCP'), findsOneWidget);
+          expect(find.text('UDP'), findsNWidgets(3));
           if (preview != null && platform == TargetPlatform.macOS) {
             final render =
                 boundary.currentContext!.findRenderObject()!

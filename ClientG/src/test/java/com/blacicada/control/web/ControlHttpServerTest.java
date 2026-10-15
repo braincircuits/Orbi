@@ -200,10 +200,15 @@ class ControlHttpServerTest {
         var page = ok("GET", "/traffic/trend", null, 200).getAsJsonObject("data");
         assertEquals(1, page.get("recordCount").getAsInt());
         assertTrue(ok("GET", "/access-records?target=example.com", null, 200).getAsJsonObject("data").getAsJsonArray("items").isEmpty());
-        ok("GET", "/access-records?from=2&to=1", null, 400);
-        ok("GET", "/access-records?beforeId=invalid", null, 400);
-        ok("GET", "/access-records?state=failed", null, 200);
-        ok("GET", "/access-records?state=unknown", null, 400);
+        ok("GET", "/access-records?limit=0", null, 400);
+        ok("GET", "/access-records?beforeValue=invalid", null, 400);
+        ok("GET", "/access-records?failedOnly=true", null, 200);
+        ok("GET", "/access-records?order=unknown", null, 400);
+        ok("GET", "/access-records?ascending=invalid", null, 400);
+        for (String order : List.of("host", "count", "recent", "failure")) {
+            for (String ascending : List.of("true", "false"))
+                ok("GET", "/access-records?order=" + order + "&ascending=" + ascending, null, 200);
+        }
     }
     @Test void tunnelApiAndEventsIncludeDirectConnectionsAndClearOnStop() throws Exception {
         assertTrue(ok("GET", "/tunnels", null, 200).getAsJsonArray("data").isEmpty());
@@ -409,47 +414,68 @@ class ControlHttpServerTest {
             Collections.sort(codes); assertEquals(List.of(200, 409), codes);
         }
     }
+    private String routingRequest(JsonObject document, String strategy) {
+        var request = new JsonObject(); request.add("document", document); request.addProperty("strategy", strategy); return request.toString();
+    }
     @Test void routingExportImportIsAtomicVersionedAndPersistsAcrossRestart() throws Exception {
         addProfile("a", "http2", 4433, false);
+        ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
         JsonObject document = JsonParser.parseString("""
-                {"version":1,"mode":"direct","defaultConnectionId":"a",
-                 "directRules":" # 注释\\r\\nexample.com\\r\\n",
+                {"version":2,"kind":"network-routes","directRules":"# 注释\\nexample.com\\n",
                  "targetRoutes":{"WWW.Example.COM.":"proxy","::1":"direct"}}
                 """).getAsJsonObject();
         long before = revision;
-        assertEquals(428, request("POST", "/routing/import", document.toString()).statusCode());
-        ok("POST", "/routing/import", document.toString(), 200);
+        assertEquals(428, request("POST", "/routing/import", routingRequest(document, "replace")).statusCode());
+        var preview = ok("POST", "/routing/preview", routingRequest(document, "replace"), 200).getAsJsonObject("data");
+        assertEquals(before, revision);
+        ok("POST", "/routing/import", routingRequest(document, "replace"), 200);
         assertEquals(before + 1, revision);
         JsonObject exported = ok("GET", "/routing/export", null, 200).getAsJsonObject("data");
-        assertFalse(exported.toString().contains("test-secret"));
-        assertEquals("proxy", exported.getAsJsonObject("targetRoutes").get("www.example.com").getAsString());
-        for (String invalid : List.of("version", "mode", "defaultConnectionId", "directRules", "targetRoutes")) {
+        assertEquals(preview, exported); assertFalse(exported.toString().contains("test-secret"));
+        assertFalse(exported.has("mode")); assertFalse(exported.has("defaultConnectionId"));
+        assertEquals("direct", control.routing().get("mode")); assertEquals("a", control.routing().get("defaultConnectionId"));
+        for (String invalid : List.of("version", "kind", "directRules", "targetRoutes")) {
             JsonObject broken = exported.deepCopy();
             switch (invalid) {
-                case "version" -> broken.addProperty(invalid, 99);
-                case "mode" -> broken.addProperty(invalid, "invalid");
-                case "defaultConnectionId" -> broken.addProperty(invalid, "不存在");
+                case "version" -> broken.addProperty(invalid, 1);
+                case "kind" -> broken.addProperty(invalid, "invalid");
                 case "directRules" -> broken.addProperty(invalid, "10.0.0.0/99");
                 case "targetRoutes" -> broken.getAsJsonObject(invalid).addProperty("bad/host", "proxy");
             }
             long unchanged = revision;
-            ok("POST", "/routing/import", broken.toString(), 400);
+            ok("POST", "/routing/import", routingRequest(broken, "replace"), 400);
             assertEquals(unchanged, revision);
             assertEquals(exported, ok("GET", "/routing/export", null, 200).getAsJsonObject("data"));
         }
-        assertEquals(409, request("POST", "/routing/import", exported.toString(), "If-Match", "" + before).statusCode());
-        ok("PUT", "/routing/direct-rules", "{\"rules\":\"\"}", 200);
-        ok("POST", "/routing/import", exported.toString(), 200);
-        long saved = revision;
-        web.close();
+        assertEquals(409, request("POST", "/routing/import", routingRequest(exported, "replace"), "If-Match", "" + before).statusCode());
+        var addition = document.deepCopy(); addition.addProperty("directRules", "EXAMPLE.com. # 重复\nother.test # 新规则");
+        addition.getAsJsonObject("targetRoutes").addProperty("www.example.com", "direct");
+        addition.getAsJsonObject("targetRoutes").remove("WWW.Example.COM.");
+        ok("POST", "/routing/import", routingRequest(addition, "merge"), 200);
+        var merged = ok("GET", "/routing/export", null, 200).getAsJsonObject("data");
+        assertTrue(merged.get("directRules").getAsString().contains("# 注释"));
+        assertTrue(merged.get("directRules").getAsString().contains("other.test # 新规则"));
+        assertFalse(merged.get("directRules").getAsString().contains("# 重复"));
+        assertEquals("direct", merged.getAsJsonObject("targetRoutes").get("www.example.com").getAsString());
+        ok("POST", "/routing/import", routingRequest(exported, "replace"), 200);
+        long saved = revision; web.close();
         control = new KernelControl(directory.resolve("kernel.db"));
         web = new ControlHttpServer(control, 0, token, Set.of()); web.start();
         assertEquals(saved, control.metadata().get("revision"));
         assertEquals(exported, ok("GET", "/routing/export", null, 200).getAsJsonObject("data"));
-        assertFalse(ok("GET", "/status", null, 200).getAsJsonObject("data").get("running").getAsBoolean());
-        ok("POST", "/config/save", null, 404);
-        ok("POST", "/routing/reload", null, 404);
-        ok("PATCH", "/settings", "{\"routesFile\":\"pac.txt\"}", 400);
+    }
+    @Test void profileExportOnlyReturnsExplicitlySelectedSecrets() throws Exception {
+        addProfile("a", "http2", 4433, false); addProfile("b", "http2", 4434, false);
+        var without = ok("POST", "/profiles/export", "{\"ids\":[\"a\"],\"includePassword\":false}", 200).getAsJsonObject("data");
+        assertEquals(1, without.getAsJsonArray("connections").size()); assertFalse(without.toString().contains("password"));
+        assertFalse(without.getAsJsonArray("connections").get(0).getAsJsonObject().has("id"));
+        var with = ok("POST", "/profiles/export", "{\"ids\":[\"a\",\"b\"],\"includePassword\":true}", 200).getAsJsonObject("data");
+        assertEquals(2, with.getAsJsonArray("connections").size());
+        assertEquals("test-secret", with.getAsJsonArray("connections").get(0).getAsJsonObject().getAsJsonObject("config").get("password").getAsString());
+        assertFalse(control.configuration().toString().contains("test-secret")); assertFalse(control.snapshot().toString().contains("test-secret"));
+        ok("POST", "/profiles/export", "{\"ids\":[],\"includePassword\":true}", 400);
+        ok("POST", "/profiles/export", "{\"ids\":[\"missing\"],\"includePassword\":true}", 404);
+        ok("POST", "/profiles/export", "{\"ids\":[\"a\"]}", 400);
     }
     @Test void failedDatabaseWriteDoesNotChangeConfigurationOrVersion() throws Exception {
         addProfile("a", "http2", 4433, false);

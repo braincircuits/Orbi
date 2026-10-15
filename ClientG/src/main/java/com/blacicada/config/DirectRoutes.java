@@ -108,6 +108,22 @@ public final class DirectRoutes {
         overrides = Map.copyOf(targetRules);
     }
 
+    /** 合并规则原文并保留备注；相同规则优先保留现有行，CIDR 忽略主机位。 */
+    public static String mergeText(String current, String incoming) throws IOException {
+        new DirectRoutes(current); new DirectRoutes(incoming);
+        var keys = new HashSet<Object>(); var lines = new ArrayList<String>();
+        for (String line : (current + "\n" + incoming).split("\n", -1)) {
+            String rule = line.split("#", 2)[0].trim();
+            if (rule.isEmpty()) { lines.add(line); continue; }
+            int slash = rule.indexOf('/');
+            var address = literal(slash < 0 ? rule : rule.substring(0, slash));
+            Object key = address == null ? normalizeHost(rule) : new Network(address.getAddress(),
+                    slash < 0 ? address.getAddress().length * 8 : Integer.parseInt(rule.substring(slash + 1)));
+            if (keys.add(key)) lines.add(line);
+        }
+        return String.join("\n", lines).strip();
+    }
+
     /** 不执行 DNS 解析；IP 地址不参与域名后缀匹配。 */
     public boolean matches(String host) {
         if (!mode.equals("rules")) return mode.equals("direct");

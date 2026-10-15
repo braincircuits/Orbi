@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../desktop_theme.dart';
 import '../widgets/desktop_select.dart';
+import '../widgets/sortable_table.dart';
 
 import '../../models/kernel_status.dart';
 import '../../models/database_settings.dart';
@@ -20,7 +21,11 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
   final scroll = ScrollController();
   List<AccessRecord> records = [];
   String filter = '', error = '';
-  String stateFilter = '';
+  String stateFilter = '', cursorHost = '';
+  int sortColumn = 2;
+  bool ascending = false;
+  String get order => const ['host', 'count', 'recent', 'failure'][sortColumn];
+  bool hasMore = false;
   int cursor = 0, request = 0, generation = 0;
   bool loading = false;
   @override
@@ -39,6 +44,8 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
       request++;
       records = [];
       cursor = 0;
+      cursorHost = '';
+      hasMore = false;
       loading = false;
       if (widget.proxy.connected) _load();
     }
@@ -61,7 +68,7 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
 
   Future<void> _load({bool more = false}) async {
     if (!widget.proxy.connected) return;
-    if (more && (loading || cursor == 0)) return;
+    if (more && (loading || !hasMore)) return;
     final current = ++request;
     setState(() {
       loading = true;
@@ -70,19 +77,31 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
         filter = search.text.trim();
         records = [];
         cursor = 0;
+        cursorHost = '';
+        hasMore = false;
       }
     });
     if (!more && scroll.hasClients) scroll.jumpTo(0);
     try {
       final page = await widget.proxy.accessHistory(
         target: filter,
-        state: stateFilter,
-        beforeId: more ? cursor : null,
+        failedOnly: stateFilter == 'failed',
+        order: order,
+        ascending: ascending,
+        beforeValue: more ? cursor : null,
+        afterHost: more ? cursorHost : '',
       );
       if (!mounted || current != request) return;
       setState(() {
-        records = [...records, ...page.items];
-        cursor = page.nextBeforeId;
+        records = [
+          ...records,
+          ...page.items.where(
+            (item) => !records.any((old) => old.host == item.host),
+          ),
+        ];
+        cursor = page.nextValue;
+        cursorHost = page.nextHost;
+        hasMore = page.hasMore;
         loading = false;
       });
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -96,6 +115,10 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
       });
     }
   }
+
+  String _time(int value) => value == 0
+      ? '—'
+      : DateTime.fromMillisecondsSinceEpoch(value).toString().split('.').first;
 
   @override
   Widget build(BuildContext context) {
@@ -111,7 +134,7 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
                 key: const ValueKey('access-search'),
                 controller: search,
                 decoration: const InputDecoration(
-                  hintText: '搜索历史域名、IP 或端口',
+                  hintText: '搜索域名或 IP',
                   prefixIcon: Icon(
                     Icons.search,
                     size: DesktopDesign.actionIconSize,
@@ -138,19 +161,13 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
           runSpacing: 8,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            const Text('连接状态'),
+            const Text('访问筛选'),
             SizedBox(
               width: 168,
               child: DesktopSelect<String>(
                 key: const ValueKey('access-state-filter'),
                 value: stateFilter,
-                options: const [
-                  ('', '全部状态'),
-                  ('failed', '连接失败'),
-                  ('connected', '已建立连接'),
-                  ('cancelled', '已取消'),
-                  ('pending', '未完成'),
-                ],
+                options: const [('', '全部域名'), ('failed', '曾经失败')],
                 onSelected: available
                     ? (value) {
                         if (value == null || value == stateFilter) return;
@@ -164,12 +181,12 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
         ),
         const SizedBox(height: 10),
         Text(
-          '长期保存在 ${DatabaseSettings.labels[widget.proxy.storageBackend] ?? '数据库'} · 已显示 ${records.length} 条 · 最新访问在前',
+          '长期保存在 ${DatabaseSettings.labels[widget.proxy.storageBackend] ?? '数据库'} · 已显示 ${records.length} 个域名 / IP',
           style: theme.textTheme.bodySmall,
         ),
         const SizedBox(height: 6),
         Text(
-          '记录目标地址，不记录网页路径；“已建立连接”不代表网页返回成功。',
+          '按连接尝试累计，每分钟保存；同一域名的端口、协议和路由合并统计。',
           style: theme.textTheme.bodySmall,
         ),
         if (!widget.proxy.connected)
@@ -194,70 +211,43 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
         if (loading) const LinearProgressIndicator(),
         Expanded(
           key: const ValueKey('access-record-list'),
-          child: records.isEmpty && !loading
-              ? Center(
-                  child: Text(
-                    stateFilter.isEmpty && filter.isEmpty
-                        ? '暂无访问记录'
-                        : '没有符合筛选条件的访问记录',
-                  ),
-                )
-              : SelectionArea(
-                  child: ListView.separated(
-                    controller: scroll,
-                    key: const PageStorageKey('access-records'),
-                    itemCount: records.length,
-                    separatorBuilder: (context, index) =>
-                        const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final entry = records[index];
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 12,
-                          horizontal: 8,
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              entry.target,
-                              style: theme.textTheme.titleSmall,
-                            ),
-                            const SizedBox(height: 5),
-                            Wrap(
-                              spacing: 12,
-                              runSpacing: 4,
-                              children: [
-                                Text(
-                                  entry.createdAt.toString().split('.').first,
-                                  style: theme.textTheme.bodySmall,
-                                ),
-                                Text(
-                                  '原始 ${entry.originalProtocolLabel}',
-                                  style: theme.textTheme.bodySmall,
-                                ),
-                                Text(
-                                  '${entry.method} · ${entry.routeLabel} · ${entry.protocolLabel}',
-                                  style: theme.textTheme.bodySmall,
-                                ),
-                                Text(
-                                  entry.stateLabel,
-                                  style: theme.textTheme.bodySmall,
-                                ),
-                              ],
-                            ),
-                            Text(
-                              '来源 ${entry.source}',
-                              style: theme.textTheme.bodySmall,
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-                ),
+          child: SortableTable(
+            columns: const ['域名 / IP', '连接次数', '最后访问时间', '最后失败时间'],
+            widths: const [280, 120, 210, 210],
+            sortColumn: sortColumn,
+            ascending: ascending,
+            onSort: widget.proxy.connected
+                ? (column) {
+                    ascending = sortColumn == column ? !ascending : true;
+                    sortColumn = column;
+                    _load();
+                  }
+                : null,
+            controller: scroll,
+            listKey: const PageStorageKey('access-records'),
+            rowCount: records.length,
+            rowKey: (index) => records[index].host,
+            empty: Center(
+              child: Text(
+                loading
+                    ? '正在加载访问记录…'
+                    : stateFilter.isEmpty && filter.isEmpty
+                    ? '暂无访问记录'
+                    : '没有符合筛选条件的访问记录',
+              ),
+            ),
+            cells: (index) {
+              final entry = records[index];
+              return [
+                TableText(entry.host),
+                TableText('${entry.connectionCount}'),
+                TableText(_time(entry.lastAccessAt)),
+                TableText(_time(entry.lastFailureAt)),
+              ];
+            },
+          ),
         ),
-        if (cursor > 0 && error.isNotEmpty)
+        if (hasMore && error.isNotEmpty)
           Align(
             alignment: Alignment.center,
             child: TextButton(

@@ -43,29 +43,6 @@ class HistoryPersistenceTest {
             }
         }
     }
-    @Test void accessStateFilterRunsBeforePaginationAndCombinesWithTarget() throws Exception {
-        try (var db = new KernelDatabase(directory.resolve("filtered.db"))) {
-            var records = new ArrayList<Map<String, Object>>();
-            for (int i = 1; i <= 8; i++) {
-                var row = new HashMap<String, Object>();
-                row.put("requestId", "请求" + i); row.put("sessionId", "会话");
-                row.put("createdAt", (long) i); row.put("completedAt", (long) i);
-                row.put("target", i == 7 ? "other.test:443" : "example.test:443"); row.put("source", "127.0.0.1:1234");
-                row.put("method", "CONNECT"); row.put("route", "proxy"); row.put("protocol", "http2");
-                row.put("profileId", "test"); row.put("profileName", "测试");
-                row.put("state", i % 2 == 0 ? "connected" : "failed"); records.add(row);
-            }
-            db.writeHistory(List.of(), records);
-            var first = db.accessHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 2, "example.test", "failed");
-            assertEquals(List.of(5L, 3L), items(first).stream().map(item -> item.get("id")).toList());
-            assertTrue((boolean) first.get("hasMore"));
-            var next = db.accessHistory(0, Long.MAX_VALUE, ((Number) first.get("nextBeforeId")).longValue(), 2, "example.test", "failed");
-            assertEquals(List.of(1L), items(next).stream().map(item -> item.get("id")).toList());
-            assertFalse((boolean) next.get("hasMore"));
-            assertTrue(items(db.accessHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 2, "", "cancelled")).isEmpty());
-            assertEquals(8, items(db.accessHistory(0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "", "")).size());
-        }
-    }
     @Test void failedBatchRetriesWithoutLosingDataAndConfigurationRemainsIndependent() throws Exception {
         var path = directory.resolve("kernel.db");
         try (var db = new KernelDatabase(path); var external = DriverManager.getConnection("jdbc:sqlite:" + path); var sql = external.createStatement()) {
@@ -119,20 +96,17 @@ class HistoryPersistenceTest {
                 assertTrue(new String(browser.getInputStream().readAllBytes(), StandardCharsets.US_ASCII).startsWith("HTTP/1.1 502"));
             }
             control.stop();
-            var failed = items(control.history(0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "localhost:" + unavailable, ""));
-            assertEquals(1, failed.size()); assertEquals("failed", failed.getFirst().get("state"));
-            var records = items(control.history(0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "localhost:" + origin.getLocalPort(), ""));
+            var records = items(control.history(100, "localhost", true, "recent", false, Long.MAX_VALUE, ""));
             assertEquals(1, records.size()); var record = records.getFirst();
-            assertEquals("localhost:" + origin.getLocalPort(), record.get("target"));
-            assertEquals("GET", record.get("method")); assertEquals("direct", record.get("route"));
-            assertEquals("connected", record.get("state")); assertFalse(record.toString().contains("secret"));
-            assertFalse(record.toString().contains("/private"));
+            assertEquals("localhost", record.get("host")); assertEquals(2L, record.get("connectionCount"));
+            assertTrue(((Number) record.get("lastFailureAt")).longValue() > 0);
+            assertFalse(record.toString().contains("secret")); assertFalse(record.toString().contains("/private"));
             assertTrue(((Number) control.traffic().get("sentBytes")).longValue() > 0);
-            assertThrows(ControlException.class, () -> control.history(0, 1, 0, 100, "", ""));
+            assertThrows(ControlException.class, () -> control.history(0, "", false, "recent", false, Long.MAX_VALUE, ""));
         }
         try (var control = new KernelControl(path)) {
             assertEquals("", control.traffic().get("sessionId"));
-            assertEquals(2, items(control.history(0, Long.MAX_VALUE, Long.MAX_VALUE, 100, "", "")).size());
+            assertEquals(1, items(control.history(100, "", false, "recent", false, Long.MAX_VALUE, "")).size());
             control.start(); assertNotEquals(session, control.traffic().get("sessionId")); control.stop();
             assertEquals("minute", control.trafficSeries(false).get("interval"));
         }

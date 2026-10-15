@@ -8,31 +8,33 @@ import 'package:network_ui/ui/desktop_theme.dart';
 import 'package:network_ui/ui/pages/access_records_page.dart';
 
 class HistoryKernel extends ProxyController {
-  final requests = <(String, int?, String)>[];
+  final requests = <(String, int?, bool, String)>[];
   bool fail = false;
+  final directions = <bool>[];
   @override
   Future<AccessRecordPage> accessHistory({
     String target = '',
-    String state = '',
-    int? beforeId,
+    bool failedOnly = false,
+    String order = 'recent',
+    bool ascending = false,
+    int? beforeValue,
+    String afterHost = '',
   }) async {
-    requests.add((target, beforeId, state));
+    requests.add((target, beforeValue, failedOnly, order));
+    directions.add(ascending);
     if (fail) throw StateError('测试数据库不可用');
     return AccessRecordPage.fromJson({
       'items': [
         {
-          'id': beforeId == null ? 20 : 10,
-          'createdAt': 1791716489000,
-          'target': beforeId == null ? 'example.com:443' : 'earlier.example:80',
-          'source': '127.0.0.1:8081',
-          'method': beforeId == null ? 'CONNECT' : 'CONNECT-UDP',
-          'route': 'proxy',
-          'protocol': 'http2',
-          'profileName': '默认连接',
-          'state': state.isEmpty ? 'connected' : state,
+          'host': beforeValue == null ? 'example.com' : 'earlier.example',
+          'connectionCount': 123,
+          'lastAccessAt': 1791716489000,
+          'lastFailureAt': failedOnly ? 1791716400000 : 0,
         },
       ],
-      'nextBeforeId': beforeId == null ? 20 : 0,
+      'hasMore': beforeValue == null,
+      'nextValue': beforeValue == null ? 20 : 0,
+      'nextHost': beforeValue == null ? 'example.com' : '',
     });
   }
 }
@@ -42,10 +44,14 @@ class PagedHistoryKernel extends HistoryKernel {
   @override
   Future<AccessRecordPage> accessHistory({
     String target = '',
-    String state = '',
-    int? beforeId,
+    bool failedOnly = false,
+    String order = 'recent',
+    bool ascending = false,
+    int? beforeValue,
+    String afterHost = '',
   }) {
-    requests.add((target, beforeId, state));
+    requests.add((target, beforeValue, failedOnly, order));
+    directions.add(ascending);
     final result = Completer<AccessRecordPage>();
     pending.add(result);
     return result.future;
@@ -56,23 +62,74 @@ class PagedHistoryKernel extends HistoryKernel {
       'items': List.generate(
         20,
         (i) => {
-          'id': 100 - index * 20 - i,
-          'createdAt': 1791716489000,
-          'target': 'page-$index-item-$i.example:443',
-          'source': '127.0.0.1:8081',
-          'method': 'CONNECT',
-          'route': 'proxy',
-          'protocol': 'http2',
-          'profileName': '测试连接',
-          'state': 'failed',
+          'host': 'page-$index-item-$i.example',
+          'connectionCount': 100 - i,
+          'lastAccessAt': 1791716489000,
+          'lastFailureAt': 0,
         },
       ),
-      'nextBeforeId': next,
+      'hasMore': next != 0,
+      'nextValue': next,
+      'nextHost': next != 0 ? 'page-$index-item-19.example' : '',
     }),
   );
 }
 
 void main() {
+  testWidgets('访问表格每列双向查询，切换排序丢弃旧分页响应', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 800);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final kernel = PagedHistoryKernel()..connected = true;
+    addTearDown(kernel.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: desktopTheme(Brightness.light),
+        home: Scaffold(body: AccessRecordsPage(proxy: kernel)),
+      ),
+    );
+    kernel.completePage(0, 81);
+    await tester.pumpAndSettle();
+    final position = tester
+        .state<ScrollableState>(
+          find.descendant(
+            of: find.byKey(const PageStorageKey('access-records')),
+            matching: find.byType(Scrollable),
+          ),
+        )
+        .position;
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pump();
+    expect(kernel.requests.length, 2);
+    await tester.tap(find.widgetWithText(TextButton, '域名 / IP'));
+    await tester.pump();
+    expect(kernel.requests.last, ('', null, false, 'host'));
+    kernel.completePage(2, 0);
+    await tester.pumpAndSettle();
+    kernel.completePage(1, 50);
+    await tester.pumpAndSettle();
+    expect(find.text('page-1-item-0.example'), findsNothing);
+    expect(find.text('page-2-item-0.example'), findsOneWidget);
+    for (final (label, order) in [
+      ('域名 / IP', 'host'),
+      ('连接次数', 'count'),
+      ('最后访问时间', 'recent'),
+      ('最后失败时间', 'failure'),
+    ]) {
+      // 域名列已切为升序，再点击两次验证来回切换。
+      for (final ascending in order == 'host' ? [false, true] : [true, false]) {
+        await tester.tap(find.widgetWithText(TextButton, label));
+        await tester.pump();
+        expect(kernel.requests.last, ('', null, false, order));
+        expect(kernel.directions.last, ascending);
+        kernel.completePage(kernel.pending.length - 1, 0);
+        await tester.pumpAndSettle();
+      }
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('滚动自动分页防重入，失败不循环请求，重试后到末页停止', (tester) async {
     final kernel = PagedHistoryKernel()..connected = true;
     addTearDown(kernel.dispose);
@@ -94,7 +151,10 @@ void main() {
         .position;
     position.jumpTo(position.maxScrollExtent);
     await tester.pump();
-    expect(kernel.requests, [('', null, ''), ('', 81, '')]);
+    expect(kernel.requests, [
+      ('', null, false, 'recent'),
+      ('', 81, false, 'recent'),
+    ]);
     position.jumpTo(position.maxScrollExtent - 5);
     position.jumpTo(position.maxScrollExtent);
     await tester.pump();
@@ -108,11 +168,11 @@ void main() {
     expect(find.textContaining('测试分页失败'), findsOneWidget);
     await tester.tap(find.text('重试加载'));
     await tester.pump();
-    expect(kernel.requests.last, ('', 81, ''));
+    expect(kernel.requests.last, ('', 81, false, 'recent'));
     kernel.completePage(2, 0);
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
-      find.text('page-2-item-19.example:443'),
+      find.text('page-2-item-19.example'),
       400,
       scrollable: find.descendant(
         of: find.byKey(const PageStorageKey('access-records')),
@@ -121,7 +181,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(kernel.requests.length, 3);
-    expect(find.text('page-2-item-19.example:443'), findsOneWidget);
+    expect(find.text('page-2-item-19.example'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
@@ -144,15 +204,14 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('example.com:443'), findsOneWidget);
-    expect(find.text('原始 TCP'), findsOneWidget);
-    expect(find.text('CONNECT · 代理 · HTTP/2'), findsOneWidget);
+    expect(find.text('example.com'), findsOneWidget);
+    expect(find.text('123'), findsNWidgets(2));
+    expect(find.text('—'), findsNWidgets(2));
     expect(find.text('加载更早记录'), findsNothing);
     expect(find.textContaining('默认连接'), findsNothing);
-    expect(kernel.requests.last, ('', 20, ''));
-    expect(find.text('earlier.example:80'), findsOneWidget);
-    expect(find.text('原始 UDP'), findsOneWidget);
-    expect(find.text('CONNECT-UDP · 代理 · HTTP/2'), findsOneWidget);
+    expect(kernel.requests.last, ('', 20, false, 'recent'));
+    expect(find.text('earlier.example'), findsOneWidget);
+
     await tester.enterText(
       find.byKey(const ValueKey('access-search')),
       'example',
@@ -165,29 +224,33 @@ void main() {
     await tester.tap(find.text('查询 / 刷新'));
     await tester.pumpAndSettle();
     expect(kernel.requests.sublist(kernel.requests.length - 2), [
-      ('example', null, ''),
-      ('example', 20, ''),
+      ('example', null, false, 'recent'),
+      ('example', 20, false, 'recent'),
     ]);
-    expect(find.text('example.com:443'), findsOneWidget);
-    expect(find.text('earlier.example:80'), findsOneWidget);
-    await tester.tap(find.text('全部状态'));
+    expect(find.text('example.com'), findsOneWidget);
+    expect(find.text('earlier.example'), findsOneWidget);
+    await tester.tap(find.text('全部域名'));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(MenuItemButton, '连接失败'));
+    await tester.tap(find.widgetWithText(MenuItemButton, '曾经失败'));
     await tester.pumpAndSettle();
     expect(kernel.requests.sublist(kernel.requests.length - 2), [
-      ('example', null, 'failed'),
-      ('example', 20, 'failed'),
+      ('example', null, true, 'recent'),
+      ('example', 20, true, 'recent'),
     ]);
-    expect(kernel.requests.last, ('example', 20, 'failed'));
+    expect(kernel.requests.last, ('example', 20, true, 'recent'));
     await tester.tap(find.byKey(const ValueKey('access-state-filter')));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(MenuItemButton, '全部状态'));
+    await tester.tap(find.widgetWithText(MenuItemButton, '全部域名'));
     await tester.pumpAndSettle();
     expect(kernel.requests.sublist(kernel.requests.length - 2), [
-      ('example', null, ''),
-      ('example', 20, ''),
+      ('example', null, false, 'recent'),
+      ('example', 20, false, 'recent'),
     ]);
-    expect(find.text('earlier.example:80'), findsOneWidget);
+    expect(find.text('earlier.example'), findsOneWidget);
+    await tester.ensureVisible(find.widgetWithText(TextButton, '连接次数'));
+    await tester.tap(find.widgetWithText(TextButton, '连接次数'));
+    await tester.pumpAndSettle();
+    expect(kernel.requests.last, ('example', 20, false, 'count'));
     expect(tester.takeException(), isNull);
   });
 }

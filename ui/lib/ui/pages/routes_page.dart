@@ -5,6 +5,7 @@ import '../../view_models/proxy_view_model.dart';
 import '../desktop_theme.dart';
 import '../widgets/desktop_select.dart';
 import '../widgets/desktop_widgets.dart';
+import '../widgets/configuration_transfer.dart';
 
 class RoutesPage extends StatefulWidget {
   const RoutesPage({super.key, required this.model});
@@ -250,6 +251,8 @@ class _RoutesPageState extends State<RoutesPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
+                          ConfigurationTransfer(model: model, routes: true),
+                          const SizedBox(height: 12),
                           Wrap(
                             alignment: WrapAlignment.spaceBetween,
                             crossAxisAlignment: WrapCrossAlignment.center,
@@ -370,7 +373,7 @@ class _RoutesPageState extends State<RoutesPage> {
                                             !model.proxy.connected
                                         ? null
                                         : _import,
-                                    child: const Text('导入规则'),
+                                    child: const Text('导入直连文本'),
                                   ),
                                 ],
                                 FilledButton.icon(

@@ -513,7 +513,7 @@ HTTP/2 超时日志按实际阶段分别显示“等待 HTTP/2 流额度”“�
 
 ## 路由导入导出
 
-`GET /api/v1/routing/export` 返回带版本号的路由文档，把响应中的 `data` 保存为 UTF-8 JSON。`POST /api/v1/routing/import` 接收该文档并要求 `If-Match`，完整替换模式、默认连接、直连规则和精确目标规则，校验及保存作为一次修改完成。默认连接 ID 必须已存在，导入不创建连接、不包含凭据。格式、错误和客户端接入说明见 [Web API](docs/web-api.md#sqlite-与路由导入导出)。
+`GET /api/v1/routing/export` 返回当前版本规则文档，保存响应 `data` 为 UTF-8 JSON。`POST /api/v1/routing/preview` 和 `/routing/import` 接收 `document` 与 `strategy`（merge／replace），携带当前 `If-Match`。预览后确认导入，只修改直连和指定目标规则，保留模式及默认连接。连接页另外支持选择节点导出，并可选择是否包含密码；导入进入草稿后应用。格式及密码处理见 [Web API](docs/web-api.md#路由规则文件)。
 
 数据库包含代理密码且未加密，仅应由当前用户访问。同一数据库只能由一个内核实例打开；损坏或未知版本的数据库不会自动重置。日志、活动连接、事件和诊断结果不入库；`control.json` 继续供客户端发现正在运行的内核。备份前先停止内核，保留数据库及配套证书。
 

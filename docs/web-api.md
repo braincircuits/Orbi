@@ -89,7 +89,9 @@ UI 通过 `error.code` 判断行为，通过中文 `message` 展示原因，不�
 | `POST /profiles/{id}/disconnect` | 关闭该连接的当前会话及其隧道；后续请求按需重新连接 | — |
 | `POST /profiles/{id}/tests` | `{"target":"host:port"}`，异步验证连接、认证与目标 CONNECT，返回 202 | — |
 | `GET /routing/export` | 导出路由文档，响应 data 可直接保存为 UTF-8 JSON | — |
-| `POST /routing/import` | 提交路由文档，完整替换并自动保存；详见下文 | 是 |
+| `POST /routing/preview` | 校验并预览规则合并或替换结果，不保存 | 是 |
+| `POST /routing/import` | 按 merge/replace 导入规则并自动保存；详见下文 | 是 |
+| `POST /profiles/export` | 指定连接 IDs 及是否包含密码，导出连接文档 | — |
 | `GET /routing` | 默认连接 ID、当前直连规则文本与精确目标路由 `targetRoutes` | — |
 | `PUT /routing/mode` | `{"mode":"rules"}`，模式为 rules/direct/proxy，即时生效并持久化 | 是 |
 | `POST /overview/latency` | 当前代理连接 RTT，HTTP/2 PING 或 QUIC 路径 RTT，返回 202 | — |
@@ -159,7 +161,7 @@ UI 可提示“应用后立即断开路由变化的连接，其余连接保持�
 
 TUN 的 TCP/UDP 53 端口 DNS 查询也遵循全局模式与查询域名规则：直连使用客户端系统 DNS，代理通过当前默认连接使用服务端系统 DNS。精确域名覆盖优先于后缀直连规则；查询前不通过本机解析来匹配结果 IP 的网段规则。应用配置会清空 DNS 响应缓存并取消在途查询，未过期的 IP→域名关联保留。客户端与服务端均需支持 DNS 隧道标识，失败不自动直连；现有管理请求格式不变。
 
-每项包含 `id`（本地连接 ID）、`target`（HTTP/CONNECT 目标；TUN 连接存在有效 DNS 关联时显示关联域名和原端口）、`source`（本地请求来源）、`route`（resolving/proxy/direct）、`state`（resolving/pending/active）、`profileId`、`profileName`、`originalProtocol`（原始传输协议 tcp/udp）、`protocol`（实际连接协议 http2/http3/tcp/udp）以及 `createdAt`（收到请求时的 Unix 毫秒时间）。IPv6 地址使用方括号。DNS 路由解析期间为 resolving，等待目标套接字或代理流建立时为 pending，建立后为 active；直连的连接配置 ID 和名称为空，协议按目标传输类型为 tcp 或 udp。UDP 关联的 active 不代表目标在线。`originalProtocol` 在代理、直连及路由待确定期间均保留原始 TCP/UDP 类型，不随外层代理协议变化。访问记录通过已有 `method` 判断原始协议：CONNECT-UDP 为 UDP，普通 HTTP 方法和 CONNECT 为 TCP。
+每项包含 `id`（本地连接 ID）、`target`（HTTP/CONNECT 目标；TUN 连接存在有效 DNS 关联时显示关联域名和原端口）、`source`（本地请求来源）、`route`（resolving/proxy/direct）、`state`（resolving/pending/active）、`profileId`、`profileName`、`originalProtocol`（原始传输协议 tcp/udp）、`protocol`（实际连接协议 http2/http3/tcp/udp）以及 `createdAt`（收到请求时的 Unix 毫秒时间）。IPv6 地址使用方括号。DNS 路由解析期间为 resolving，等待目标套接字或代理流建立时为 pending，建立后为 active；直连的连接配置 ID 和名称为空，协议按目标传输类型为 tcp 或 udp。UDP 关联的 active 不代表目标在线。`originalProtocol` 在代理、直连及路由待确定期间均保留原始 TCP/UDP 类型，不随外层代理协议变化。域名访问统计不再保存逐连接协议，协议详情仅在实时隧道中展示。
 
 列表包括普通 HTTP 转发、CONNECT 隧道和直连 TCP 连接，不包括尚未收到请求的本地空闲套接字、共享 HTTP/2 或 QUIC 主连接、独立诊断会话。连接关闭后自动移除，不保存历史记录。读取不改变配置版本、路由或代理连接；返回信息不包含密码、请求正文或 TLS 隧道内的数据。
 
@@ -231,24 +233,45 @@ python3 scripts/web-smoke-test.py
 
 同一数据库只允许一个内核实例持有；重复启动会报错。数据库损坏、格式或结构版本不支持时拒绝启动，不自动重建、迁移或回退读取旧 JSON/PAC 文件，也不删除旧文件。数据库目录必须可写，以便创建事务日志与锁。锁文件和已截断的 `kernel.db-journal` 退出后保留，但操作系统锁会释放。备份或复制数据库前先停止内核。
 
-- `GET /api/v1/routing/export`：将响应的 **data 对象**保存为 UTF-8 JSON 文件；不保存外层 requestId 和 revision。
-- `POST /api/v1/routing/import`：把该 JSON 文件内容作为请求体，携带当前 `If-Match`。限制 1 MiB，与其他管理请求一致。
-- 导入为完整替换：模式、默认连接、直连规则、精确目标规则同时更新。空 directRules 和空 targetRoutes 会清空对应规则。
-- 默认连接 ID 必须已经存在；没有连接时只能使用空字符串。导入不会创建或修改连接配置，不包含密码和证书。
-- 必须提供下面全部字段，拒绝未知字段、未知版本、非法模式/规则及规范化后重复的目标。校验失败不改变配置、版本或运行状态。
-- 直连规则保留注释、空行和换行；精确目标统一规范化。JSON 是路由交换格式，不是旧配置文件兼容入口。
+### 路由规则文件
+
+`GET /routing/export` 返回的 `data` 可直接保存为 UTF-8 JSON，文件只包含直连规则、备注和指定目标规则，不包含运行模式、默认连接或凭据。当前交换格式如下，不兼容旧版本路由文件：
 
 ```json
 {
-  "version": 1,
-  "mode": "rules",
-  "defaultConnectionId": "home-h2",
+  "version": 2,
+  "kind": "network-routes",
   "directRules": "# 内网直连\n10.0.0.0/8\nexample.com\n",
   "targetRoutes": {"www.example.com": "proxy", "127.0.0.1": "direct"}
 }
 ```
 
-新增能力标记为 `sqlite`、`routingImportExport`。新增错误码：`INVALID_ROUTING_DOCUMENT`（400）、`DATABASE_WRITE_FAILED`（503）、`CONFIGURATION_ROLLBACK_FAILED`（503，代理已停止）、`STORAGE_UNAVAILABLE`（503，需要重启检查数据库）。客户端需要同步使用 `--db`，移除保存按钮及 dirty/savedRevision 依赖，并增加 JSON 文件导入导出操作；本仓库不包含 Flutter UI 源码。
+`POST /routing/preview` 和 `POST /routing/import` 请求体为 `{"document": <文件对象>, "strategy": "merge"}`，均携带当前 `If-Match`。`strategy` 只允许 `merge`、`replace`。预览返回候选文件，配置和版本不变；实际导入重新校验版本并原子保存，校验失败或版本冲突不写入。
+
+- 合并：保留现有直连规则和备注，重复域名/IP/CIDR去重；同一指定目标的走向以导入文件为准。
+- 整体替换：完整替换直连规则和指定目标规则，空值可以清空对应规则。
+- 两种方式均保留当前运行模式、默认连接及其他配置。规则更新沿用既有热更新行为。
+- UI 导入前要求处理已有草稿，显示候选规则后再确认。原有直连文本导入仍单独进入草稿。
+
+### 连接配置文件
+
+`POST /profiles/export` 请求体为 `{"ids":["节点ID"],"includePassword":false}`，必须明确指定至少一个已保存连接。只有 `includePassword=true` 时输出密码；普通配置查询和 SSE 均不返回密码。
+
+```json
+{
+  "version": 1,
+  "kind": "network-connections",
+  "connections": [
+    {"name": "示例连接", "config": {"protocol": "http2", "server.host": "proxy.example", "server.port": "443", "username": "demo"}}
+  ]
+}
+```
+
+文件不包含连接 ID、默认连接、本机 Java/JAR 路径、数据库设置或运行状态。`config` 使用现有连接参数；证书路径作为连接参数保留，但证书内容不打包，导入后需核对本机文件。UI 支持选择单个、多个或全部连接导出，密码选项默认关闭，勾选时提示明文风险。macOS 文件导出使用私有临时文件原子替换，并保留仅当前用户读写的权限。
+
+连接导入校验文件后进入编辑草稿，复用现有 `PUT /config` 应用并保存，不增加第二套写入接口。同名连接可明确选择覆盖某个现有连接，或者作为新连接并自动区分名称；新连接使用新 ID。无密码的新连接需要补填；无密码的覆盖保留被覆盖连接自己的密码。默认连接保持不变，空配置首次导入以第一项作为默认连接。最终应用仍检查地址、参数、证书和重复服务端配置。
+
+两种文件均限制 1 MiB，拒绝未知字段及未知版本。旧文件不自动迁移或回退读取。
 
 ## 流量统计
 
@@ -271,15 +294,17 @@ python3 scripts/web-smoke-test.py
 
 旧历史由用户手动处理，不读取、迁移或删除旧格式记录。现有 `traffic_minutes` 表结构不匹配时明确拒绝启动；不要将本次结构调整视作旧数据迁移。
 
-## 访问记录
+## 域名访问统计
 
-`GET /access-records` 保持游标分页，支持 `target`（域名/IP/端口的不区分大小写字面子串）和 `state`（pending/connected/failed/cancelled；空值表示全部），在数据库筛选后分页。支持 `from`（含）、`to`（不含）、`beforeId` 和 `limit`（1～500，默认100）；响应含 `items`、`hasMore`、`nextBeforeId`，按自增ID倒序返回。
+`GET /access-records` 读取已经保存的域名累计统计，不触发提前落库。查询参数：`target`（域名/IP字面子串）、`failedOnly=true|false`（默认 false）、`order=host|count|recent|failure`（域名、连接次数、最后访问、最后失败，默认 recent）、`ascending=true|false`（默认 false）、`limit`（1～500，默认100）、`beforeValue`、`afterHost`。首次请求省略游标，后续请求带回 `nextValue` 和 `nextHost`；按选定列和方向对全部已保存数据排序；数值相同的行固定按域名升序分页。域名排序只使用 `nextHost`，`nextValue` 返回0；无失败记录按数值0参与排序，界面显示“—”。计数持续变化时刷新可读取最新排序；UI 对重复域名去重，切换筛选或排序从首页开始。
 
-每条记录含 `id`、`requestId`、`sessionId`、`createdAt`、`completedAt`、`target`、`source`、`method`、`route`、`protocol`、`profileId`、`profileName`、`state`。请求先保存为 `pending`，连接结果更新同一条记录。`connected` 只表示连接建立，不代表网页返回成功。UDP接入以 `CONNECT-UDP` 展示，实际方法为 `CONNECT`，不保证远端可达。
+响应包含 `items`、`hasMore`、`nextValue`、`nextHost`。每条统计仅包含 `host`、`connectionCount`、`lastAccessAt`、`lastFailureAt`；时间为 Unix 毫秒，没有失败时为0。完整域名分开，大小写、尾点和等价IP写法归一化；不同端口、TCP/UDP、代理/直连和连接节点合并。没有DNS域名关联时按IP保存；有效关联沿用最新域名，过去的统计不追溯改名。
 
-只记录目标地址，不记录 URL路径、查询参数、请求头、密码或正文。访问记录不受本次流量保留策略影响。
+连接发起时计数一次，成功、失败、主动取消均不追加次数；内部连接重试不重复计数。最后访问时间是最近发起时间，最后失败时间只更新建立失败，之后成功不清空。TCP长连接内多个请求不逐个计数，UDP按现有会话统计。统计不表示网页请求次数或HTTP业务成功，不记录端口、来源、URL路径、协议、凭据或正文。
 
-转发线程仅入队，控制线程每250毫秒最多批量提交2048条已产生事件；这不是分钟流量的采样落库周期。队列容量65536，超限计入丢弃数量。`status.historyStorage` 提供 `pendingRecords`、`droppedRecords`、`error`，保存或汇总失败有中文错误日志。
+转发线程在内存按域名合并变化，控制线程每个自然分钟批量提交，正常停止代理和退出内核时补写。无变化时不写入；失败批次保留并在一分钟后重试，后续增量与待重试批次分离。批次标记与累计统计在同一事务提交，重试不重复计数。异常退出或长期存储故障可能丢失内存中未保存的增量。
+
+`access_domains` 长期保存累计统计，不参与流量数据过期清理。`access_flush` 只保留最后一个提交批次标记，不随连接数增长。旧 `access_records` 明细表不再创建、读取或写入，已有内容不迁移、不删除，由使用者手动处理。`status.historyStorage` 继续报告待保存数量、丢弃数量及错误。
 
 ## macOS TUN 生命周期
 

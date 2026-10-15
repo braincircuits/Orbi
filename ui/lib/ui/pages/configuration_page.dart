@@ -8,6 +8,7 @@ import '../../models/proxy_profile.dart';
 import '../../view_models/proxy_view_model.dart';
 import '../desktop_theme.dart';
 import '../widgets/desktop_widgets.dart';
+import '../widgets/configuration_transfer.dart';
 import '../widgets/desktop_select.dart';
 
 class ConfigurationPage extends StatefulWidget {
@@ -186,6 +187,8 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
           ),
         ],
       ),
+      const SizedBox(height: 12),
+      ConfigurationTransfer(model: model, routes: false),
       const SizedBox(height: 18),
       LayoutBuilder(
         builder: (context, constraints) {

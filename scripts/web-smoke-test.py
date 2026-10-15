@@ -126,7 +126,7 @@ def main():
             request(tunnel=True)
             exported = api("GET", "/routing/export")
             api("PUT", "/routing/direct-rules", {"rules": ""})
-            api("POST", "/routing/import", exported)
+            api("POST", "/routing/import", {"document": exported, "strategy": "replace"})
             assert api("GET", "/routing/export") == exported
             with sqlite3.connect(database_file) as database:
                 assert database.execute("SELECT direct_rules FROM routing").fetchone()[0] == "127.0.0.0/8"

@@ -31,10 +31,13 @@ final class ControlApi {
                 case "GET /api/v1/traffic/history" -> data = control.trafficSeries(true);
                 case "GET /api/v1/access-records" -> {
                     var query = query(uri);
-                    data = control.history(Long.parseLong(query.getOrDefault("from", "0")),
-                            Long.parseLong(query.getOrDefault("to", Long.toString(Long.MAX_VALUE))),
-                            Long.parseLong(query.getOrDefault("beforeId", Long.toString(Long.MAX_VALUE))),
-                            Integer.parseInt(query.getOrDefault("limit", "100")), query.getOrDefault("target", ""), query.getOrDefault("state", ""));
+                    String failed = query.getOrDefault("failedOnly", "false");
+                    String ascending = query.getOrDefault("ascending", "false");
+                    if (!Set.of("true", "false").contains(ascending)) throw new IllegalArgumentException("排序方向无效");
+                    if (!Set.of("true", "false").contains(failed)) throw new IllegalArgumentException("筛选值无效");
+                    data = control.history(Integer.parseInt(query.getOrDefault("limit", "100")), query.getOrDefault("target", ""),
+                            Boolean.parseBoolean(failed), query.getOrDefault("order", "recent"), Boolean.parseBoolean(ascending),
+                            Long.parseLong(query.getOrDefault("beforeValue", Long.toString(Long.MAX_VALUE))), query.getOrDefault("afterHost", ""));
                 }
                 case "GET /api/v1/tunnels" -> data = control.tunnels();
                 case "POST /api/v1/proxy/start" -> { control.start(); data = control.status(); }
@@ -55,7 +58,9 @@ final class ControlApi {
                 case "POST /api/v1/overview/exit-ip" -> { data = control.networkTest("exit-ip"); status = 202; }
                 case "POST /api/v1/overview/latency" -> { data = control.networkTest("latency"); status = 202; }
                 case "GET /api/v1/routing/export" -> data = control.exportRouting();
-                case "POST /api/v1/routing/import" -> { control.importRouting(body, revision(ifMatch)); data = control.routing(); }
+                case "POST /api/v1/routing/preview" -> data = control.previewRouting(body.getAsJsonObject("document"), string(body, "strategy"), revision(ifMatch));
+                case "POST /api/v1/routing/import" -> { control.importRouting(body.getAsJsonObject("document"), string(body, "strategy"), revision(ifMatch)); data = control.routing(); }
+                case "POST /api/v1/profiles/export" -> data = control.exportProfiles(body);
                 case "GET /api/v1/routing" -> data = control.routing();
                 case "PUT /api/v1/routing/default" -> { control.select(string(body, "profileId"), revision(ifMatch)); data = control.routing(); }
                 case "PUT /api/v1/routing/direct-rules" -> { control.updateRules(string(body, "rules"), revision(ifMatch)); data = control.routing(); }

@@ -148,7 +148,7 @@ fc00::/7
 
 空行和 `#` 注释会被忽略，也可写行尾注释。不支持 `*.example.com`、URL、端口、`192.168.*.*` 或起止 IP 范围。域名不区分大小写。所有条目均为直连规则，没有反向规则。规则为空时使用默认代理，不会自动添加内网规则。
 
-规则修改即时生效并保存，无需重启服务端。非法 CIDR 会提示行号并拒绝修改。可通过 `/api/v1/routing/export` 导出路由，保存响应 data 为 JSON；`/api/v1/routing/import` 接收文档并完整替换路由。导入要求当前 If-Match，默认连接 ID 必须存在，详情见 Web API 文档。
+规则修改即时生效并保存，无需重启服务端。非法 CIDR 会提示行号并拒绝修改。可通过 `/api/v1/routing/export` 导出路由，保存响应 data 为 JSON；`/api/v1/routing/preview` 和 `/api/v1/routing/import` 接收 document 与 strategy（merge/replace），携带当前 If-Match；只导入规则，模式和默认连接保持不变，详情见 Web API 文档。
 
 域名先匹配域名规则；未命中且存在 IP/CIDR 规则时，客户端异步解析 DNS，选取第一个命中的 IP 直连。没有命中或本地 DNS 失败时转交服务端解析原域名。添加网段规则会增加客户端 DNS 查询；命中规则但直连失败时不会自动回退代理。直连的回环地址指客户端自身，代理的回环地址指服务端自身。
 

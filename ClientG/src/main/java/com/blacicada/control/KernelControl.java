@@ -60,7 +60,7 @@ public final class KernelControl implements AutoCloseable {
     }
     public synchronized Map<String, Object> info() {
         return Map.of("name", "network", "version", "1.0-SNAPSHOT", "apiVersion", 1, "storageBackend", database.backend(),
-                "capabilities", List.of("http2", "http3", "multiConnection", "immediateSwitch", "hotSettings", "hotRoutes", "hotProfiles", "events", "logs", "asyncTests", "tunnels", "targetRoutes", "routingMode", "overviewTests", "sqlite", "postgresql", "mysql", "routingImportExport", "traffic", "persistentHistory", "macosTun"));
+                "capabilities", List.of("http2", "http3", "multiConnection", "immediateSwitch", "hotSettings", "hotRoutes", "hotProfiles", "events", "logs", "asyncTests", "tunnels", "targetRoutes", "routingMode", "overviewTests", "sqlite", "postgresql", "mysql", "routingImportExport", "profileExport", "traffic", "persistentHistory", "macosTun"));
     }
     public synchronized Map<String, Object> metadata() {
         return Map.of("revision", revision,
@@ -91,17 +91,14 @@ public final class KernelControl implements AutoCloseable {
     public synchronized Map<String, Object> traffic() { return runtime.traffic(); }
     /** 时间范围由内核所在时区确定，客户端不自行计算日历边界。 */
     public synchronized Map<String, Object> trafficSeries(boolean hourly) throws SQLException {
-        ensureOpen(); history.finish();
+        ensureOpen(); history.tick();
         return database.trafficSeries(System.currentTimeMillis(), java.time.ZoneId.systemDefault(), hourly);
     }
-    public synchronized Map<String, Object> history(long from, long to, long before, int limit, String filter, String state) throws SQLException {
+    public synchronized Map<String, Object> history(int limit, String filter, boolean failedOnly, String order, boolean ascending, long before, String afterHost) throws SQLException {
         ensureOpen();
-        if (from < 0 || to <= from || before <= 0 || limit < 1 || limit > 500 || filter.length() > 255)
-            throw new ControlException(400, "INVALID_QUERY", "历史查询范围、游标或数量无效");
-        if (!Set.of("", "pending", "connected", "failed", "cancelled").contains(state))
-            throw new ControlException(400, "INVALID_QUERY", "访问记录状态筛选无效");
-        history.flush();
-        return database.accessHistory(from, to, before, limit, filter, state);
+        if (before < 0 || limit < 1 || limit > 500 || filter.length() > 255 || afterHost.length() > 255 || !Set.of("recent", "count", "host", "failure").contains(order))
+            throw new ControlException(400, "INVALID_QUERY", "访问统计查询范围或排序无效");
+        return database.accessHistory(limit, filter, failedOnly, order, ascending, before, afterHost);
     }
     /** 订阅快照与状态事件均携带最新速率；区间流量通过独立接口读取。 */
     public synchronized Map<String, Object> snapshot() {
@@ -238,15 +235,35 @@ public final class KernelControl implements AutoCloseable {
         checkRevision(expected); validateRules(rules);
         JsonObject patch = new JsonObject(); patch.addProperty("routesInline", rules); patchSettings(patch, expected);
     }
-    /** 导出可直接作为导入请求体的路由文档，不包含连接凭据。 */
-    public synchronized JsonObject exportRouting() throws IOException {
-        JsonObject result = JSON.toJsonTree(routing()).getAsJsonObject();
-        result.addProperty("version", 1);
-        return result;
+    /** 路由文件只包含规则，不携带运行模式、默认连接或凭据。 */
+    private static JsonObject routingDocument(KernelConfig config) throws IOException {
+        JsonObject result = new JsonObject(); result.addProperty("version", 2); result.addProperty("kind", "network-routes");
+        result.addProperty("directRules", config.local().get("routesInline", ""));
+        result.add("targetRoutes", JSON.toJsonTree(DirectRoutes.load(config.local()).overrides())); return result;
     }
-    public synchronized void importRouting(JsonObject document, long expected) throws Exception {
-        checkRevision(expected);
-        apply(editor.importRouting(config, document));
+    public synchronized JsonObject exportRouting() throws IOException { ensureOpen(); return routingDocument(config); }
+    public synchronized JsonObject previewRouting(JsonObject document, String strategy, long expected) throws IOException {
+        checkRevision(expected); return routingDocument(editor.importRouting(config, document, strategy));
+    }
+    public synchronized void importRouting(JsonObject document, String strategy, long expected) throws Exception {
+        checkRevision(expected); apply(editor.importRouting(config, document, strategy));
+    }
+    /** 密码只通过显式导出操作返回，不进入普通配置快照或事件。 */
+    public synchronized JsonObject exportProfiles(JsonObject request) {
+        ensureOpen();
+        if (!request.keySet().equals(Set.of("ids", "includePassword")) || !request.get("ids").isJsonArray()
+                || !request.get("includePassword").isJsonPrimitive() || !request.getAsJsonPrimitive("includePassword").isBoolean())
+            throw new ControlException(400, "INVALID_EXPORT", "请选择连接及密码导出选项");
+        var ids = new LinkedHashSet<String>();
+        for (var id : request.getAsJsonArray("ids")) { find(id.getAsString()); ids.add(id.getAsString()); }
+        if (ids.isEmpty()) throw new ControlException(400, "INVALID_EXPORT", "请至少选择一个连接");
+        var profiles = new JsonArray();
+        for (var value : config.json(request.get("includePassword").getAsBoolean()).getAsJsonArray("connections")) {
+            var profile = value.getAsJsonObject();
+            if (ids.contains(profile.get("id").getAsString())) { profile.remove("id"); profiles.add(profile); }
+        }
+        var result = new JsonObject(); result.addProperty("version", 1); result.addProperty("kind", "network-connections");
+        result.add("connections", profiles); return result;
     }
     public synchronized Map<String, Object> resolve(String target) throws Exception {
         Authority address = Authority.parse(target, -1);
@@ -260,7 +277,7 @@ public final class KernelControl implements AutoCloseable {
         if (tunState.equals("stopping")) throw new ControlException(409, "TUN_STOPPING", "请等待虚拟网卡清理完成");
         if (!runtime.isRunning()) { invalidateNetwork(); runtime.start(config); } publishStatus();
     }
-    public synchronized void stop() { stopTun(); invalidateNetwork(); runtime.stop(); publishStatus(); }
+    public synchronized void stop() { stopTun(); invalidateNetwork(); runtime.stop(); history.finish(); publishStatus(); }
     public synchronized void restart() throws Exception {
         if (!tunSession.isEmpty()) throw new ControlException(409, "TUN_ACTIVE", "请先关闭虚拟网卡，再重启代理");
         stop(); start();

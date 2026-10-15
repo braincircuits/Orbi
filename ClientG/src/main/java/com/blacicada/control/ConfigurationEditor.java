@@ -56,30 +56,35 @@ final class ConfigurationEditor {
         merge(root.getAsJsonObject("local"), patch);
         return parse(root, current);
     }
-    KernelConfig importRouting(KernelConfig current, JsonObject document) {
+    KernelConfig importRouting(KernelConfig current, JsonObject document, String strategy) {
         try {
-            if (!document.keySet().equals(Set.of("version", "mode", "defaultConnectionId", "directRules", "targetRoutes"))
-                    || !document.get("version").isJsonPrimitive() || !document.getAsJsonPrimitive("version").isNumber()
-                    || !document.get("version").getAsBigDecimal().equals(java.math.BigDecimal.ONE))
+            if (!Set.of("merge", "replace").contains(strategy)
+                    || !document.keySet().equals(Set.of("version", "kind", "directRules", "targetRoutes"))
+                    || !document.get("version").isJsonPrimitive()
+                    || !document.getAsJsonPrimitive("version").isNumber()
+                    || !document.get("targetRoutes").isJsonObject()
+                    || document.get("version").getAsBigDecimal().compareTo(java.math.BigDecimal.valueOf(2)) != 0
+                    || !string(document.get("kind")).equals("network-routes"))
                 throw new IllegalArgumentException("路由文档字段或版本无效");
-            String mode = string(document.get("mode")), defaultId = string(document.get("defaultConnectionId"));
             String direct = string(document.get("directRules"));
-            JsonObject targets = document.getAsJsonObject("targetRoutes");
             Map<String, String> normalized = new TreeMap<>();
-            for (var entry : targets.entrySet()) {
+            for (var entry : document.getAsJsonObject("targetRoutes").entrySet()) {
                 String host = DirectRoutes.normalizeHost(entry.getKey()), route = string(entry.getValue());
                 if (!Set.of("direct", "proxy").contains(route) || normalized.putIfAbsent(host, route) != null)
                     throw new IllegalArgumentException("精确目标规则无效或重复");
             }
-            if (!defaultId.isEmpty()) find(current, defaultId);
+            if (strategy.equals("merge")) {
+                direct = DirectRoutes.mergeText(current.local().get("routesInline", ""), direct);
+                var merged = new TreeMap<>(DirectRoutes.load(current.local()).overrides());
+                merged.putAll(normalized); normalized = merged;
+            }
             JsonObject root = current.json(true), local = root.getAsJsonObject("local");
-            root.addProperty("defaultConnectionId", defaultId);
-            local.addProperty("routingMode", mode); local.addProperty("routesInline", direct);
+            local.addProperty("routesInline", direct);
             local.addProperty("routesOverrides", normalized.entrySet().stream()
                     .map(e -> e.getValue() + " " + e.getKey()).collect(java.util.stream.Collectors.joining("\n")));
             return parse(root, current);
-        } catch (ControlException | IllegalArgumentException | IllegalStateException | NullPointerException e) {
-            throw new ControlException(400, "INVALID_ROUTING_DOCUMENT", "路由文档无效：请检查版本、模式、规则及默认连接 ID；导入不会创建连接", "routing");
+        } catch (ControlException | IllegalArgumentException | IllegalStateException | NullPointerException | java.io.IOException e) {
+            throw new ControlException(400, "INVALID_ROUTING_DOCUMENT", "路由文档无效：请检查版本、导入方式及规则内容", "routing");
         }
     }
     private static String string(JsonElement value) {

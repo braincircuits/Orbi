@@ -112,6 +112,29 @@ class MainFlutterWindow: NSWindow {
           panel.beginSheetModal(for: self) { response in
             result(response == .OK ? panel.url?.path : nil)
           }
+        case "exportDocument":
+          guard let value = call.arguments as? [String: String],
+                let name = value["name"], let text = value["text"] else {
+            result(FlutterError(code: "file", message: "导出内容无效", details: nil)); return
+          }
+          let panel = NSSavePanel()
+          panel.nameFieldStringValue = name
+          panel.beginSheetModal(for: self) { response in
+            guard response == .OK, let url = panel.url else { result(nil); return }
+            let temporary = url.deletingLastPathComponent().appendingPathComponent(".network-export-" + UUID().uuidString)
+            do {
+              guard FileManager.default.createFile(atPath: temporary.path, contents: text.data(using: .utf8), attributes: [.posixPermissions: 0o600]) else {
+                throw NSError(domain: "NetworkUI", code: 1)
+              }
+              if FileManager.default.fileExists(atPath: url.path) {
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary, options: .usingNewMetadataOnly)
+              } else { try FileManager.default.moveItem(at: temporary, to: url) }
+              result(url.path)
+            } catch {
+              try? FileManager.default.removeItem(at: temporary)
+              result(FlutterError(code: "file", message: "导出配置失败", details: nil))
+            }
+          }
         case "exportLogs":
           let panel = NSSavePanel()
           panel.nameFieldStringValue = "network-日志.txt"

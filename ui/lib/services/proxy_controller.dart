@@ -122,15 +122,21 @@ class ProxyController extends ChangeNotifier {
 
   Future<AccessRecordPage> accessHistory({
     String target = '',
-    String state = '',
-    int? beforeId,
+    bool failedOnly = false,
+    String order = 'recent',
+    bool ascending = false,
+    int? beforeValue,
+    String afterHost = '',
   }) async {
     final query = Uri(
       queryParameters: {
         'target': target,
-        if (state.isNotEmpty) 'state': state,
+        'failedOnly': '$failedOnly',
+        'order': order,
+        'ascending': '$ascending',
         'limit': '100',
-        if (beforeId != null) 'beforeId': '$beforeId',
+        if (beforeValue != null) 'beforeValue': '$beforeValue',
+        'afterHost': afterHost,
       },
     ).query;
     final result = await _request('GET', 'access-records?$query');
@@ -855,6 +861,48 @@ class ProxyController extends ChangeNotifier {
           body: profile.runtimeConfiguration,
         );
       });
+
+  Future<Map<String, dynamic>> exportRouting() async =>
+      (await _request('GET', 'routing/export'))['data'] as Map<String, dynamic>;
+
+  Future<Map<String, dynamic>> previewRouting(
+    Map<String, dynamic> document,
+    String strategy,
+    int revision,
+  ) async =>
+      (await _request(
+            'POST',
+            'routing/preview',
+            body: {'document': document, 'strategy': strategy},
+            expectedRevision: revision,
+          ))['data']
+          as Map<String, dynamic>;
+
+  Future<int> importRouting(
+    Map<String, dynamic> document,
+    String strategy,
+    int revision,
+  ) => _operate(() async {
+    final result = await _request(
+      'POST',
+      'routing/import',
+      body: {'document': document, 'strategy': strategy},
+      expectedRevision: revision,
+    );
+    await refreshConfiguration();
+    return result['revision'] as int;
+  });
+
+  Future<Map<String, dynamic>> exportConnections(
+    List<String> ids,
+    bool includePassword,
+  ) async =>
+      (await _request(
+            'POST',
+            'profiles/export',
+            body: {'ids': ids, 'includePassword': includePassword},
+          ))['data']
+          as Map<String, dynamic>;
 
   Future<int> updateDirectRules(String rules, {int? expectedRevision}) =>
       _operate(() async {
