@@ -124,7 +124,7 @@ func run(control *controlClient, owner int, ticket string) (failure error) {
 	if err != nil {
 		return errors.Join(err, tun.Close())
 	}
-	// 先关闭虚拟网卡以唤醒读取，再等待协议栈退出，最后通知 Java 恢复出口。
+	// 先关闭虚拟网卡以唤醒读取，再关闭转发组件，最后通知 Java 恢复出口并退出工作进程。
 	defer func() { cancel(); failure = errors.Join(failure, tun.Close(), device.Close()) }()
 	// 数据转发已经就绪后再接管路由；任意失败都按相反顺序释放。
 	check := func() error {

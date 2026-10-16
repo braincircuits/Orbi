@@ -1068,9 +1068,14 @@ class ProxyViewModel extends ChangeNotifier {
     if (call.method == 'tunExited' && active) {
       final result = Map<String, dynamic>.from(call.arguments as Map);
       if (result['ticket'] != _tunTicket) return;
-      final error = result['error'] as String;
+      var error = result['error'] as String;
       try {
-        if (proxy.tunState == 'authorizing') await proxy.stopTun();
+        await proxy.cancelTunAuthorization();
+      } catch (cleanupError) {
+        final detail = proxy.redact(
+          cleanupError.toString().replaceFirst('Bad state: ', ''),
+        );
+        error = '${error.isEmpty ? '' : '$error；'}撤销虚拟网卡启动失败：$detail';
       } finally {
         final exit = _tunExit;
         _tunExit = null;

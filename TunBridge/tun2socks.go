@@ -53,10 +53,12 @@ func startTun2socks(parent context.Context, dialer localDialer, tun io.ReadWrite
 
 func (s *tun2socksSession) Close() error {
 	s.cancel()
-	s.stack.Close()
 	s.link.Close()
-	s.stack.Wait()
+	// 调用方已关闭 TUN；先排空输入循环，再关闭协议栈，避免输入报文与协议栈清理并发。
 	s.link.Wait()
+	s.stack.Close()
+	// 每个 TUN 会话独占辅助进程，finish 后即退出；由进程退出回收 SDK 内部的异步握手。
+	// stack.Close 期间仍可能注册新的 TCP 端点，继续 Wait 会阻塞内核通知和进程退出。
 	return nil
 }
 
@@ -172,15 +174,21 @@ func (h *tun2socksHandler) HandleUDP(conn adapter.UDPConn) {
 				}
 			}
 		}()
-		data := make([]byte, maxPacket)
+		// UDP Read 会静默截断；多读一个字节才能区分合法上限与超限报文。
+		data := make([]byte, maxPacket+1)
+		frames := datagramWriter{writer: remote}
 		for {
 			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 			n, err := conn.Read(data)
 			if err != nil {
 				break
 			}
+			if n > maxPacket {
+				// 丢弃整条超限报文，保留同一会话供后续合法报文使用。
+				continue
+			}
 			remote.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err = writeDatagram(remote, data[:n]); err != nil {
+			if err = frames.write(data[:n]); err != nil {
 				break
 			}
 		}

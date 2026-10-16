@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -67,11 +66,12 @@ func (a *udpAssociation) SendPacket(data []byte, target netip.AddrPort) error {
 		go a.send(peer, target)
 	}
 	// 此方法由 lwIP 输入回调调用，不能等待 CONNECT 或套接字写入。
-	// 每个目标独立排队，队列满时丢包；必须复制协议栈会复用的输入缓冲区。
-	select {
-	case peer.outgoing <- append([]byte{}, data...):
-	default:
+	// 所有入队都持有此锁，接收方只会腾出空间；先检查容量，避免为丢弃的报文分配和复制。
+	if len(peer.outgoing) == cap(peer.outgoing) {
+		return nil
 	}
+	// 必须复制协议栈会复用的输入缓冲区，不能让排队报文借用它。
+	peer.outgoing <- append([]byte{}, data...)
 	return nil
 }
 
@@ -96,13 +96,14 @@ func (a *udpAssociation) send(peer *udpPeer, target netip.AddrPort) {
 	stop := context.AfterFunc(peer.context, func() { conn.Close() })
 	defer stop()
 	go a.receive(peer, target)
+	frames := datagramWriter{writer: conn}
 	for {
 		select {
 		case <-peer.context.Done():
 			return
 		case data := <-peer.outgoing:
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err := writeDatagram(conn, data); err != nil {
+			if err := frames.write(data); err != nil {
 				if peer.context.Err() == nil {
 					log.Printf("UDP 报文发送失败：目标=%s，原因=%v", target, err)
 				}
@@ -127,15 +128,27 @@ func (a *udpAssociation) receive(peer *udpPeer, target netip.AddrPort) {
 	}
 }
 
-// 两个转发组件共用 Java 内核的长度前缀封装，不改变 UDP 报文边界。
-func writeDatagram(writer io.Writer, data []byte) error {
+// 两个组件共用长度前缀封装；每条连接由发送协程独占缓冲，按需扩容并在后续报文中复用。
+type datagramWriter struct {
+	writer io.Writer
+	buffer []byte
+}
+
+func (w *datagramWriter) write(data []byte) error {
 	if len(data) > maxPacket {
 		return fmt.Errorf("UDP 报文过长")
 	}
-	frame := make([]byte, len(data)+2)
+	size := len(data) + 2
+	if cap(w.buffer) < size {
+		w.buffer = make([]byte, size)
+	}
+	frame := w.buffer[:size]
 	binary.BigEndian.PutUint16(frame, uint16(len(data)))
 	copy(frame[2:], data)
-	_, err := io.Copy(writer, bytes.NewReader(frame))
+	n, err := w.writer.Write(frame)
+	if err == nil && n != len(frame) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 

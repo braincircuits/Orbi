@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -163,6 +164,103 @@ void main() {
       expect(api.calls.where((call) => call == 'POST tun/stop'), hasLength(3));
     } finally {
       model.dispose();
+      await directory.delete(recursive: true);
+    }
+  });
+
+  for (final failRouting in [false, true]) {
+    test('路由操作结束后清理 TUN 授权，路由失败=$failRouting', () async {
+      final (directory, api, proxy) = await fixture();
+      final native = TunDesktop(directory);
+      final model = ProxyViewModel(proxy: proxy, native: native)
+        ..loading = false;
+      final messages = <UiMessage>[];
+      final subscription = model.messages.stream.listen(messages.add);
+      try {
+        await model.setTun(true);
+        api.routingGate = Completer<void>();
+        api.failWrite = failRouting;
+        final changing = model.setRoutingMode('direct');
+        expect(proxy.busy, isTrue);
+        var exited = false;
+        final exit = model
+            .handleNativeCall(
+              const MethodCall('tunExited', {
+                'ticket': '启动标识-1',
+                'error': '已取消管理员授权',
+              }),
+            )
+            .then((_) => exited = true);
+        await Future<void>.delayed(Duration.zero);
+        expect(exited, isFalse);
+        expect(api.calls, isNot(contains('POST tun/stop')));
+        api.routingGate!.complete();
+        await Future.wait([changing, exit]).timeout(const Duration(seconds: 2));
+        await Future<void>.delayed(Duration.zero);
+        expect(api.tunState, 'off');
+        expect(
+          messages.any((message) => message.text.contains('已取消管理员授权')),
+          isTrue,
+        );
+        expect(
+          api.calls.where((call) => call == 'POST tun/stop'),
+          hasLength(1),
+        );
+        await model.setTun(true);
+        expect(native.tickets, hasLength(2));
+      } finally {
+        await subscription.cancel();
+        model.dispose();
+        await directory.delete(recursive: true);
+      }
+    });
+  }
+
+  test('TUN 退出清理失败时同时显示授权错误和清理错误', () async {
+    final (directory, api, proxy) = await fixture();
+    final model = ProxyViewModel(proxy: proxy, native: TunDesktop(directory))
+      ..loading = false;
+    final messages = <UiMessage>[];
+    final subscription = model.messages.stream.listen(messages.add);
+    try {
+      await model.setTun(true);
+      api.failTunStop = true;
+      await model.handleNativeCall(
+        const MethodCall('tunExited', {
+          'ticket': '启动标识-1',
+          'error': '已取消管理员授权',
+        }),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(messages.last.text, contains('已取消管理员授权'));
+      expect(messages.last.text, contains('测试 TUN 清理失败'));
+      api.failTunStop = false;
+      await model.setTun(false);
+      expect(api.tunState, 'off');
+    } finally {
+      await subscription.cancel();
+      model.dispose();
+      await directory.delete(recursive: true);
+    }
+  });
+
+  test('界面释放会结束排队的 TUN 清理，不再请求内核', () async {
+    final (directory, api, proxy) = await fixture();
+    final model = ProxyViewModel(proxy: proxy, native: TunDesktop(directory))
+      ..loading = false;
+    await model.setTun(true);
+    api.routingGate = Completer<void>();
+    final changing = model.setRoutingMode('direct');
+    final exit = model.handleNativeCall(
+      const MethodCall('tunExited', {'ticket': '启动标识-1', 'error': '已取消管理员授权'}),
+    );
+    model.dispose();
+    try {
+      await exit.timeout(const Duration(seconds: 2));
+      expect(api.calls, isNot(contains('POST tun/stop')));
+    } finally {
+      api.routingGate!.complete();
+      await changing;
       await directory.delete(recursive: true);
     }
   });

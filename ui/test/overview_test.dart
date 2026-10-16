@@ -37,6 +37,8 @@ class OverviewApi extends KernelApiClient {
   int tunRequests = 0;
   String provider = '测试网络';
   bool running = true, failWrite = false;
+  bool failTunStop = false;
+  Completer<void>? routingGate;
   Completer<Map<String, dynamic>>? delayed;
   final calls = <String>[];
   Map<String, Object> get configuration => ProxyProfile(
@@ -82,6 +84,7 @@ class OverviewApi extends KernelApiClient {
       requestedTunEngines.add(tunEngine);
       data = {'ticket': '启动标识-${++tunRequests}'};
     } else if (path == 'tun/stop') {
+      if (failTunStop) throw StateError('测试 TUN 清理失败');
       tunState = delayTunStop ? 'stopping' : 'off';
       return request(base, token, 'GET', 'status');
     } else if (path == 'traffic') {
@@ -104,6 +107,7 @@ class OverviewApi extends KernelApiClient {
         'address': '127.0.0.1:8080',
       };
     } else if (path == 'routing/mode') {
+      await routingGate?.future;
       expect(expectedRevision, revision);
       if (failWrite) throw StateError('测试数据库写入失败');
       mode = (body as Map)['mode'] as String;

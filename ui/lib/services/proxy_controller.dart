@@ -75,6 +75,7 @@ class ProxyController extends ChangeNotifier {
   int _epoch = 0;
   bool _disposed = false, _subscribed = false;
   Future<void>? _connecting;
+  Completer<void>? _operationDone;
   Timer? _retry;
   int _retrySeconds = 1;
   bool busy = false, running = false, connected = false, streaming = false;
@@ -774,6 +775,15 @@ class ProxyController extends ChangeNotifier {
       (await _request('POST', 'tun/stop'))['data'] as Map<String, dynamic>,
     );
   });
+
+  /// 原生退出通知必须等当前操作完成后再撤销授权，不受普通按钮的忙碌拒绝策略影响。
+  Future<void> cancelTunAuthorization() async {
+    while (busy && !_disposed) {
+      await _operationDone!.future;
+    }
+    if (!_disposed && tunState == 'authorizing') await stopTun();
+  }
+
   Future<void> waitTunStopped() => _operate(() async {
     final deadline = DateTime.now().add(const Duration(seconds: 30));
     while (true) {
@@ -974,6 +984,8 @@ class ProxyController extends ChangeNotifier {
   });
   Future<T> _operate<T>(Future<T> Function() action) async {
     if (busy) throw StateError('正在处理上一项操作');
+    final done = Completer<void>();
+    _operationDone = done;
     busy = true;
     error = '';
     _notify();
@@ -985,6 +997,8 @@ class ProxyController extends ChangeNotifier {
       rethrow;
     } finally {
       busy = false;
+      _operationDone = null;
+      if (!done.isCompleted) done.complete();
       _notify();
     }
   }
@@ -1022,6 +1036,8 @@ class ProxyController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    final done = _operationDone;
+    if (done != null && !done.isCompleted) done.complete();
     unsubscribe();
     _api.dispose();
     logChanges.dispose();
