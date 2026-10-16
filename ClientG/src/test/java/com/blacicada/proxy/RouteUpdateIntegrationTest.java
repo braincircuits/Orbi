@@ -125,6 +125,74 @@ class RouteUpdateIntegrationTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"http2", "http3"})
+    void earlyTunnelPayloadAndHalfCloseSurviveProtocolHandoff(String protocol) throws Exception {
+        try (var fixture = new Fixture(protocol, 8)) {
+            for (boolean direct : List.of(false, true)) {
+                if (direct) fixture.rules("127.0.0.1\n");
+                try (Socket browser = new Socket()) {
+                    browser.connect(fixture.proxy.address());
+                    browser.setSoTimeout(5000);
+                    byte[] payload = new byte[48 * 1024];
+                    new Random(37).nextBytes(payload);
+                    var request = new ByteArrayOutputStream();
+                    request.write(("CONNECT 127.0.0.1:" + fixture.origin.getLocalPort()
+                            + " HTTP/1.1\r\nHost: localhost\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                    request.write(payload);
+                    // 请求头与隧道数据一起发送，并在收到成功响应前结束上传。
+                    browser.getOutputStream().write(request.toByteArray());
+                    browser.shutdownOutput();
+                    assertTrue(headers(browser).startsWith("HTTP/1.1 200"));
+                    assertArrayEquals(payload, browser.getInputStream().readAllBytes(),
+                            "协议交接不能丢失、重复转发数据，也不能遗漏输入半关闭");
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"http2", "http3"})
+    void continueHandshakeConsumesProxyHeadersBeforeForwardingHttpBody(String protocol) throws Exception {
+        try (var fixture = new Fixture(protocol, 8);
+             var origin = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))) {
+            origin.setSoTimeout(5000);
+            for (boolean direct : List.of(false, true)) {
+                if (direct) fixture.rules("127.0.0.1\n");
+                var received = fixture.workers.submit(() -> {
+                    try (Socket remote = origin.accept()) {
+                        remote.setSoTimeout(5000);
+                        String forwarded = headers(remote).toLowerCase(Locale.ROOT);
+                        assertTrue(forwarded.startsWith("post /upload?part=1 http/1.1\r\n"), forwarded);
+                        assertTrue(forwarded.contains("\r\nhost: 127.0.0.1:" + origin.getLocalPort() + "\r\n"), forwarded);
+                        assertTrue(forwarded.contains("\r\nconnection: close\r\n"), forwarded);
+                        assertFalse(forwarded.contains("proxy-authorization:"), forwarded);
+                        assertFalse(forwarded.contains("proxy-connection:"), forwarded);
+                        assertFalse(forwarded.contains("expect:"), forwarded);
+                        assertArrayEquals(new byte[]{1, 2, 3}, remote.getInputStream().readNBytes(3));
+                        remote.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                                .getBytes(StandardCharsets.US_ASCII));
+                    }
+                    return null;
+                });
+                try (Socket browser = new Socket()) {
+                    browser.connect(fixture.proxy.address());
+                    browser.setSoTimeout(5000);
+                    browser.getOutputStream().write(("POST http://127.0.0.1:" + origin.getLocalPort()
+                            + "/upload?part=1 HTTP/1.1\r\nHost: ignored.example\r\nContent-Length: 3\r\n"
+                            + "Proxy-Authorization: private\r\nProxy-Connection: keep-alive\r\nExpect: 100-continue\r\n\r\n")
+                            .getBytes(StandardCharsets.US_ASCII));
+                    // 客户端等待本地 100 Continue 后才发送正文，目标端不参与该握手。
+                    assertTrue(headers(browser).startsWith("HTTP/1.1 100"));
+                    browser.getOutputStream().write(new byte[]{1, 2, 3});
+                    assertTrue(headers(browser).startsWith("HTTP/1.1 200"));
+                    assertEquals("ok", new String(browser.getInputStream().readAllBytes(), StandardCharsets.US_ASCII));
+                    received.get(5, TimeUnit.SECONDS);
+                }
+            }
+        }
+    }
+
     private static String headers(Socket socket) throws IOException {
         StringBuilder text = new StringBuilder();
         int b;

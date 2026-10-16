@@ -1,19 +1,25 @@
 package com.blacicada.proxy;
 
-import com.blacicada.config.DirectRoutes;
-
 import com.blacicada.common.*;
+import com.blacicada.config.DirectRoutes;
+import com.blacicada.config.KernelConfig;
 import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.util.ReferenceCountUtil;
+import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.ScheduledFuture;
 
-import java.net.URI;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.util.ArrayDeque;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import org.apache.logging.log4j.LogManager;
 
@@ -21,13 +27,13 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private final ProxyConfig config;
     private final SessionRouter session;
     private final DnsAddressResolverGroup resolver;
-    private final java.util.function.Supplier<DirectRoutes> routeSource;
+    private final Supplier<DirectRoutes> routeSource;
     private final TrafficStatistics traffic;
     private final OutboundNetwork network;
     private final KernelDns dns;
     private boolean fromTun;
-    private final java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder;
-    private com.blacicada.config.KernelConfig requestConfig;
+    private final Consumer<Map<String, Object>> accessRecorder;
+    private KernelConfig requestConfig;
     private String requestMethod;
     private Authority requestTarget;
     private boolean accessCompleted;
@@ -36,7 +42,7 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private HttpRequest request;
     private Channel remote;
     private LocalSession localSession;
-    private io.netty.util.concurrent.Future<?> opening;
+    private Future<?> opening;
     private boolean tunnel;
     private boolean udp;
     private boolean direct;
@@ -44,8 +50,8 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private boolean failed;
     private ScheduledFuture<?> timeout;
 
-    LocalRequestHandler(ProxyConfig config, SessionRouter session, DnsAddressResolverGroup resolver, java.util.function.Supplier<DirectRoutes> routes, TrafficStatistics traffic,
-                        java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder, OutboundNetwork network, KernelDns dns) {
+    LocalRequestHandler(ProxyConfig config, SessionRouter session, DnsAddressResolverGroup resolver, Supplier<DirectRoutes> routes, TrafficStatistics traffic,
+                        Consumer<Map<String, Object>> accessRecorder, OutboundNetwork network, KernelDns dns) {
         this.dns = dns;
         this.network = network;
         this.config = config;
@@ -82,28 +88,13 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
                 udp = UdpTunnel.requested(request.headers().getAll(UdpTunnel.HEADER));
                 if (udp && !tunnel) throw new IllegalArgumentException("UDP 接入必须使用 CONNECT");
                 target = target(request, tunnel);
-                var sources = request.headers().getAll(KernelDns.SOURCE_HEADER);
-                fromTun = !sources.isEmpty();
-                if (fromTun && (sources.size() != 1 || !sources.getFirst().equals("tun") || !tunnel
-                        || !(ctx.channel().remoteAddress() instanceof InetSocketAddress source)
-                        || !source.getAddress().isLoopbackAddress()))
-                    throw new IllegalArgumentException("TUN 来源标识无效");
+                fromTun = validateTunSource(ctx);
             } catch (RuntimeException e) {
                 fail(ctx, HttpResponseStatus.BAD_REQUEST);
                 return;
             }
             ctx.channel().config().setAutoRead(false);
-            if (!tunnel) {
-                ctx.pipeline().get(HttpRequestDecoder.class).setSingleDecode(false);
-                request.headers().set(HttpHeaderNames.HOST, target.toString());
-                request.headers().remove("proxy-authorization");
-                request.headers().remove("proxy-connection");
-                request.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
-                if (HttpUtil.is100ContinueExpected(request)) {
-                    ctx.writeAndFlush(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.CONTINUE));
-                    request.headers().remove(HttpHeaderNames.EXPECT);
-                }
-            }
+            if (!tunnel) prepareHttpRequest(ctx, target);
             if (fromTun && target.port() == 53) acceptDns(ctx);
             else route(ctx, target);
         } else if (msg instanceof HttpContent content && request != null) {
@@ -124,6 +115,31 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
         } else {
             ReferenceCountUtil.release(msg);
             fail(ctx, HttpResponseStatus.BAD_REQUEST);
+        }
+    }
+
+    private boolean validateTunSource(ChannelHandlerContext ctx) {
+        var sources = request.headers().getAll(KernelDns.SOURCE_HEADER);
+        if (sources.isEmpty()) return false;
+        if (sources.size() != 1 || !sources.getFirst().equals("tun") || !tunnel
+                || !(ctx.channel().remoteAddress() instanceof InetSocketAddress source)
+                || !source.getAddress().isLoopbackAddress())
+            throw new IllegalArgumentException("TUN 来源标识无效");
+        return true;
+    }
+
+    /**
+     * 普通 HTTP 请求转发给目标前，消费本地代理头并由本地入口处理 100 Continue。
+     */
+    private void prepareHttpRequest(ChannelHandlerContext ctx, Authority target) {
+        ctx.pipeline().get(HttpRequestDecoder.class).setSingleDecode(false);
+        request.headers().set(HttpHeaderNames.HOST, target.toString());
+        request.headers().remove("proxy-authorization");
+        request.headers().remove("proxy-connection");
+        request.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+        if (HttpUtil.is100ContinueExpected(request)) {
+            ctx.writeAndFlush(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.CONTINUE));
+            request.headers().remove(HttpHeaderNames.EXPECT);
         }
     }
 
@@ -174,14 +190,14 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
      */
     private void recordAccess(String state) {
         if (accessRecorder == null || localSession == null || accessCompleted) return;
-        var value = new java.util.LinkedHashMap<String, Object>(localSession.snapshot(requestConfig));
+        var value = new LinkedHashMap<>(localSession.snapshot(requestConfig));
         value.put("requestId", traffic.sessionId() + "/" + value.get("id"));
         value.put("sessionId", traffic.sessionId());
         value.put("method", requestMethod);
         value.put("state", state);
         value.put("completedAt", state.equals("pending") ? 0L : System.currentTimeMillis());
         accessCompleted = !state.equals("pending");
-        accessRecorder.accept(java.util.Map.copyOf(value));
+        accessRecorder.accept(Map.copyOf(value));
     }
 
     private void connectDirect(ChannelHandlerContext ctx, InetSocketAddress address) {
@@ -250,47 +266,54 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
         if (udp && !direct) UdpTunnel.addFraming(remote.pipeline());
         remote.pipeline().addLast("traffic", traffic.handler());
         remote.pipeline().addLast("relay", udp ? UdpTunnel.relay(ctx.channel()) : new RelayHandler(ctx.channel()));
-        if (tunnel) {
-            var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
-            if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
-            ctx.writeAndFlush(response)
-                    .addListener(f -> {
-                        if (!f.isSuccess() || !ctx.channel().isActive()) {
-                            remote.close();
-                            return;
-                        }
-                        if (udp) {
-                            UdpTunnel.addFraming(ctx.pipeline());
-                            ctx.pipeline().addLast("relay", UdpTunnel.relay(remote));
-                            ctx.pipeline().remove(this);
-                        } else ctx.pipeline().replace(this, "relay", new RelayHandler(remote));
-                        ctx.pipeline().remove("responseEncoder");
-                        // 移除 ByteToMessageDecoder 时，合并接收的隧道数据只转发一次。
-                        ctx.pipeline().remove("requestDecoder");
-                        remote.read();
-                        ctx.channel().read();
-                    });
-        } else {
+        if (tunnel) acceptTunnel(ctx);
+        else forwardHttpRequest(ctx);
+    }
+
+    /**
+     * 成功响应写入后再接管协议；先安装转发处理器，再移除解码器以接收其累积数据。
+     */
+    private void acceptTunnel(ChannelHandlerContext ctx) {
+        var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+        if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
+        ctx.writeAndFlush(response).addListener(f -> {
+            if (!f.isSuccess() || !ctx.channel().isActive()) {
+                remote.close();
+                return;
+            }
+            if (udp) {
+                UdpTunnel.addFraming(ctx.pipeline());
+                ctx.pipeline().addLast("relay", UdpTunnel.relay(remote));
+                ctx.pipeline().remove(this);
+            } else ctx.pipeline().replace(this, "relay", new RelayHandler(remote));
             ctx.pipeline().remove("responseEncoder");
-            remote.pipeline().addLast("httpEncoder", new HttpRequestEncoder());
-            remote.writeAndFlush(request).addListener(f -> {
-                if (!f.isSuccess()) {
-                    remote.close();
-                    ctx.close();
-                }
-            });
-            request = null;
-            var body = new HttpBodyRelay(remote);
-            ctx.pipeline().replace(this, "body", body);
-            var bodyContext = ctx.pipeline().context(body);
-            while (!pending.isEmpty()) body.channelRead(bodyContext, pending.remove());
-            // singleDecode 可能将合并接收的完整请求体留在解码器中。
-            // 即使发送方不再发送数据，也要继续处理这些累积字节。
-            ctx.pipeline().fireChannelRead(io.netty.buffer.Unpooled.EMPTY_BUFFER);
-            ctx.pipeline().fireChannelReadComplete();
+            // 移除 ByteToMessageDecoder 时，合并接收的隧道数据只转发一次。
+            ctx.pipeline().remove("requestDecoder");
             remote.read();
-            if (body.canRead()) ctx.channel().read();
-        }
+            ctx.channel().read();
+        });
+    }
+
+    private void forwardHttpRequest(ChannelHandlerContext ctx) {
+        ctx.pipeline().remove("responseEncoder");
+        remote.pipeline().addLast("httpEncoder", new HttpRequestEncoder());
+        remote.writeAndFlush(request).addListener(f -> {
+            if (!f.isSuccess()) {
+                remote.close();
+                ctx.close();
+            }
+        });
+        request = null;
+        var body = new HttpBodyRelay(remote);
+        ctx.pipeline().replace(this, "body", body);
+        var bodyContext = ctx.pipeline().context(body);
+        while (!pending.isEmpty()) body.channelRead(bodyContext, pending.remove());
+        // singleDecode 可能将合并接收的完整请求体留在解码器中。
+        // 即使发送方不再发送数据，也要继续处理这些累积字节。
+        ctx.pipeline().fireChannelRead(Unpooled.EMPTY_BUFFER);
+        ctx.pipeline().fireChannelReadComplete();
+        remote.read();
+        if (body.canRead()) ctx.channel().read();
     }
 
     private void fail(ChannelHandlerContext ctx, HttpResponseStatus status) {
