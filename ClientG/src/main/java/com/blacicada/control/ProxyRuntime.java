@@ -1,18 +1,30 @@
 package com.blacicada.control;
 
 import com.blacicada.common.ProxyConfig;
+import com.blacicada.config.DirectRoutes;
 import com.blacicada.config.KernelConfig;
 import com.blacicada.proxy.LocalProxyServer;
-import com.blacicada.config.DirectRoutes;
+import com.blacicada.proxy.TrafficStatistics;
 
 import java.io.IOException;
+import java.net.Inet6Address;
+import java.net.InetSocketAddress;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 只管理本地代理生命周期；调用方通过 KernelControl 的锁串行访问。
  */
 final class ProxyRuntime implements AutoCloseable {
+    private final HistoryRecorder history;
     private LocalProxyServer proxy;
     private int interfaceIndex;
+    // 监听或出口重建后仍延续当前运行会话的流量统计。
+    private TrafficStatistics lastTraffic;
+
+    ProxyRuntime(HistoryRecorder history) {
+        this.history = history;
+    }
 
     int interfaceIndex() {
         return interfaceIndex;
@@ -32,15 +44,8 @@ final class ProxyRuntime implements AutoCloseable {
         }
     }
 
-    private com.blacicada.proxy.TrafficStatistics lastTraffic;
-    private final HistoryRecorder history;
-
-    ProxyRuntime(HistoryRecorder history) {
-        this.history = history;
-    }
-
-    java.util.Map<String, Object> traffic() {
-        return lastTraffic == null ? com.blacicada.proxy.TrafficStatistics.empty() : lastTraffic.snapshot();
+    Map<String, Object> traffic() {
+        return lastTraffic == null ? TrafficStatistics.empty() : lastTraffic.snapshot();
     }
 
     /**
@@ -55,10 +60,11 @@ final class ProxyRuntime implements AutoCloseable {
         return proxy;
     }
 
-    java.net.InetSocketAddress probeAddress() {
+    InetSocketAddress probeAddress() {
         var address = runningProxy().address();
-        return address.getAddress().isAnyLocalAddress()
-                ? new java.net.InetSocketAddress(address.getAddress() instanceof java.net.Inet6Address ? "::1" : "127.0.0.1", address.getPort()) : address;
+        if (!address.getAddress().isAnyLocalAddress()) return address;
+        String loopback = address.getAddress() instanceof Inet6Address ? "::1" : "127.0.0.1";
+        return new InetSocketAddress(loopback, address.getPort());
     }
 
     boolean isRunning() {
@@ -85,8 +91,8 @@ final class ProxyRuntime implements AutoCloseable {
         return proxy == null ? 0 : proxy.pendingTunnels();
     }
 
-    java.util.List<java.util.Map<String, Object>> tunnels() {
-        return proxy == null ? java.util.List.of() : proxy.tunnels();
+    List<Map<String, Object>> tunnels() {
+        return proxy == null ? List.of() : proxy.tunnels();
     }
 
     boolean requiresRestart(KernelConfig next) {
@@ -99,10 +105,10 @@ final class ProxyRuntime implements AutoCloseable {
     }
 
     void start(KernelConfig config) throws Exception {
-        start(config, new com.blacicada.proxy.TrafficStatistics());
+        start(config, new TrafficStatistics());
     }
 
-    private void start(KernelConfig config, com.blacicada.proxy.TrafficStatistics traffic) throws Exception {
+    private void start(KernelConfig config, TrafficStatistics traffic) throws Exception {
         if (proxy != null) return;
         if (config.connections().isEmpty() && !config.routingMode().equals("direct"))
             throw new ControlException(409, "NO_DEFAULT_PROFILE", "请先添加连接配置");

@@ -3,20 +3,17 @@ package com.blacicada.proxy;
 import com.blacicada.common.Authority;
 import com.blacicada.common.Transport;
 import com.blacicada.config.DirectRoutes;
+import com.blacicada.config.KernelConfig;
 import io.netty.channel.Channel;
 import io.netty.resolver.AddressResolver;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.Future;
+import org.apache.logging.log4j.LogManager;
 
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Map;
-
-import com.blacicada.config.KernelConfig;
-
 import java.util.function.Consumer;
-
-import org.apache.logging.log4j.LogManager;
 
 /**
  * 每条浏览器连接自己的路由状态；所有访问都在该连接的 EventLoop 中执行。
@@ -117,12 +114,7 @@ final class LocalSession {
         if (originalAddress != null) {
             // 关联仅影响展示与规则；实际出站始终保留应用选择的原始 IP。
             // 全局模式优先，其次是原始 IP 精确规则、关联域名精确规则、域名后缀和 IP 网段。
-            boolean route;
-            if (!rules.mode().equals("rules")) route = rules.mode().equals("direct");
-            else if (rules.override(target.host()) != null) route = rules.matches(target.host());
-            else if (rules.override(displayTarget.host()) != null) route = rules.matches(displayTarget.host());
-            else route = rules.matches(displayTarget.host()) || rules.matches(target.host());
-            decide(route ? originalAddress : null);
+            decide(associatedTargetUsesDirectRoute() ? originalAddress : null);
         } else if (rules.matches(target.host())) {
             cancelLookup();
             decide(target.unresolved());
@@ -145,6 +137,13 @@ final class LocalSession {
                 evaluate();
             });
         }
+    }
+
+    private boolean associatedTargetUsesDirectRoute() {
+        if (!rules.mode().equals("rules")) return rules.mode().equals("direct");
+        if (rules.override(target.host()) != null) return rules.matches(target.host());
+        if (rules.override(displayTarget.host()) != null) return rules.matches(displayTarget.host());
+        return rules.matches(displayTarget.host()) || rules.matches(target.host());
     }
 
     private void decide(InetSocketAddress address) {

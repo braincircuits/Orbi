@@ -448,20 +448,7 @@ public final class KernelControl implements AutoCloseable {
 
     private synchronized void publishStatus() {
         if (closed) return;
-        if (!tunSession.isEmpty() && System.nanoTime() - tunHeartbeat > TimeUnit.SECONDS.toNanos(tunState.equals("authorizing") ? 120 : tunState.equals("starting") ? 30 : 10)) {
-            if (tunState.equals("authorizing")) {
-                tunError = "虚拟网卡授权已超时，请重新开启";
-            } else {
-                runtime.stop();
-                try {
-                    runtime.bindInterface(0, config);
-                } catch (Exception ignored) {
-                }
-                tunError = "虚拟网卡辅助进程已失联，代理已停止，请重新开启";
-            }
-            tunSession = "";
-            tunState = "failed";
-        }
+        checkTunHeartbeat();
         if (!storageFailed) history.tick();
         Map<String, Object> state = status();
         String encoded = JSON.toJson(state);
@@ -469,6 +456,32 @@ public final class KernelControl implements AutoCloseable {
             previousState = encoded;
             events.emit("status", state);
         }
+    }
+
+    /**
+     * 授权和路由安装有独立的等待预算；失联时先停止出口，再使旧会话失效。
+     */
+    private void checkTunHeartbeat() {
+        if (tunSession.isEmpty()) return;
+        long timeoutSeconds = switch (tunState) {
+            case "authorizing" -> 120;
+            case "starting" -> 30;
+            default -> 10;
+        };
+        if (System.nanoTime() - tunHeartbeat <= TimeUnit.SECONDS.toNanos(timeoutSeconds)) return;
+
+        if (tunState.equals("authorizing")) {
+            tunError = "虚拟网卡授权已超时，请重新开启";
+        } else {
+            runtime.stop();
+            try {
+                runtime.bindInterface(0, config);
+            } catch (Exception ignored) {
+            }
+            tunError = "虚拟网卡辅助进程已失联，代理已停止，请重新开启";
+        }
+        tunSession = "";
+        tunState = "failed";
     }
 
     @Override
