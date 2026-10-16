@@ -3,6 +3,16 @@ package com.blacicada.proxy;
 import com.blacicada.h3.Http3ProxyServer;
 
 import com.blacicada.common.ProxyConfig;
+import com.blacicada.common.ProxyCredentials;
+import com.blacicada.common.Transport;
+import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.*;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.nio.NioDatagramChannel;
+import io.netty.handler.codec.http3.*;
+import io.netty.handler.codec.quic.*;
+import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import java.io.*;
@@ -124,6 +134,59 @@ class Http3IntegrationTest {
             var writer = executor.submit(() -> { s.getOutputStream().write(data); s.shutdownOutput(); return null; });
             assertArrayEquals(data, s.getInputStream().readAllBytes());
             writer.get(20, TimeUnit.SECONDS);
+        }
+    }
+    @Test void connectWithEarlyDataReturnsPayloadWithoutFurtherClientWrites() throws Exception {
+        var group = new NioEventLoopGroup(1);
+        Channel transport = null;
+        QuicChannel connection = null;
+        byte[] payload = new byte[48 * 1024]; new Random(29).nextBytes(payload);
+        var status = new CompletableFuture<String>();
+        var received = new CompletableFuture<byte[]>();
+        try {
+            var config = clientConfig("integration-test-secret", "localhost", false, 8);
+            var ssl = QuicSslContextBuilder.forClient().trustManager(new File(resource("localhost.crt")))
+                    .applicationProtocols(Http3.supportedApplicationProtocols()).build();
+            var codec = Transport.limits(Http3.newQuicClientCodecBuilder(), config)
+                    .sslEngineProvider(channel -> ssl.newEngine(channel.alloc(), "localhost", server.address().getPort())).build();
+            transport = new Bootstrap().group(group).channel(NioDatagramChannel.class).handler(codec)
+                    .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+            connection = QuicChannel.newBootstrap(transport)
+                    .handler(new Http3ClientConnectionHandler(null, null, null, new DefaultHttp3SettingsFrame(), true))
+                    .remoteAddress(server.address()).connect().sync().getNow();
+            var stream = Http3.newRequestStreamBootstrap(connection, new ChannelInboundHandlerAdapter() {
+                private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                @Override public void channelRead(ChannelHandlerContext ctx, Object message) {
+                    try {
+                        if (message instanceof Http3HeadersFrame headers) status.complete(headers.headers().status().toString());
+                        else if (message instanceof Http3DataFrame frame) {
+                            byte[] part = new byte[frame.content().readableBytes()]; frame.content().readBytes(part);
+                            bytes.writeBytes(part);
+                            if (bytes.size() >= payload.length) received.complete(bytes.toByteArray());
+                        }
+                    } finally { ReferenceCountUtil.release(message); }
+                }
+                @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                    status.completeExceptionally(cause); received.completeExceptionally(cause); ctx.close();
+                }
+            }).create().sync().getNow();
+            var request = new DefaultHttp3HeadersFrame();
+            request.headers().method("CONNECT").authority("localhost:" + echo.port())
+                    .set("proxy-authorization", ProxyCredentials.clientAuthorization(config));
+            // 在同一次刷新内发送 CONNECT 和 DATA，之后不再写入，避免后续数据掩盖漏刷。
+            stream.eventLoop().submit(() -> {
+                stream.write(request);
+                for (int offset = 0; offset < payload.length; offset += 16 * 1024)
+                    stream.write(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(payload, offset, 16 * 1024)));
+                stream.flush();
+            }).sync();
+            assertEquals("200", status.get(5, TimeUnit.SECONDS));
+            assertArrayEquals(payload, received.get(5, TimeUnit.SECONDS));
+            stream.close().sync();
+        } finally {
+            if (connection != null) connection.close().sync();
+            if (transport != null) transport.close().sync();
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS).sync();
         }
     }
     @Test void failedTargetDoesNotBreakSharedConnection() throws Exception {

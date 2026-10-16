@@ -232,6 +232,7 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
             // singleDecode 可能将合并接收的完整请求体留在解码器中。
             // 即使发送方不再发送数据，也要继续处理这些累积字节。
             ctx.pipeline().fireChannelRead(io.netty.buffer.Unpooled.EMPTY_BUFFER);
+            ctx.pipeline().fireChannelReadComplete();
             remote.read();
             if (body.canRead()) ctx.channel().read();
         }

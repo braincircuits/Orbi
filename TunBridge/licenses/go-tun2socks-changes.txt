@@ -1,8 +1,16 @@
 本应用使用 github.com/eycorsican/go-tun2socks v1.16.11，并在构建副本应用项目补丁。
 原始 MIT 许可证见 go-tun2socks.txt，lwIP 许可证见 lwip.txt。
 
-修改日期：2026-10-11。
-修改文件：core/lwip.go、core/udp_conn.go。
+修改日期：2026-10-16。
+修改文件：core/lwip.go、core/udp_conn.go、core/tcp_conn.go、core/c/custom/lwipopts.h、core/c/core/tcp.c。
 修改内容：TCP/UDP 使用双栈协议控制块；支持空 UDP 回包；检查回包错误；
 UDP 回包与协议栈输入和定时器共用互斥锁。
+虚拟 IPv4/IPv6 MTU 同步为 8192，IPv4 TCP MSS 上限为 8152，IPv6 上限为 8132，
+减少本机较短 TCP 记录跨越虚拟 MTU 时的额外分段；UDP 分片也遵循新的虚拟 MTU。
+TCP 收发窗口扩大至 1 MiB，并启用窗口缩放；单次 C 写入限定为 65535 字节，
+剩余发送空间可用时继续分块提交，避免长度截断和不必要的确认等待；
+接收窗口更新阈值按连接协商后的有效窗口计算。
+接收回调使用按需增长、上限为 TCP 窗口的环形缓冲，取消同步管道等待；
+读取后再恢复接收窗口，保留背压，FIN 后先读完缓冲，关闭时唤醒等待者。
+本机 TUN 收端对成功缓存的数据立即确认，避免孤立报文等待延迟 ACK 定时器。
 补丁随项目源码保存在 TunBridge/patches/go-tun2socks-v1.16.11.patch。

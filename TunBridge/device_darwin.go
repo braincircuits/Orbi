@@ -12,11 +12,15 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+// 与 lwIP 补丁的虚拟 MTU 一致；物理出口由独立套接字按真实网卡重新分段。
+const tunMTU = 8192
 
 type tunDevice struct {
 	file   *os.File
@@ -24,6 +28,8 @@ type tunDevice struct {
 	routes []netip.Prefix
 	bypass [][]string
 	guard  *routeGuard
+	// 输入循环单独读取，输出在 lwIP 锁下串行写入，两个方向分别复用缓冲区。
+	readBuffer, writeBuffer []byte
 }
 
 func command(program string, args ...string) (string, error) {
@@ -114,7 +120,7 @@ func openTun() (*tunDevice, error) {
 	}
 	tun := &tunDevice{file: os.NewFile(uintptr(fd), name), name: name}
 	ok = true // 文件对象从此独占描述符的关闭责任。
-	if _, err = command("/sbin/ifconfig", name, "inet", "198.18.0.1", "198.18.0.1", "netmask", "255.255.255.252", "mtu", "1500", "up"); err != nil {
+	if _, err = command("/sbin/ifconfig", name, "inet", "198.18.0.1", "198.18.0.1", "netmask", "255.255.255.252", "mtu", strconv.Itoa(tunMTU), "up"); err != nil {
 		tun.Close()
 		return nil, err
 	}
@@ -129,11 +135,7 @@ func openTun() (*tunDevice, error) {
 // 将真实接口的本地网段也细分接管，直连业务仍交给 Java 规则判断；回环及本机地址保留系统路由。
 func routePrefixes(name string) ([]netip.Prefix, error) {
 	result := []netip.Prefix{netip.MustParsePrefix("0.0.0.0/1"), netip.MustParsePrefix("128.0.0.0/1"), netip.MustParsePrefix("::/1"), netip.MustParsePrefix("8000::/1")}
-	nic, err := net.InterfaceByName(name)
-	if err != nil {
-		return nil, err
-	}
-	addresses, err := nic.Addrs()
+	prefixes, err := interfacePrefixes(name)
 	if err != nil {
 		return nil, err
 	}
@@ -146,21 +148,44 @@ func routePrefixes(name string) ([]netip.Prefix, error) {
 		return nil, fmt.Errorf("默认网关无效：%w", err)
 	}
 	seen := map[netip.Prefix]bool{}
-	for _, address := range addresses {
-		prefix, err := netip.ParsePrefix(address.String())
-		if err != nil {
-			return nil, err
-		}
-		prefix = prefix.Masked()
-		if prefix.Addr().IsLinkLocalUnicast() || prefix.Bits() == 0 || prefix.Bits() >= prefix.Addr().BitLen() {
-			continue
-		}
+	for _, prefix := range prefixes {
 		for _, p := range subnetRoutes(prefix, gateway) {
 			if !seen[p] {
 				result = append(result, p)
 				seen[p] = true
 			}
 		}
+	}
+	return result, nil
+}
+
+func interfacePrefixes(name string) ([]netip.Prefix, error) {
+	nic, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil, err
+	}
+	addresses, err := nic.Addrs()
+	if err != nil {
+		return nil, err
+	}
+	return localPrefixes(addresses)
+}
+
+// TUN 接管与真实接口作用域路由使用同一组本地网段，忽略链路本地地址和主机地址。
+func localPrefixes(addresses []net.Addr) ([]netip.Prefix, error) {
+	var result []netip.Prefix
+	seen := map[netip.Prefix]bool{}
+	for _, address := range addresses {
+		prefix, err := netip.ParsePrefix(address.String())
+		if err != nil {
+			return nil, err
+		}
+		prefix = prefix.Masked()
+		if prefix.Addr().IsLinkLocalUnicast() || prefix.Bits() == 0 || prefix.Bits() >= prefix.Addr().BitLen() || seen[prefix] {
+			continue
+		}
+		result = append(result, prefix)
+		seen[prefix] = true
 	}
 	return result, nil
 }
@@ -192,7 +217,7 @@ func subnetRoutes(prefix netip.Prefix, gateway netip.Addr) []netip.Prefix {
 	return result
 }
 
-// macOS 的接口绑定需要对应的作用域默认路由；保留已有路由，只管理本进程新增的条目。
+// 为绑定真实接口的出口保留默认及局域网作用域路由，只管理本进程新增的条目。
 func (t *tunDevice) prepareBypass(name string) error {
 	for _, family := range []string{"IPv4", "IPv6"} {
 		state, err := primaryState(family)
@@ -222,19 +247,74 @@ func (t *tunDevice) prepareBypass(name string) error {
 			continue
 		}
 		args := []string{option, "-net", "default", gateway, "-ifscope", name}
-		if t.guard == nil {
-			t.guard, err = startRouteGuard()
-			if err != nil {
-				return err
-			}
-		}
-		if err := t.guard.add(args); err != nil {
+		if err := t.addBypass(args); err != nil {
 			return err
 		}
-		// 只补做已确认成功创建的路由清理，不删除发生冲突的已有路由。
-		t.bypass = append(t.bypass, args)
+	}
+	prefixes, err := interfacePrefixes(name)
+	if err != nil {
+		return err
+	}
+	for _, prefix := range prefixes {
+		option := "-inet"
+		if prefix.Addr().Is6() {
+			option = "-inet6"
+		}
+		current, err := command("/sbin/route", "-n", "get", option, "-net", prefix.String(), "-ifscope", name)
+		if err == nil && scopedInterfaceRoute(current, prefix, name) {
+			continue
+		}
+		// 完整前缀仅供绑定真实接口的出口使用；普通应用仍命中更细的 TUN 路由。
+		args := []string{option, "-net", prefix.String(), "-interface", name, "-ifscope", name}
+		if err := t.addBypass(args); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func (t *tunDevice) addBypass(args []string) error {
+	if t.guard == nil {
+		var err error
+		t.guard, err = startRouteGuard()
+		if err != nil {
+			return err
+		}
+	}
+	if err := t.guard.add(args); err != nil {
+		return err
+	}
+	// 只补做已确认成功创建的路由清理，不删除发生冲突的已有路由。
+	t.bypass = append(t.bypass, args)
+	return nil
+}
+
+func scopedInterfaceRoute(output string, prefix netip.Prefix, name string) bool {
+	fields := make(map[string]string)
+	for _, line := range strings.Split(output, "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), ":")
+		if found {
+			fields[strings.TrimSpace(key)] = strings.TrimSpace(value)
+		}
+	}
+	destination, err := netip.ParseAddr(fields["destination"])
+	if err != nil || destination != prefix.Addr() || fields["interface"] != name {
+		return false
+	}
+	mask, err := netip.ParseAddr(fields["mask"])
+	if err != nil {
+		return false
+	}
+	ones, bits := net.IPMask(mask.AsSlice()).Size()
+	if ones != prefix.Bits() || bits != prefix.Addr().BitLen() {
+		return false
+	}
+	flags := map[string]bool{}
+	for _, flag := range strings.Split(strings.Trim(fields["flags"], "<>"), ",") {
+		flags[strings.TrimSpace(flag)] = true
+	}
+	// 带 ifscope 的查询也可能返回非作用域路由，或退回网关及主机路由，必须逐项核对。
+	return flags["UP"] && flags["IFSCOPE"] && !flags["GATEWAY"] && !flags["REJECT"] && !flags["BLACKHOLE"]
 }
 
 func (t *tunDevice) install(prefixes []netip.Prefix, check func() error) error {
@@ -254,7 +334,10 @@ func (t *tunDevice) install(prefixes []netip.Prefix, check func() error) error {
 	return nil
 }
 func (t *tunDevice) Read(packet []byte) (int, error) {
-	buffer := make([]byte, len(packet)+4)
+	if cap(t.readBuffer) < len(packet)+4 {
+		t.readBuffer = make([]byte, len(packet)+4)
+	}
+	buffer := t.readBuffer[:len(packet)+4]
 	n, err := t.file.Read(buffer)
 	if err != nil {
 		return 0, err
@@ -278,7 +361,10 @@ func (t *tunDevice) Write(packet []byte) (int, error) {
 	} else if packet[0]>>4 != 4 {
 		return 0, fmt.Errorf("IP 版本不支持")
 	}
-	buffer := make([]byte, len(packet)+4)
+	if cap(t.writeBuffer) < len(packet)+4 {
+		t.writeBuffer = make([]byte, len(packet)+4)
+	}
+	buffer := t.writeBuffer[:len(packet)+4]
 	binary.BigEndian.PutUint32(buffer, family)
 	copy(buffer[4:], packet)
 	n, err := t.file.Write(buffer)

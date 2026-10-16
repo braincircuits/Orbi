@@ -5,7 +5,7 @@ PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$PROJECT_ROOT/scripts/build-tools.sh"
 load_build_tools "$PROJECT_ROOT"
 MODE=${1:-build}
-case "$MODE" in build|--test) ;; *) printf '%s\n' '用法：sh scripts/build-tun.sh [--test]' >&2; exit 1 ;; esac
+case "$MODE" in build|--test|--bench|--measure-ack|--build-test-binary) ;; *) printf '%s\n' '用法：sh scripts/build-tun.sh [--test|--bench|--measure-ack|--build-test-binary]' >&2; exit 1 ;; esac
 if [ "$(uname -s)" != Darwin ]; then
   printf '%s\n' '虚拟网卡辅助程序目前只支持在 macOS 构建。' >&2
   exit 1
@@ -32,7 +32,19 @@ fi
 cp go.mod "$BUILD_DIR/tun.mod"
 cp go.sum "$BUILD_DIR/tun.sum"
 "$GO" mod edit -modfile="$BUILD_DIR/tun.mod" -replace="github.com/eycorsican/go-tun2socks=$BUILD_DIR/go-tun2socks"
-if [ "$MODE" = --test ]; then
+if [ "$MODE" = --measure-ack ]; then
+  printf '%s\n' '正在测量真实 TCP 转发与 ACK 延迟…'
+  CGO_ENABLED=1 "$GO" test -modfile="$BUILD_DIR/tun.mod" -mod=readonly -c -o "$BUILD_DIR/ack.test" .
+  NETWORK_ACK_OUTPUT="${NETWORK_ACK_OUTPUT:-direct}" python3 "$PROJECT_ROOT/scripts/measure-tun-ack.py" "$BUILD_DIR/ack.test"
+  NETWORK_ACK_MEASURE=1 NETWORK_ACK_OUTPUT="${NETWORK_ACK_OUTPUT:-direct}" "$BUILD_DIR/ack.test" -test.run '^TestTCPSinglePacketACKLatency$' -test.v -test.timeout 10s
+elif [ "$MODE" = --build-test-binary ]; then
+  printf '%s\n' '正在生成用于真实 utun 诊断的测试程序…'
+  CGO_ENABLED=1 "$GO" test -modfile="$BUILD_DIR/tun.mod" -mod=readonly -c -o "$PROJECT_ROOT/target/tun.test" .
+  printf '测试程序已生成：%s\n' "$PROJECT_ROOT/target/tun.test"
+elif [ "$MODE" = --bench ]; then
+  printf '%s\n' '正在测量 TUN TCP 在模拟确认延迟下的吞吐…'
+  CGO_ENABLED=1 "$GO" test -modfile="$BUILD_DIR/tun.mod" -mod=readonly -run '^$' -bench '^(BenchmarkTCPUpload|BenchmarkTUNWrite)$' -benchmem -benchtime=3x -count=3 -timeout 60s .
+elif [ "$MODE" = --test ]; then
   printf '%s\n' '正在测试包含补丁的 Outline 辅助程序…'
   CGO_ENABLED=1 "$GO" test -modfile="$BUILD_DIR/tun.mod" -mod=readonly -race -timeout 60s ./...
 else

@@ -108,6 +108,11 @@ public final class UdpTunnel {
     /** UDP 关联没有 TCP 半关闭语义，任一方向结束或空闲即释放两端资源。 */
     public static RelayHandler relay(Channel peer) {
         return new RelayHandler(peer) {
+            @Override public void channelRead(ChannelHandlerContext ctx, Object message) {
+                super.channelRead(ctx, message);
+                // 空 UDP 直接调用底层套接字；逐报文刷新，避免越过此前尚未刷新的非空报文。
+                peer.flush();
+            }
             @Override public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
                 if (event == ChannelInputShutdownEvent.INSTANCE || event instanceof IdleStateEvent) {
                     peer.close(); ctx.close();

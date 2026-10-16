@@ -199,6 +199,30 @@ class UdpIntegrationTest {
     }
 
     @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
+    void coalescedNonemptyEmptyNonemptyPacketsKeepOrderAcrossRoutes(String protocol) throws Exception {
+        var interfaces = new ArrayList<Integer>();
+        interfaces.add(0);
+        if (System.getProperty("os.name").startsWith("Mac")) interfaces.add(NetworkInterface.getByName("lo0").getIndex());
+        var packets = List.of(new byte[]{1, 2, 3}, new byte[0], new byte[]{4, 5});
+        var combined = new ByteArrayOutputStream();
+        for (byte[] packet : packets) combined.write(frame(packet));
+        for (int interfaceIndex : interfaces) for (boolean direct : List.of(false, true)) {
+            try (var fixture = new Fixture(protocol, direct, false, interfaceIndex); var socket = fixture.tunnel()) {
+                // 一次写入完整合并帧，覆盖 UDP 解码器同轮交付空、非空报文的转发路径。
+                socket.getOutputStream().write(combined.toByteArray());
+                for (int i = 0; i < packets.size(); i++) {
+                    assertArrayEquals(packets.get(i), receive(socket), "UDP 合并帧回显顺序错误：协议=" + protocol
+                            + "，直连=" + direct + "，绑定出口=" + interfaceIndex + "，报文序号=" + i);
+                    assertArrayEquals(packets.get(i), fixture.received.get(i), "目标 UDP 接收顺序错误");
+                }
+                assertEquals(packets.size(), fixture.received.size());
+                assertEquals(direct ? 0 : 1, fixture.client.connectionCount());
+                assertEquals("udp", fixture.client.tunnels().getFirst().get("originalProtocol"));
+            }
+        }
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"http2", "http3"})
     void concurrentAssociationsHaveSeparateUdpSourcesAndShareProxyConnection(String protocol) throws Exception {
         try (var fixture = new Fixture(protocol, false, false)) {
             try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {

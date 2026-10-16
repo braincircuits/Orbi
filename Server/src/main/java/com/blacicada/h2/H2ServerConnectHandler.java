@@ -111,8 +111,10 @@ final class H2ServerConnectHandler extends ChannelInboundHandlerAdapter {
             ctx.pipeline().addLast("relay", udp ? UdpTunnel.relay(target) : new RelayHandler(target));
             target.pipeline().addLast("relay", udp ? UdpTunnel.relay(ctx.channel()) : new RelayHandler(ctx.channel()));
             // 排队的 DATA 已拆去 HTTP 帧，从字节流解码入口继续处理，保留 UDP 边界。
-            while (!pending.isEmpty()) ctx.pipeline().context("data").fireChannelRead(pending.remove());
+            var data = ctx.pipeline().context("data");
             ctx.pipeline().remove(this);
+            while (!pending.isEmpty()) data.fireChannelRead(pending.remove());
+            data.fireChannelReadComplete();
             target.read();
             ctx.channel().read();
         });

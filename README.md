@@ -560,11 +560,48 @@ sudo /Library/PrivilegedHelperTools/com.blacicada.network-tun/network-tun --remo
 - 不支持 ICMP、组播或非 TCP/UDP 协议，不修改系统 DNS 设置，也不提供 DNS 防泄漏保证。系统发往普通 DNS 地址的 UDP/TCP 请求进入 TUN 时，按上述查询域名规则选择客户端或服务端系统 DNS。
 - 退出后恢复正常系统路由，不提供断网保护（kill switch）。不会覆盖已有的同前缀路由；冲突或中途失败会清理本进程已添加的路由并报错。
 
-构建需要 Java 25、Flutter、Go 1.25 或更高版本以及 Xcode Command Line Tools 的 C 编译器。`TunBridge/go.mod` 固定 Outline SDK `v0.0.23`，通过其 `lwip2transport` 接口适配 TCP/UDP；该版本间接依赖 `go-tun2socks v1.16.11` 和 lwIP。仓库在 `TunBridge/patches/` 保留最小补丁：使用双栈协议控制块、修复空 UDP 回包并检查发送错误、将 UDP 回包与协议栈输入串行处理。构建脚本只在临时副本应用补丁，使用临时 Go 模块替换，不修改全局 Go 缓存或项目 `go.mod`；依赖版本变化或补丁不能准确应用时构建失败，需重新复核。第三方许可证位于 `TunBridge/licenses/`，打包时一并复制。
+构建需要 Java 25、Flutter、Go 1.25 或更高版本以及 Xcode Command Line Tools 的 C 编译器。`TunBridge/go.mod` 固定 Outline SDK `v0.0.23`，通过其 `lwip2transport` 接口适配 TCP/UDP；该版本间接依赖 `go-tun2socks v1.16.11` 和 lwIP。仓库在 `TunBridge/patches/` 保留补丁：使用双栈协议控制块、修复空 UDP 回包并检查发送错误、将 UDP 回包与协议栈输入串行处理，以及下面的 TCP 窗口优化。构建脚本只在临时副本应用补丁，使用临时 Go 模块替换，不修改全局 Go 缓存或项目 `go.mod`；依赖版本变化或补丁不能准确应用时构建失败，需重新复核。第三方许可证位于 `TunBridge/licenses/`，打包时一并复制。
+
+TUN 的 TCP 接收窗口和发送缓冲上限为 1 MiB，通过 TCP 窗口缩放协商生效；未协商缩放时仍遵守 TCP 的 16 位窗口限制。C 写入按最多 65535 字节分块，发送空间可用时继续填充。虚拟网卡收发分别复用缓冲区，减少逐包分配。这些优化保留局域网 TUN 接管、Java 直连规则、实时隧道和流量统计，不把局域网流量绕过内核。窗口是允许在途或积压数据的上限，并非越大越快；大量并发连接下需同时考虑内存和排队延迟。
+
+utun 与 lwIP 的 IPv4/IPv6 虚拟 MTU 均为 8192，TCP 通告的 MSS 上限分别为 8152 和 8132 字节，减少连续大块传输的虚拟报文数量和逐包处理开销；较小的记录仍可独立发送，不等待凑满 MTU。Java 使用独立的出站 TCP 套接字，物理出口继续按真实网卡和对端的 MSS 分段。共享虚拟接口的 MTU 同样影响 UDP 的分片边界；IP 分片与重组仍须保持原始 UDP 数据报的内容和边界，不把一条数据报拆成多条应用消息。
+
+lwIP 接收回调把数据复制到按需增长、最多 1 MiB 的环形缓冲，不再持有全局协议栈锁同步等待 Go 转发器。已缓存的数据立即向本机应用返回 ACK，避免孤立报文等待约 250 ms 的延迟 ACK 定时器；这只确认本机接收，不代表 Windows 已收到或落盘。只有转发器读取缓冲后才恢复窗口，下游停读时通过零窗口限流。收到 FIN 后先读完已确认的数据，关闭会唤醒等待者。立即确认会增加本机 ACK 报文数量，容量限制和下游背压仍然保留。
+
+回包由 lwIP 输出回调直接写入 TUN，利用现有协议栈锁串行化 TCP、UDP 和定时器回包，省去 Outline SDK 每包两次同步通道交接。报文在回调返回前完成写入，不保留 C 缓冲区引用；输出错误或短写通知会话停止并按原流程清理路由。
+
+Java 的真实 TCP 套接字在同一 EventLoop 的读取轮次内批量读取、写入，并在本轮结束时统一刷新，减少小块数据逐次发送和完成任务入队。达到写缓冲高水位、请求体结束或输入关闭时停止预取；不增加定时合包等待，保留待写数据排空与半关闭。HTTP/2、QUIC 子流保持手动读取，避免启读同步重入；UDP 保持逐报文刷新，防止空报文越过此前的非空报文。直连仍经过 Java 的实时隧道与流量统计。
 
 ```sh
 # 使用相同补丁运行竞态检查与原始 IPv4/IPv6 TCP、UDP、空报文测试
 sh scripts/build-tun.sh --test
+
+# 构建真实独立 utun 的诊断程序；普通测试默认跳过这项，需要单独授予管理员权限运行
+# 仅建立 198.19.254.1/32 → 198.19.254.2/32 点对点测试接口，结束后关闭并清理自身路由
+sh scripts/build-tun.sh --build-test-binary
+sudo env NETWORK_TUN_LIVE=1 NETWORK_TUN_LIVE_DIR="$PWD/target/tun-performance" \
+  NETWORK_TUN_LIVE_PENDING=1 NETWORK_TUN_LIVE_BLOCK=269536 NETWORK_TUN_LIVE_SAMPLES=0 \
+  ./target/tun.test -test.run '^TestTUNLiveContinuousWrite$' -test.v -test.timeout 90s
+# 将 PENDING 分别设为 1、8、16 可比较队列；不设 BLOCK 时连续发送，设定时每块即时返回字节确认
+# 不加入人工延迟；含普通 macOS TCP、真实 utun、lwIP 和本机接收端，不含 Java 或 Windows App
+# 默认记录逐包耗时；SAMPLES=0 关闭逐包记录，CPU=1 / TRACE=1（同前缀）可另测分析器开销
+
+# 对比模拟 5 毫秒确认延迟下的 TCP 上传吞吐，以及报文封装分配
+# 此测试不经过真实网卡、Java 或 Windows App，不能代替实际文件复制测速
+sh scripts/build-tun.sh --bench
+
+# 测量 ACK：64 MiB 经数据报套接字模拟双向 TUN I/O、Go、隔离 Java 代理和 TCP 接收端
+# 需已有 ClientG/target/clientG-1.0-SNAPSHOT.jar；不修改运行中的配置，不注入延迟
+# 默认 KQueue 绑定 lo0，一轮预热、三轮测量；记录 Java CPU、Go 读取批次并验证隧道和字节统计
+# 发送端默认最多 32 KiB 在途；另测孤立小报文 ACK，不包括真实 utun、物理网卡或 Windows App
+sh scripts/build-tun.sh --measure-ack
+
+# 按现场 1460 + 185 字节小包节奏，对比 SDK 同步输出与当前直接输出
+NETWORK_ACK_OUTPUT=sdk NETWORK_ACK_PATTERN=rdp sh scripts/build-tun.sh --measure-ack
+NETWORK_ACK_OUTPUT=direct NETWORK_ACK_PATTERN=rdp sh scripts/build-tun.sh --measure-ack
+
+# 按现场较小在途量测量 256 MiB；NETWORK_ACK_JAR 可指定待比较的 JAR，NETWORK_ACK_TRANSPORT=nio 可对照 NIO
+NETWORK_ACK_PATTERN=rdp NETWORK_ACK_MAX_INFLIGHT=3290 NETWORK_ACK_MIB=256 sh scripts/build-tun.sh --measure-ack
 
 # 单独构建辅助进程（不会执行 Java AOT）
 sh scripts/build-tun.sh

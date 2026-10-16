@@ -30,6 +30,14 @@
  	if err != C.ERR_OK {
  		panic("address already in use")
  	}
+@@ -166,5 +166,6 @@
+ 	lwipInit()
+ 
+ 	// Set MTU.
+-	C.netif_list.mtu = 1500
++	C.netif_list.mtu = C.NETWORK_TUN_MTU
++	C.netif_list.mtu6 = C.NETWORK_TUN_MTU
+ }
 --- a/core/udp_conn.go
 +++ b/core/udp_conn.go
 @@ -129,20 +129,28 @@
@@ -67,3 +75,269 @@
  	return len(data), nil
  }
  
+--- a/core/c/custom/lwipopts.h
++++ b/core/c/custom/lwipopts.h
+@@ -81,9 +81,16 @@
+ #define LWIP_TCP_TIMESTAMPS 1
+ */
+ 
+-#define TCP_MSS 1460
+-#define TCP_WND 32 * 1024
++// 虚拟网卡与双栈协议接口使用相同 MTU，减少本机 TCP 记录的额外拆包。
++#define NETWORK_TUN_MTU 8192
++#define TCP_MSS (NETWORK_TUN_MTU - 40)
++// 为局域网大流量启用窗口缩放，避免单连接受 32 KiB 窗口限制。
++#define LWIP_WND_SCALE 1
++#define TCP_RCV_SCALE 5
++#define TCP_WND (1024 * 1024)
+ #define TCP_SND_BUF (TCP_WND)
++// 可写通知阈值仍受 lwIP 的 16 位检查约束。
++#define TCP_SNDLOWAT (32 * 1024)
+ 
+ #define MEM_LIBC_MALLOC 1
+ #define MEMP_MEM_MALLOC 1
+--- a/core/tcp_conn.go
++++ b/core/tcp_conn.go
+@@ -66,8 +66,12 @@
+ 	connKey       uint32
+ 	canWrite      *sync.Cond // Condition variable to implement TCP backpressure.
+ 	state         tcpConnState
+-	sndPipeReader *io.PipeReader
+-	sndPipeWriter *io.PipeWriter
++	receiveReady  *sync.Cond
++	receiveBuffer []byte
++	receiveHead   int
++	receiveSize   int
++	receiveEOF    bool
++	readClosed    bool
+ 	closeOnce     sync.Once
+ 	closeErr      error
+ }
+@@ -86,19 +90,18 @@
+ 	setTCPErrCallback(pcb)
+ 	setTCPPollCallback(pcb, C.u8_t(TCP_POLL_INTERVAL))
+ 
+-	pipeReader, pipeWriter := io.Pipe()
+ 	conn := &tcpConn{
+-		pcb:           pcb,
+-		handler:       handler,
+-		localAddr:     ParseTCPAddr(ipAddrNTOA(pcb.remote_ip), uint16(pcb.remote_port)),
+-		remoteAddr:    ParseTCPAddr(ipAddrNTOA(pcb.local_ip), uint16(pcb.local_port)),
+-		connKeyArg:    connKeyArg,
+-		connKey:       connKey,
+-		canWrite:      sync.NewCond(&sync.Mutex{}),
+-		state:         tcpNewConn,
+-		sndPipeReader: pipeReader,
+-		sndPipeWriter: pipeWriter,
+-	}
++		pcb:        pcb,
++		handler:    handler,
++		localAddr:  ParseTCPAddr(ipAddrNTOA(pcb.remote_ip), uint16(pcb.remote_port)),
++		remoteAddr: ParseTCPAddr(ipAddrNTOA(pcb.local_ip), uint16(pcb.local_port)),
++		connKeyArg: connKeyArg,
++		connKey:    connKey,
++		canWrite:   sync.NewCond(&sync.Mutex{}),
++		state:      tcpNewConn,
++	}
++
++	conn.receiveReady = sync.NewCond(&conn.Mutex)
+ 
+ 	// Associate conn with key and save to the global map.
+ 	tcpConns.Store(connKey, conn)
+@@ -180,36 +183,95 @@
+ 	return nil
+ }
+ 
++// 回调持有 lwIP 全局锁，只复制到有界缓冲，不等待转发器或网络写入。
+ func (conn *tcpConn) Receive(data []byte) error {
+ 	if err := conn.receiveCheck(); err != nil {
+ 		return err
+ 	}
+-	n, err := conn.sndPipeWriter.Write(data)
+-	if err != nil {
++	conn.Lock()
++	defer conn.Unlock()
++	if conn.readClosed {
+ 		return NewLWIPError(LWIP_ERR_CLSD)
+ 	}
+-	C.tcp_recved(conn.pcb, C.u16_t(n))
++	if len(data) > int(C.TCP_WND)-conn.receiveSize {
++		return NewLWIPError(LWIP_ERR_CONN)
++	}
++	if len(data) > 0 {
++		// 小流量按需分配，持续积压才增长，容量不超过接收窗口。
++		if conn.receiveSize+len(data) > len(conn.receiveBuffer) {
++			capacity := len(conn.receiveBuffer) * 2
++			if capacity < 16*1024 {
++				capacity = 16 * 1024
++			}
++			if capacity < conn.receiveSize+len(data) {
++				capacity = conn.receiveSize + len(data)
++			}
++			if capacity > int(C.TCP_WND) {
++				capacity = int(C.TCP_WND)
++			}
++			buffer := make([]byte, capacity)
++			first := copy(buffer[:conn.receiveSize], conn.receiveBuffer[conn.receiveHead:])
++			copy(buffer[first:conn.receiveSize], conn.receiveBuffer[:conn.receiveSize-first])
++			conn.receiveBuffer, conn.receiveHead = buffer, 0
++		}
++		tail := (conn.receiveHead + conn.receiveSize) % len(conn.receiveBuffer)
++		n := copy(conn.receiveBuffer[tail:], data)
++		copy(conn.receiveBuffer, data[n:])
++		conn.receiveSize += len(data)
++		conn.receiveReady.Broadcast()
++		// 此 TCP 对端在同一台机器，经 TUN 立即确认，避免孤立报文等待 250 ms 定时器。
++		// 只确认已复制的数据，接收窗口仍等 Read 消费后才恢复。
++		conn.pcb.flags |= C.TF_ACK_NOW
++	}
+ 	return NewLWIPError(LWIP_ERR_OK)
+ }
+ 
+ func (conn *tcpConn) Read(data []byte) (int, error) {
+-	conn.Lock()
+-	if conn.state == tcpReceiveClosed {
++	if len(data) == 0 {
++		return 0, nil
++	}
++	conn.Lock()
++	for conn.receiveSize == 0 && !conn.receiveEOF && !conn.readClosed {
++		conn.receiveReady.Wait()
++	}
++	if conn.readClosed || conn.receiveSize == 0 {
+ 		conn.Unlock()
+ 		return 0, io.EOF
+ 	}
+-	if conn.state >= tcpClosing {
+-		conn.Unlock()
+-		return 0, io.ErrClosedPipe
++	n := len(data)
++	if n > conn.receiveSize {
++		n = conn.receiveSize
++	}
++	first := copy(data[:n], conn.receiveBuffer[conn.receiveHead:])
++	copy(data[first:n], conn.receiveBuffer[:n-first])
++	conn.receiveHead = (conn.receiveHead + n) % len(conn.receiveBuffer)
++	conn.receiveSize -= n
++	if conn.receiveSize == 0 && conn.receiveEOF {
++		conn.receiveBuffer = nil
+ 	}
+ 	conn.Unlock()
+ 
+-	// Handler should get EOF.
+-	n, err := conn.sndPipeReader.Read(data)
+-	if err == io.ErrClosedPipe {
+-		err = io.EOF
+-	}
+-	return n, err
++	// 只有转发器取走数据才恢复窗口；绝不持有连接锁等待协议栈锁。
++	lwipMutex.Lock()
++	conn.Lock()
++	active := conn.state < tcpClosing
++	conn.Unlock()
++	if active {
++		remaining := n
++		for remaining > 0 {
++			part := remaining
++			if part > 65535 {
++				part = 65535
++			}
++			C.tcp_recved(conn.pcb, C.u16_t(part))
++			remaining -= part
++		}
++		if conn.pcb.refused_data != nil {
++			C.tcp_process_refused_data(conn.pcb)
++		}
++	}
++	lwipMutex.Unlock()
++	return n, nil
+ }
+ 
+ // writeInternal enqueues data to snd_buf, and treats ERR_MEM returned by tcp_write not an error,
+@@ -266,13 +328,19 @@
+ 		}
+ 
+ 		lwipMutex.Lock()
++		// tcp_write 的长度参数仍为 16 位，大窗口下必须分块提交。
+ 		toWrite := len(data)
++		if toWrite > 65535 {
++			toWrite = 65535
++		}
+ 		if toWrite > int(conn.pcb.snd_buf) {
+ 			// Write at most the size of the LWIP buffer.
+ 			toWrite = int(conn.pcb.snd_buf)
+ 		}
++		written := 0
+ 		if toWrite > 0 {
+-			written, err := conn.writeInternal(data[0:toWrite])
++			var err error
++			written, err = conn.writeInternal(data[0:toWrite])
+ 			totalWritten += written
+ 			if err != nil {
+ 				lwipMutex.Unlock()
+@@ -284,7 +352,10 @@
+ 		if len(data) == 0 {
+ 			break // Don't block if all the data has been written.
+ 		}
+-		conn.canWrite.Wait()
++		// 有剩余发送空间时继续填充，只有没有进展时才等待确认。
++		if written == 0 {
++			conn.canWrite.Wait()
++		}
+ 	}
+ 
+ 	return totalWritten, nil
+@@ -312,7 +383,13 @@
+ }
+ 
+ func (conn *tcpConn) CloseRead() error {
+-	return conn.sndPipeReader.Close()
++	conn.Lock()
++	conn.readClosed = true
++	conn.receiveBuffer = nil
++	conn.receiveSize = 0
++	conn.receiveReady.Broadcast()
++	conn.Unlock()
++	return nil
+ }
+ 
+ func (conn *tcpConn) Sent(len uint16) error {
+@@ -394,8 +471,9 @@
+ 		return nil
+ 	}
+ 
+-	// Causes the read half of the pipe returns.
+-	conn.sndPipeWriter.Close()
++	// 对端 FIN 之后仍允许读完已经确认的缓冲数据。
++	conn.receiveEOF = true
++	conn.receiveReady.Broadcast()
+ 
+ 	if conn.state == tcpWriteClosed {
+ 		conn.state = tcpClosing
+@@ -464,8 +542,12 @@
+ 		freeConnKeyArg(conn.connKeyArg)
+ 		tcpConns.Delete(conn.connKey)
+ 	}
+-	conn.sndPipeWriter.Close()
+-	conn.sndPipeReader.Close()
++	conn.receiveEOF = true
++	if conn.state != tcpClosing {
++		conn.receiveBuffer = nil
++		conn.receiveSize = 0
++	}
++	conn.receiveReady.Broadcast()
+ 	conn.state = tcpClosed
+ }
+ 
+--- a/core/c/core/tcp.c
++++ b/core/c/core/tcp.c
+@@ -934,7 +934,8 @@
+   LWIP_ASSERT("tcp_update_rcv_ann_wnd: invalid pcb", pcb != NULL);
+   new_right_edge = pcb->rcv_nxt + pcb->rcv_wnd;
+ 
+-  if (TCP_SEQ_GEQ(new_right_edge, pcb->rcv_ann_right_edge + LWIP_MIN((TCP_WND / 2), pcb->mss))) {
++  /* 按协商后的有效窗口计算更新阈值，避免大窗口与 16 位 MSS 的常量比较。 */
++  if (TCP_SEQ_GEQ(new_right_edge, pcb->rcv_ann_right_edge + LWIP_MIN((TCP_WND_MAX(pcb) / 2), pcb->mss))) {
+     /* we can advertise more window */
+     pcb->rcv_ann_wnd = pcb->rcv_wnd;
+     return new_right_edge - pcb->rcv_ann_right_edge;

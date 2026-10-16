@@ -1,6 +1,16 @@
 package com.blacicada.proxy;
 
 import com.blacicada.common.ProxyConfig;
+import com.blacicada.common.ProxyCredentials;
+import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.*;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.handler.codec.http2.*;
+import io.netty.handler.ssl.*;
+import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import java.io.*;
@@ -123,6 +133,61 @@ class Http2IntegrationTest {
             var writer = executor.submit(() -> { s.getOutputStream().write(data); s.shutdownOutput(); return null; });
             assertArrayEquals(data, s.getInputStream().readAllBytes());
             writer.get(20, TimeUnit.SECONDS);
+        }
+    }
+    @Test void connectWithEarlyDataReturnsPayloadWithoutFurtherClientWrites() throws Exception {
+        var group = new NioEventLoopGroup(1);
+        Channel connection = null;
+        byte[] payload = new byte[48 * 1024]; new Random(29).nextBytes(payload);
+        var status = new CompletableFuture<String>();
+        var received = new CompletableFuture<byte[]>();
+        try {
+            var ssl = SslContextBuilder.forClient().sslProvider(SslProvider.JDK)
+                    .trustManager(new File(resource("localhost.crt")))
+                    .applicationProtocolConfig(new ApplicationProtocolConfig(ApplicationProtocolConfig.Protocol.ALPN,
+                            ApplicationProtocolConfig.SelectorFailureBehavior.NO_ADVERTISE,
+                            ApplicationProtocolConfig.SelectedListenerFailureBehavior.FATAL_ALERT, "h2")).build();
+            connection = new Bootstrap().group(group).channel(NioSocketChannel.class)
+                    .handler(new ChannelInitializer<SocketChannel>() {
+                        @Override protected void initChannel(SocketChannel channel) {
+                            channel.pipeline().addLast(ssl.newHandler(channel.alloc(), "localhost", server.address().getPort()));
+                            channel.pipeline().addLast(Http2FrameCodecBuilder.forClient().build());
+                            channel.pipeline().addLast(new Http2MultiplexHandler(new ChannelInboundHandlerAdapter()));
+                        }
+                    }).connect(server.address()).sync().channel();
+            connection.pipeline().get(SslHandler.class).handshakeFuture().sync();
+            var stream = new Http2StreamChannelBootstrap(connection).handler(new ChannelInboundHandlerAdapter() {
+                private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                @Override public void channelRead(ChannelHandlerContext ctx, Object message) {
+                    try {
+                        if (message instanceof Http2HeadersFrame headers) status.complete(headers.headers().status().toString());
+                        else if (message instanceof Http2DataFrame frame) {
+                            byte[] part = new byte[frame.content().readableBytes()]; frame.content().readBytes(part);
+                            bytes.writeBytes(part);
+                            if (bytes.size() >= payload.length) received.complete(bytes.toByteArray());
+                        }
+                    } finally { ReferenceCountUtil.release(message); }
+                }
+                @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                    status.completeExceptionally(cause); received.completeExceptionally(cause); ctx.close();
+                }
+            }).open().sync().getNow();
+            var request = new DefaultHttp2Headers().method("CONNECT").authority("localhost:" + echo.port())
+                    .set("proxy-authorization", ProxyCredentials.clientAuthorization(
+                            clientConfig("integration-test-secret", "localhost", false, 8)));
+            // 在同一次刷新内发送 CONNECT 和 DATA，之后不再写入，避免后续数据掩盖漏刷。
+            stream.eventLoop().submit(() -> {
+                stream.write(new DefaultHttp2HeadersFrame(request));
+                for (int offset = 0; offset < payload.length; offset += 16 * 1024)
+                    stream.write(new DefaultHttp2DataFrame(Unpooled.wrappedBuffer(payload, offset, 16 * 1024)));
+                stream.flush();
+            }).sync();
+            assertEquals("200", status.get(5, TimeUnit.SECONDS));
+            assertArrayEquals(payload, received.get(5, TimeUnit.SECONDS));
+            stream.close().sync();
+        } finally {
+            if (connection != null) connection.close().sync();
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS).sync();
         }
     }
     @Test void failedTargetDoesNotBreakSharedConnection() throws Exception {

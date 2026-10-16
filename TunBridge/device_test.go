@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"io"
 	"net/netip"
 	"testing"
 	"time"
@@ -80,20 +81,17 @@ func TestOutlineTranslatesActualIPPackets(t *testing.T) {
 	}
 	defer device.Close()
 	packets := make(chan []byte, 30)
-	go func() {
-		for {
-			buffer := make([]byte, 1500)
-			n, err := device.Read(buffer)
-			if err != nil {
-				return
-			}
-			select {
-			case packets <- buffer[:n]:
-			case <-ctx.Done():
-				return
-			}
+	input, inputWriter := io.Pipe()
+	defer input.Close()
+	defer inputWriter.Close()
+	forwardPackets(device, packetTestIO{input, packetTestWriter(func(packet []byte) (int, error) {
+		select {
+		case packets <- append([]byte(nil), packet...):
+			return len(packet), nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
 		}
-	}()
+	})})
 	next := func() []byte {
 		deadline := time.After(3 * time.Second)
 		for {

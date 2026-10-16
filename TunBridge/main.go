@@ -132,9 +132,7 @@ func run(control *controlClient, owner int, ticket string) (failure error) {
 		return err
 	}
 	defer func() { cancel(); failure = errors.Join(failure, tun.Close()) }()
-	stopped := make(chan error, 2)
-	go func() { _, err := io.Copy(device, tun); stopped <- err }()
-	go func() { _, err := io.Copy(tun, device); stopped <- err }()
+	stopped := forwardPackets(device, tun)
 	// 数据转发已经就绪后再接管路由；任意失败都按相反顺序释放。
 	check := func() error {
 		var heartbeat struct {

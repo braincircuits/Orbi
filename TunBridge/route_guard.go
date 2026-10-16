@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
+	"strings"
 )
+
+const maxGuardRoutes = 64
 
 // 作用域路由由同次授权中的子进程持有；主进程被强制结束时，管道关闭仍会触发清理。
 type routeGuard struct {
@@ -83,8 +87,7 @@ func runRouteGuard() (failure error) {
 			}
 			return err
 		}
-		// 子进程仅接受真实接口作用域的默认路由，不提供任意命令执行入口。
-		if len(owned) >= 2 || len(args) != 6 || (args[0] != "-inet" && args[0] != "-inet6") || args[1] != "-net" || args[2] != "default" || args[4] != "-ifscope" {
+		if !validRouteGuardRequest(args, len(owned)) {
 			return fmt.Errorf("路由清理进程收到无效请求")
 		}
 		_, err := command("/sbin/route", append([]string{"-n", "add"}, args...)...)
@@ -98,4 +101,21 @@ func runRouteGuard() (failure error) {
 			return err
 		}
 	}
+}
+
+// 子进程仅接受有数量上限的作用域默认路由和局域网直连路由，不提供任意路由操作入口。
+func validRouteGuardRequest(args []string, owned int) bool {
+	if owned >= maxGuardRoutes || (len(args) != 6 && len(args) != 7) || (args[0] != "-inet" && args[0] != "-inet6") || args[1] != "-net" {
+		return false
+	}
+	name := args[len(args)-1]
+	if name == "" || name == "lo0" || strings.HasPrefix(name, "utun") || strings.HasPrefix(name, "-") || strings.ContainsAny(name, " \t\r\n\x00") {
+		return false
+	}
+	if len(args) == 6 {
+		gateway, err := netip.ParseAddr(args[3])
+		return args[2] == "default" && args[4] == "-ifscope" && err == nil && gateway.Is4() == (args[0] == "-inet") && (gateway.Zone() == "" || gateway.Zone() == name)
+	}
+	prefix, err := netip.ParsePrefix(args[2])
+	return args[3] == "-interface" && args[4] == name && args[5] == "-ifscope" && err == nil && prefix == prefix.Masked() && prefix.Addr().Is4() == (args[0] == "-inet") && prefix.Bits() > 0 && prefix.Bits() < prefix.Addr().BitLen() && !prefix.Addr().IsLinkLocalUnicast()
 }
