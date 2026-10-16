@@ -31,6 +31,9 @@ class OverviewApi extends KernelApiClient {
   int revision = 1, generation = 1, sequence = 0;
   String mode = 'proxy';
   String tunState = 'off', tunError = '';
+  String tunEngine = 'outline';
+  final requestedTunEngines = <String>[];
+  bool delayTunStop = false;
   int tunRequests = 0;
   String provider = '测试网络';
   bool running = true, failWrite = false;
@@ -75,9 +78,11 @@ class OverviewApi extends KernelApiClient {
       };
     } else if (path == 'tun/request') {
       tunState = 'authorizing';
+      tunEngine = (body as Map)['engine'] as String;
+      requestedTunEngines.add(tunEngine);
       data = {'ticket': '启动标识-${++tunRequests}'};
     } else if (path == 'tun/stop') {
-      tunState = 'off';
+      tunState = delayTunStop ? 'stopping' : 'off';
       return request(base, token, 'GET', 'status');
     } else if (path == 'traffic') {
       data = trafficFixture();
@@ -86,7 +91,7 @@ class OverviewApi extends KernelApiClient {
     } else if (path == 'status') {
       data = {
         'running': running,
-        'tun': {'state': tunState, 'error': tunError},
+        'tun': {'state': tunState, 'error': tunError, 'engine': tunEngine},
         'traffic': trafficFixture(),
         'historyStorage': {
           'pendingRecords': 0,

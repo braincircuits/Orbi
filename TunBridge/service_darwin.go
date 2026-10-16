@@ -250,7 +250,7 @@ func (s *tunService) handle(conn *net.UnixConn) {
 	}
 	s.active = true
 	s.mutex.Unlock()
-	defer func() { s.mutex.Lock(); s.active = false; s.mutex.Unlock() }()
+	release := func() { s.mutex.Lock(); s.active = false; s.mutex.Unlock() }
 	child := exec.Command(serviceExecutable, "--control-file", request.Endpoint, "--ticket", request.Ticket,
 		"--owner-pid", strconv.Itoa(pid), "--owner-uid", strconv.Itoa(uid))
 	child.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root", "TMPDIR=/private/tmp"}
@@ -259,6 +259,7 @@ func (s *tunService) handle(conn *net.UnixConn) {
 	var output limitedServiceLog
 	child.Stderr = &output
 	if err = child.Start(); err != nil {
+		release()
 		reply(fmt.Errorf("启动虚拟网卡会话失败：%w", err))
 		return
 	}
@@ -278,6 +279,8 @@ func (s *tunService) handle(conn *net.UnixConn) {
 	if err != nil {
 		err = fmt.Errorf("虚拟网卡会话结束：%s（%v）", strings.TrimSpace(output.text), err)
 	}
+	// 退出通知到达界面后即可启动下一会话，先释放服务占用再发送通知。
+	release()
 	reply(err)
 }
 

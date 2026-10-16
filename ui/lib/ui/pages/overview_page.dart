@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../models/kernel_status.dart';
+import '../../models/tun_engine.dart';
 import '../../view_models/proxy_view_model.dart';
 import '../desktop_theme.dart';
 import '../widgets/desktop_widgets.dart';
+import '../widgets/desktop_select.dart';
 import '../widgets/traffic_chart.dart';
 import 'traffic_history_dialog.dart';
 
@@ -262,7 +264,9 @@ class _OverviewPageState extends State<OverviewPage> {
                 contentPadding: EdgeInsets.zero,
                 title: const Text('虚拟网卡模式'),
                 subtitle: Text(
-                  proxy.tunError.isNotEmpty
+                  model.switchingTunEngine
+                      ? '正在切换转发组件，等待旧会话退出后重新启动'
+                      : proxy.tunError.isNotEmpty
                       ? proxy.tunError
                       : switch (proxy.tunState) {
                           'authorizing' => '正在连接系统辅助服务；首次安装或更新时需要授权',
@@ -302,6 +306,40 @@ class _OverviewPageState extends State<OverviewPage> {
                   ),
                 ),
               ),
+            ),
+            const SizedBox(height: 8),
+            _pair(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('TUN 转发组件'),
+                  small('运行中切换会重启虚拟网卡并中断现有连接'),
+                ],
+              ),
+              SizedBox(
+                width: 240,
+                child: DesktopSelect<TunEngine>(
+                  key: const ValueKey('overview-tun-engine'),
+                  value: model.tunEngine,
+                  options: [
+                    for (final engine in TunEngine.values)
+                      (engine, engine.label),
+                  ],
+                  onSelected:
+                      model.locked ||
+                          !proxy.tunSupported ||
+                          {
+                            'authorizing',
+                            'starting',
+                            'stopping',
+                          }.contains(proxy.tunState)
+                      ? null
+                      : (engine) {
+                          if (engine != null) model.setTunEngine(engine);
+                        },
+                ),
+              ),
+              breakpoint: 600,
             ),
           ],
         ),

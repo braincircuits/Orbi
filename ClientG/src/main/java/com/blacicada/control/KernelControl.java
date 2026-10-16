@@ -27,7 +27,7 @@ public final class KernelControl implements AutoCloseable {
     private String previousState = "";
     private volatile List<String> secrets = List.of();
     private boolean closed, storageFailed;
-    private String tunSession = "", tunState = "off", tunError = "";
+    private String tunSession = "", tunState = "off", tunError = "", tunEngine = "outline";
     private long tunHeartbeat;
     private static final Gson JSON = new Gson();
 
@@ -74,7 +74,7 @@ public final class KernelControl implements AutoCloseable {
         result.put("connection", runtime.state());
         result.put("error", redact(runtime.lastError()));
         result.put("address", runtime.address());
-        result.put("tun", Map.of("state", tunState, "error", tunError, "interfaceIndex", runtime.interfaceIndex()));
+        result.put("tun", Map.of("state", tunState, "error", tunError, "engine", tunEngine, "interfaceIndex", runtime.interfaceIndex()));
         result.put("defaultConnectionId", config.defaultConnectionId());
         result.put("tunnels", tunnels());
         result.put("traffic", runtime.traffic());
@@ -307,11 +307,13 @@ public final class KernelControl implements AutoCloseable {
     }
 
     /** 辅助进程先绑定内核出口，成功后才允许安装接管路由。 */
-    public synchronized Map<String, Object> requestTun() {
+    public synchronized Map<String, Object> requestTun(String engine) {
         ensureOpen();
+        if (!Set.of("outline", "tun2socks").contains(engine)) throw new ControlException(400, "INVALID_TUN_ENGINE", "TUN 转发组件无效");
         if (!System.getProperty("os.name").startsWith("Mac")) throw new ControlException(400, "UNSUPPORTED_PLATFORM", "虚拟网卡仅支持 macOS");
         if (!tunSession.isEmpty()) throw new ControlException(409, "TUN_ACTIVE", "虚拟网卡正在运行或清理");
         if (!runtime.isRunning()) throw new ControlException(409, "PROXY_STOPPED", "请先开启代理");
+        tunEngine = engine;
         tunSession = UUID.randomUUID().toString(); tunState = "authorizing"; tunError = ""; tunHeartbeat = System.nanoTime();
         publishStatus();
         return Map.of("ticket", tunSession);
@@ -332,7 +334,7 @@ public final class KernelControl implements AutoCloseable {
         catch (Exception e) { runtime.bindInterface(0, config); throw e; }
         tunState = "starting"; tunError = ""; tunHeartbeat = System.nanoTime();
         var address = runtime.probeAddress();
-        return Map.of("session", tunSession, "proxy", new Authority(address.getHostString(), address.getPort()).toString());
+        return Map.of("session", tunSession, "proxy", new Authority(address.getHostString(), address.getPort()).toString(), "engine", tunEngine);
     }
     public synchronized Map<String, Object> heartbeatTun(String session, boolean ready) {
         if (tunSession.isEmpty() || !tunSession.equals(session)) throw new ControlException(409, "TUN_SESSION_CHANGED", "虚拟网卡会话已失效");

@@ -9,6 +9,7 @@ import '../models/proxy_profile.dart';
 import '../models/database_settings.dart';
 import 'database_preferences.dart';
 import '../models/kernel_status.dart';
+import '../models/tun_engine.dart';
 import '../models/traffic_summary.dart';
 import 'kernel_api_client.dart';
 
@@ -78,6 +79,7 @@ class ProxyController extends ChangeNotifier {
   int _retrySeconds = 1;
   bool busy = false, running = false, connected = false, streaming = false;
   String tunState = 'off', tunError = '';
+  TunEngine tunEngine = TunEngine.outline;
   bool get tunEnabled =>
       {'authorizing', 'starting', 'running', 'stopping'}.contains(tunState);
   bool get tunSupported =>
@@ -231,6 +233,9 @@ class ProxyController extends ChangeNotifier {
     final tun = status['tun'] as Map<String, dynamic>?;
     tunState = tun?['state'] as String? ?? 'off';
     tunError = tun?['error'] as String? ?? '';
+    if (tun?['engine'] case final String engine) {
+      tunEngine = TunEngine.parse(engine);
+    }
     connection = '${status['connection'] ?? 'idle'}';
     address = '${status['address'] ?? ''}';
     defaultConnectionId = '${status['defaultConnectionId'] ?? ''}';
@@ -752,10 +757,15 @@ class ProxyController extends ChangeNotifier {
       (await _request('POST', 'proxy/stop'))['data'] as Map<String, dynamic>,
     );
   });
-  Future<String> requestTun() => _operate(() async {
-    final result = await _request('POST', 'tun/request');
+  Future<String> requestTun(TunEngine engine) => _operate(() async {
+    final result = await _request(
+      'POST',
+      'tun/request',
+      body: {'engine': engine.name},
+    );
     tunState = 'authorizing';
     tunError = '';
+    tunEngine = engine;
     _notify();
     return (result['data'] as Map<String, dynamic>)['ticket'] as String;
   });
@@ -763,6 +773,20 @@ class ProxyController extends ChangeNotifier {
     _status(
       (await _request('POST', 'tun/stop'))['data'] as Map<String, dynamic>,
     );
+  });
+  Future<void> waitTunStopped() => _operate(() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (true) {
+      _status(
+        (await _request('GET', 'status'))['data'] as Map<String, dynamic>,
+      );
+      if (tunState == 'off') return;
+      if (tunState == 'failed') throw StateError('虚拟网卡停止失败：$tunError');
+      if (DateTime.now().isAfter(deadline)) {
+        throw StateError('等待虚拟网卡停止超时，请检查状态后重试');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
   });
   Future<int> selectConnection(String id, {int? expectedRevision}) =>
       _operate(() async {

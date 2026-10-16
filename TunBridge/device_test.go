@@ -7,8 +7,6 @@ import (
 	"net/netip"
 	"testing"
 	"time"
-
-	"golang.getoutline.org/sdk/network/lwip2transport"
 )
 
 func checksum(data []byte) uint16 {
@@ -69,22 +67,21 @@ func tcpPacket6(sequence, acknowledgement uint32, flags byte, payload []byte) []
 	return packet
 }
 
-func TestOutlineTranslatesActualIPPackets(t *testing.T) {
+func TestEnginesTranslateActualIPPackets(t *testing.T) {
+	for _, engine := range []string{"outline", "tun2socks"} {
+		t.Run(engine, func(t *testing.T) { testEnginePackets(t, engine) })
+	}
+}
+
+func testEnginePackets(t *testing.T, engine string) {
 	release := make(chan struct{})
 	defer close(release)
 	dialer, requests := selectiveEchoKernel(t, "198.51.100.2:443", release)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	device, err := lwip2transport.ConfigureDeviceWithRelay(dialer, udpRelay{dialer, ctx})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer device.Close()
 	packets := make(chan []byte, 30)
 	input, inputWriter := io.Pipe()
-	defer input.Close()
-	defer inputWriter.Close()
-	forwardPackets(device, packetTestIO{input, packetTestWriter(func(packet []byte) (int, error) {
+	device, _, err := startForwarding(engine, ctx, dialer, packetTestIO{input, packetTestWriter(func(packet []byte) (int, error) {
 		select {
 		case packets <- append([]byte(nil), packet...):
 			return len(packet), nil
@@ -92,6 +89,12 @@ func TestOutlineTranslatesActualIPPackets(t *testing.T) {
 			return 0, ctx.Err()
 		}
 	})})
+	if err != nil {
+		input.Close()
+		inputWriter.Close()
+		t.Fatal(err)
+	}
+	defer func() { cancel(); input.Close(); inputWriter.Close(); device.Close() }()
 	next := func() []byte {
 		deadline := time.After(3 * time.Second)
 		for {
@@ -103,18 +106,18 @@ func TestOutlineTranslatesActualIPPackets(t *testing.T) {
 				}
 				return packet
 			case <-deadline:
-				t.Fatal("Outline 未返回 IP 报文")
+				t.Fatal("组件未返回 IP 报文")
 				return nil
 			}
 		}
 	}
 	udp := []byte{0x9c, 0x40, 0, 53, 0, 11, 0, 0, 1, 2, 3}
-	if _, err := device.Write(ipv4(udp, 17)); err != nil {
+	if _, err := inputWriter.Write(ipv4(udp, 17)); err != nil {
 		t.Fatal(err)
 	}
 	reply := next()
 	if reply[9] != 17 || string(reply[len(reply)-3:]) != string([]byte{1, 2, 3}) {
-		t.Fatal("Outline UDP 回包错误")
+		t.Fatal("组件 UDP 回包错误")
 	}
 	if target := <-requests; target != "198.51.100.2:53" {
 		t.Fatalf("UDP 目标错误：%s", target)
@@ -130,7 +133,7 @@ func TestOutlineTranslatesActualIPPackets(t *testing.T) {
 	pseudo = append(pseudo, 0, 0, 0, byte(len(udp)), 0, 0, 0, 17)
 	pseudo = append(pseudo, udp...)
 	binary.BigEndian.PutUint16(packet6[46:], checksum(pseudo))
-	if _, err := device.Write(packet6); err != nil {
+	if _, err := inputWriter.Write(packet6); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -143,7 +146,7 @@ func TestOutlineTranslatesActualIPPackets(t *testing.T) {
 	}
 	reply6 := next()
 	if reply6[0]>>4 != 6 || reply6[6] != 17 || string(reply6[len(reply6)-3:]) != string([]byte{1, 2, 3}) {
-		t.Fatalf("Outline IPv6 UDP 回包错误：%x", reply6)
+		t.Fatalf("组件 IPv6 UDP 回包错误：%x", reply6)
 	}
 	// 两个地址族的空 UDP 必须真实产生长度为零的回包。
 	empty4 := ipv4([]byte{0x9c, 0x40, 0, 53, 0, 8, 0, 0}, 17)
@@ -156,7 +159,7 @@ func TestOutlineTranslatesActualIPPackets(t *testing.T) {
 	pseudo = append(pseudo, empty6[40:]...)
 	binary.BigEndian.PutUint16(empty6[46:], checksum(pseudo))
 	for _, packet := range [][]byte{empty4, empty6} {
-		if _, err := device.Write(packet); err != nil {
+		if _, err := inputWriter.Write(packet); err != nil {
 			t.Fatal(err)
 		}
 		reply := next()
@@ -165,11 +168,11 @@ func TestOutlineTranslatesActualIPPackets(t *testing.T) {
 		}
 	}
 	// 已建立的 UDP 来源新增一个一直等待 CONNECT 的目标，模拟代理流额度耗尽。
-	// 后续 UDP 和两个地址族的 TCP 都必须继续通过同一个 lwIP 协议栈。
+	// 后续 UDP 和两个地址族的 TCP 都必须继续通过同一个协议栈。
 	blocked := append([]byte{}, udp...)
 	binary.BigEndian.PutUint16(blocked[2:], 443)
 	written := make(chan error, 1)
-	go func() { _, err := device.Write(ipv4(blocked, 17)); written <- err }()
+	go func() { _, err := inputWriter.Write(ipv4(blocked, 17)); written <- err }()
 	select {
 	case err := <-written:
 		if err != nil {
@@ -188,14 +191,14 @@ func TestOutlineTranslatesActualIPPackets(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("未发起阻塞目标的 CONNECT")
 	}
-	if _, err := device.Write(ipv4(udp, 17)); err != nil {
+	if _, err := inputWriter.Write(ipv4(udp, 17)); err != nil {
 		t.Fatal(err)
 	}
 	if reply := next(); reply[9] != 17 || string(reply[len(reply)-3:]) != string([]byte{1, 2, 3}) {
 		t.Fatal("代理等待期间其他 UDP 目标未正常回包")
 	}
 	for family, makePacket := range []func(uint32, uint32, byte, []byte) []byte{tcpPacket, tcpPacket6} {
-		if _, err := device.Write(makePacket(100, 0, 2, nil)); err != nil {
+		if _, err := inputWriter.Write(makePacket(100, 0, 2, nil)); err != nil {
 			t.Fatal(err)
 		}
 		headerSize := func(packet []byte) int {
@@ -210,17 +213,17 @@ func TestOutlineTranslatesActualIPPackets(t *testing.T) {
 			t.Fatal("未收到 TCP SYN ACK")
 		}
 		serverSeq := binary.BigEndian.Uint32(synAck[offset+4:]) + 1
-		device.Write(makePacket(101, serverSeq, 0x10, nil))
-		device.Write(makePacket(101, serverSeq, 0x18, []byte("hello")))
+		inputWriter.Write(makePacket(101, serverSeq, 0x10, nil))
+		inputWriter.Write(makePacket(101, serverSeq, 0x18, []byte("hello")))
 		for {
 			packet := next()
 			start := headerSize(packet)
 			payload := start + int(packet[start+12]>>4)*4
 			if payload < len(packet) {
 				if string(packet[payload:]) != "hello" {
-					t.Fatal("Outline TCP 回包错误")
+					t.Fatal("组件 TCP 回包错误")
 				}
-				device.Write(makePacket(106, binary.BigEndian.Uint32(packet[start+4:])+5, 0x10, nil))
+				inputWriter.Write(makePacket(106, binary.BigEndian.Uint32(packet[start+4:])+5, 0x10, nil))
 				break
 			}
 		}

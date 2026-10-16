@@ -7,6 +7,9 @@ import 'package:network_ui/ui/desktop_theme.dart';
 import 'package:network_ui/ui/pages/overview_page.dart';
 import 'package:network_ui/ui/pages/settings_dialog.dart';
 import 'package:network_ui/view_models/proxy_view_model.dart';
+import 'package:network_ui/models/tun_engine.dart';
+import 'package:network_ui/services/runtime_preferences.dart';
+import 'package:network_ui/ui/widgets/desktop_select.dart';
 
 import 'overview_test.dart' show fixture;
 import 'view_model_test.dart' show TestDesktop;
@@ -33,6 +36,16 @@ class TunDesktop extends TestDesktop {
     tickets.add(ticket);
     if (fail) throw StateError('测试授权失败');
   }
+}
+
+// 界面测试使用内存偏好，真实文件持久化由上面的会话测试覆盖。
+class TunPreferences extends RuntimePreferences {
+  RuntimePaths saved = const RuntimePaths('', '');
+  @override
+  Future<RuntimePaths> read(Directory directory) async => saved;
+  @override
+  Future<void> write(Directory directory, RuntimePaths paths) async =>
+      saved = paths;
 }
 
 void main() {
@@ -128,6 +141,9 @@ void main() {
       expect(native.tickets, ['启动标识-1']);
       await model.setTun(false);
       expect(proxy.tunEnabled, isFalse);
+      await model.handleNativeCall(
+        const MethodCall('tunExited', {'ticket': '启动标识-1', 'error': ''}),
+      );
       native.fail = true;
       await model.setTun(true);
       expect(proxy.tunEnabled, isFalse);
@@ -151,6 +167,99 @@ void main() {
     }
   });
 
+  test('关闭时只保存组件，运行中等待旧进程退出和路由清理后重新启动', () async {
+    final (directory, api, proxy) = await fixture();
+    final native = TunDesktop(directory);
+    final model = ProxyViewModel(proxy: proxy, native: native)..loading = false;
+    try {
+      await RuntimePreferences().write(
+        directory,
+        const RuntimePaths('/java', '/client.jar'),
+      );
+      await model.setTunEngine(TunEngine.tun2socks);
+      expect(native.tickets, isEmpty);
+      final saved = await RuntimePreferences().read(directory);
+      expect(saved.tunEngine, TunEngine.tun2socks);
+      expect(saved.javaPath, '/java');
+      expect(saved.jarPath, '/client.jar');
+      await model.setTun(true);
+      expect(api.requestedTunEngines, ['tun2socks']);
+      api.tunState = 'running';
+      await proxy.attach();
+      api.delayTunStop = true;
+      final switching = model.setTunEngine(TunEngine.outline);
+      await Future<void>.delayed(Duration.zero);
+      expect(proxy.tunState, 'stopping');
+      expect(model.switchingTunEngine, isTrue);
+      expect(native.tickets, hasLength(1));
+      // 重复选择不能启动第二个切换；迟到的其他会话退出不能解锁本次等待。
+      await model.setTunEngine(TunEngine.outline);
+      await model.handleNativeCall(
+        const MethodCall('tunExited', {'ticket': '其他会话', 'error': ''}),
+      );
+      expect(native.tickets, hasLength(1));
+      await model.handleNativeCall(
+        const MethodCall('tunExited', {'ticket': '启动标识-1', 'error': ''}),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(native.tickets, hasLength(1));
+      api.tunState = 'off';
+      await switching.timeout(const Duration(seconds: 2));
+      expect(api.requestedTunEngines, ['tun2socks', 'outline']);
+      expect(native.tickets, hasLength(2));
+      expect(proxy.tunState, 'authorizing');
+      expect(model.switchingTunEngine, isFalse);
+      expect(
+        (await RuntimePreferences().read(directory)).tunEngine,
+        TunEngine.outline,
+      );
+    } finally {
+      model.dispose();
+      await directory.delete(recursive: true);
+    }
+  }, skip: !Platform.isMacOS);
+
+  test('旧会话清理失败时不启动新组件，新组件启动失败后撤销启动标识', () async {
+    final (directory, api, proxy) = await fixture();
+    final native = TunDesktop(directory);
+    final model = ProxyViewModel(proxy: proxy, native: native)..loading = false;
+    final messages = <UiMessage>[];
+    final subscription = model.messages.stream.listen(messages.add);
+    try {
+      await model.setTun(true);
+      api.tunState = 'running';
+      await proxy.attach();
+      final failed = model.setTunEngine(TunEngine.tun2socks);
+      await Future<void>.delayed(Duration.zero);
+      await model.handleNativeCall(
+        const MethodCall('tunExited', {'ticket': '启动标识-1', 'error': '路由清理失败'}),
+      );
+      await failed;
+      expect(native.tickets, hasLength(1));
+      expect(model.tunEngine, TunEngine.outline);
+      expect(messages.last.text, contains('路由清理失败'));
+      // 再次启动旧组件，然后验证新组件启动失败不会自动回退。
+      await model.setTun(true);
+      api.tunState = 'running';
+      await proxy.attach();
+      native.fail = true;
+      final switching = model.setTunEngine(TunEngine.tun2socks);
+      await Future<void>.delayed(Duration.zero);
+      await model.handleNativeCall(
+        const MethodCall('tunExited', {'ticket': '启动标识-2', 'error': ''}),
+      );
+      await switching;
+      expect(api.requestedTunEngines, ['outline', 'outline', 'tun2socks']);
+      expect(proxy.tunEnabled, isFalse);
+      expect(model.tunEngine, TunEngine.tun2socks);
+      expect(model.switchingTunEngine, isFalse);
+    } finally {
+      await subscription.cancel();
+      model.dispose();
+      await directory.delete(recursive: true);
+    }
+  }, skip: !Platform.isMacOS);
+
   for (final platform in [
     TargetPlatform.macOS,
     TargetPlatform.windows,
@@ -159,9 +268,11 @@ void main() {
     for (final brightness in Brightness.values) {
       testWidgets('虚拟网卡开关显示启停状态 $platform $brightness', (tester) async {
         final (directory, api, proxy) = (await tester.runAsync(fixture))!;
+        final preferences = TunPreferences();
         final model = ProxyViewModel(
           proxy: proxy,
           native: TunDesktop(directory),
+          preferences: preferences,
         )..loading = false;
         model.accept(proxy.appliedProfile!);
         tester.view.physicalSize = const Size(1000, 850);
@@ -181,6 +292,28 @@ void main() {
         await tester.pumpAndSettle();
         final finder = find.byKey(const ValueKey('overview-tun'));
         expect(tester.widget<Switch>(finder).value, isFalse);
+        final selector = find.byKey(const ValueKey('overview-tun-engine'));
+        expect(
+          tester.widget<DesktopSelect<TunEngine>>(selector).value,
+          TunEngine.outline,
+        );
+        expect(find.text('TUN 转发组件'), findsOneWidget);
+        if (proxy.tunSupported) {
+          await tester.tap(
+            find.descendant(of: selector, matching: find.byType(TextField)),
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(
+            find
+                .widgetWithText(MenuItemButton, 'xjasonlyu/tun2socks')
+                .hitTestable(),
+          );
+          await tester.pumpAndSettle();
+          expect(model.working, isFalse);
+          expect(preferences.saved.tunEngine, TunEngine.tun2socks);
+          expect(model.tunEngine, TunEngine.tun2socks);
+          expect(api.requestedTunEngines, isEmpty);
+        }
         api.tunState = 'starting';
         await tester.runAsync(() => proxy.attach());
         await tester.pumpWidget(
@@ -192,6 +325,10 @@ void main() {
         await tester.pumpAndSettle();
         expect(tester.widget<Switch>(finder).value, isTrue);
         expect(tester.widget<Switch>(finder).onChanged, isNull);
+        expect(
+          tester.widget<DesktopSelect<TunEngine>>(selector).onSelected,
+          isNull,
+        );
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox());
       });

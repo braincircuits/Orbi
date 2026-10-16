@@ -28,7 +28,7 @@ type tunDevice struct {
 	routes []netip.Prefix
 	bypass [][]string
 	guard  *routeGuard
-	// 输入循环单独读取，输出在 lwIP 锁下串行写入，两个方向分别复用缓冲区。
+	// 组件分别串行读取和写入，两个方向各自复用缓冲区。
 	readBuffer, writeBuffer []byte
 }
 

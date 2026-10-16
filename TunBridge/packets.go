@@ -101,11 +101,8 @@ func (a *udpAssociation) send(peer *udpPeer, target netip.AddrPort) {
 		case <-peer.context.Done():
 			return
 		case data := <-peer.outgoing:
-			frame := make([]byte, len(data)+2)
-			binary.BigEndian.PutUint16(frame, uint16(len(data)))
-			copy(frame[2:], data)
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if _, err := io.Copy(conn, bytes.NewReader(frame)); err != nil {
+			if err := writeDatagram(conn, data); err != nil {
 				if peer.context.Err() == nil {
 					log.Printf("UDP 报文发送失败：目标=%s，原因=%v", target, err)
 				}
@@ -117,17 +114,9 @@ func (a *udpAssociation) send(peer *udpPeer, target netip.AddrPort) {
 
 func (a *udpAssociation) receive(peer *udpPeer, target netip.AddrPort) {
 	defer peer.cancel()
-	var prefix [2]byte
 	for {
-		if _, err := io.ReadFull(peer.conn, prefix[:]); err != nil {
-			return
-		}
-		size := int(binary.BigEndian.Uint16(prefix[:]))
-		if size > maxPacket {
-			return
-		}
-		data := make([]byte, size)
-		if _, err := io.ReadFull(peer.conn, data); err != nil {
+		data, err := readDatagram(peer.conn)
+		if err != nil {
 			return
 		}
 		select {
@@ -136,6 +125,32 @@ func (a *udpAssociation) receive(peer *udpPeer, target netip.AddrPort) {
 			return
 		}
 	}
+}
+
+// 两个转发组件共用 Java 内核的长度前缀封装，不改变 UDP 报文边界。
+func writeDatagram(writer io.Writer, data []byte) error {
+	if len(data) > maxPacket {
+		return fmt.Errorf("UDP 报文过长")
+	}
+	frame := make([]byte, len(data)+2)
+	binary.BigEndian.PutUint16(frame, uint16(len(data)))
+	copy(frame[2:], data)
+	_, err := io.Copy(writer, bytes.NewReader(frame))
+	return err
+}
+
+func readDatagram(reader io.Reader) ([]byte, error) {
+	var prefix [2]byte
+	if _, err := io.ReadFull(reader, prefix[:]); err != nil {
+		return nil, err
+	}
+	size := int(binary.BigEndian.Uint16(prefix[:]))
+	if size > maxPacket {
+		return nil, fmt.Errorf("UDP 报文过长")
+	}
+	data := make([]byte, size)
+	_, err := io.ReadFull(reader, data)
+	return data, err
 }
 
 func (a *udpAssociation) ReceivePackets(handler packetrelay.PacketHandler) error {

@@ -10,6 +10,7 @@ import '../models/proxy_profile.dart';
 import '../models/connection_document.dart';
 import '../models/kernel_status.dart';
 import '../models/database_settings.dart';
+import '../models/tun_engine.dart';
 import '../services/native_bridge.dart';
 import '../services/kernel_api_client.dart';
 import '../services/proxy_controller.dart';
@@ -49,6 +50,10 @@ class ProxyViewModel extends ChangeNotifier {
     this.proxy.logChanges.addListener(_logsChanged);
   }
   String _tunTicket = '';
+  Completer<String>? _tunExit;
+  TunEngine _tunEngine = TunEngine.outline;
+  TunEngine get tunEngine => proxy.tunEnabled ? proxy.tunEngine : _tunEngine;
+  bool switchingTunEngine = false;
   bool? tunServiceInstalled;
   bool checkingTunService = false;
   String tunServiceError = '';
@@ -81,6 +86,7 @@ class ProxyViewModel extends ChangeNotifier {
     proxy.streaming,
     proxy.tunState,
     proxy.tunError,
+    proxy.tunEngine,
     proxy.configurationChanged,
     proxy.revision,
     proxy.configurationRevision,
@@ -567,8 +573,9 @@ class ProxyViewModel extends ChangeNotifier {
       }
       if (!active) return;
       final profile = ProxyProfile();
+      final runtime = await preferences.read(proxy.directory);
+      _tunEngine = runtime.tunEngine;
       if (!usesNativeKernel) {
-        final runtime = await preferences.read(proxy.directory);
         profile.javaPath = runtime.javaPath;
         profile.jarPath = runtime.jarPath;
       }
@@ -662,7 +669,7 @@ class ProxyViewModel extends ChangeNotifier {
   Future<void> saveRuntime() => action(() async {
     await preferences.write(
       proxy.directory,
-      RuntimePaths(java.text.trim(), jar.text.trim()),
+      RuntimePaths(java.text.trim(), jar.text.trim(), tunEngine: _tunEngine),
     );
     message('启动路径已保存；退出内核后，下次启动使用这些路径');
   });
@@ -714,13 +721,60 @@ class ProxyViewModel extends ChangeNotifier {
       await proxy.stopTun();
       return;
     }
-    final ticket = await proxy.requestTun();
+    await _waitTunExit();
+    if (!active) return;
+    await _startTun();
+  });
+
+  Future<void> _startTun() async {
+    final ticket = await proxy.requestTun(_tunEngine);
     _tunTicket = ticket;
+    final exit = Completer<String>();
+    _tunExit = exit;
     try {
       await native.startTun(proxy.endpointFile.path, ticket);
     } catch (_) {
+      if (!exit.isCompleted) exit.complete('');
+      if (identical(_tunExit, exit)) _tunExit = null;
       await proxy.stopTun();
       rethrow;
+    }
+  }
+
+  Future<void> _waitTunExit() async {
+    final exit = _tunExit;
+    if (exit == null) return;
+    final error = await exit.future.timeout(
+      const Duration(seconds: 135),
+      onTimeout: () => throw StateError('等待虚拟网卡辅助进程退出超时，请完成系统授权或检查辅助服务'),
+    );
+    if (identical(_tunExit, exit)) _tunExit = null;
+    if (error.isNotEmpty) throw StateError(error);
+  }
+
+  Future<void> setTunEngine(TunEngine engine) => action(() async {
+    if (engine == tunEngine) return;
+    if (!proxy.tunSupported) throw StateError('当前内核不支持虚拟网卡');
+    if ({'authorizing', 'starting', 'stopping'}.contains(proxy.tunState)) {
+      throw StateError('请等待虚拟网卡启停完成后再切换组件');
+    }
+    final restart = proxy.tunState == 'running';
+    update(() => switchingTunEngine = true);
+    try {
+      if (restart) await proxy.stopTun();
+      await _waitTunExit();
+      if (restart) await proxy.waitTunStopped();
+      if (!active) return;
+      final saved = await preferences.read(proxy.directory);
+      await preferences.write(
+        proxy.directory,
+        RuntimePaths(saved.javaPath, saved.jarPath, tunEngine: engine),
+      );
+      if (!active) return;
+      update(() => _tunEngine = engine);
+      if (restart) await _startTun();
+    } finally {
+      if (active) update(() => switchingTunEngine = false);
     }
   });
 
@@ -972,6 +1026,9 @@ class ProxyViewModel extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    final exit = _tunExit;
+    _tunExit = null;
+    if (exit != null && !exit.isCompleted) exit.complete('');
     unawaited(messages.close());
     proxy.removeListener(_proxyChanged);
     proxy.logChanges.removeListener(_logsChanged);
@@ -1011,9 +1068,15 @@ class ProxyViewModel extends ChangeNotifier {
     if (call.method == 'tunExited' && active) {
       final result = Map<String, dynamic>.from(call.arguments as Map);
       if (result['ticket'] != _tunTicket) return;
-      if (proxy.tunState == 'authorizing') await proxy.stopTun();
       final error = result['error'] as String;
-      if (error.isNotEmpty && active) {
+      try {
+        if (proxy.tunState == 'authorizing') await proxy.stopTun();
+      } finally {
+        final exit = _tunExit;
+        _tunExit = null;
+        if (exit != null && !exit.isCompleted) exit.complete(error);
+      }
+      if (error.isNotEmpty && active && !switchingTunEngine) {
         messages.add(UiMessage(error, failure: true));
       }
     }

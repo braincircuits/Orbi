@@ -7,6 +7,8 @@ import com.blacicada.h2.Http2ProxyServer;
 import com.google.gson.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import java.io.*;
 import java.net.*;
 import java.net.http.*;
@@ -45,12 +47,12 @@ class ControlHttpServerTest {
     }
     @Test void cancelledTunAuthorizationCannotInstallRoutesLater() throws Exception {
         Assumptions.assumeTrue(System.getProperty("os.name").startsWith("Mac"));
-        ok("POST", "/tun/request", null, 409);
+        ok("POST", "/tun/request", "{\"engine\":\"outline\"}", 409);
         ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
         ok("PATCH", "/settings", "{\"port\":0}", 200);
         ok("POST", "/proxy/start", null, 200);
-        String ticket = ok("POST", "/tun/request", null, 200).getAsJsonObject("data").get("ticket").getAsString();
-        ok("POST", "/tun/request", null, 409);
+        String ticket = ok("POST", "/tun/request", "{\"engine\":\"outline\"}", 200).getAsJsonObject("data").get("ticket").getAsString();
+        ok("POST", "/tun/request", "{\"engine\":\"outline\"}", 409);
         ok("POST", "/proxy/restart", null, 409);
         ok("POST", "/tun/prepare", "{\"interface\":\"lo0\",\"ticket\":\"" + ticket + "\"}", 400);
         ok("POST", "/tun/stop", null, 200);
@@ -59,7 +61,7 @@ class ControlHttpServerTest {
         var status = ok("GET", "/status", null, 200).getAsJsonObject("data");
         assertTrue(status.get("running").getAsBoolean());
         assertEquals("off", status.getAsJsonObject("tun").get("state").getAsString());
-        String next = ok("POST", "/tun/request", null, 200).getAsJsonObject("data").get("ticket").getAsString();
+        String next = ok("POST", "/tun/request", "{\"engine\":\"outline\"}", 200).getAsJsonObject("data").get("ticket").getAsString();
         assertNotEquals(ticket, next);
         ok("POST", "/tun/finish", "{\"session\":\"" + ticket + "\",\"error\":\"迟到的退出\"}", 200);
         assertEquals("authorizing", ok("GET", "/status", null, 200).getAsJsonObject("data").getAsJsonObject("tun").get("state").getAsString());
@@ -67,7 +69,9 @@ class ControlHttpServerTest {
         ok("POST", "/tun/prepare", "{\"interface\":\"en0\",\"ticket\":\"" + next + "\"}", 409);
     }
 
-    @Test void tunLifecycleRestoresUnboundKernelAfterHelperCleanup() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"outline", "tun2socks"})
+    void tunLifecycleRestoresUnboundKernelAfterHelperCleanup(String engine) throws Exception {
         Assumptions.assumeTrue(System.getProperty("os.name").startsWith("Mac"));
         var network = Collections.list(NetworkInterface.getNetworkInterfaces()).stream().filter(n -> {
             try { return n.getName().startsWith("en") && n.isUp() && !n.isLoopback() && !n.isPointToPoint(); }
@@ -77,13 +81,16 @@ class ControlHttpServerTest {
         ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
         ok("PATCH", "/settings", "{\"port\":0}", 200);
         ok("POST", "/proxy/start", null, 200);
-        String ticket = ok("POST", "/tun/request", null, 200).getAsJsonObject("data").get("ticket").getAsString();
+        String ticket = ok("POST", "/tun/request", "{\"engine\":\"" + engine + "\"}", 200).getAsJsonObject("data").get("ticket").getAsString();
         var prepared = ok("POST", "/tun/prepare", "{\"interface\":\"" + network.get().getName() + "\",\"ticket\":\"" + ticket + "\"}", 200).getAsJsonObject("data");
         assertEquals(ticket, prepared.get("session").getAsString());
+        assertEquals(engine, prepared.get("engine").getAsString());
         String heartbeat = "{\"session\":\"" + ticket + "\",\"ready\":true}";
         assertFalse(ok("POST", "/tun/heartbeat", heartbeat, 200).getAsJsonObject("data").get("stop").getAsBoolean());
         var tun = ok("GET", "/status", null, 200).getAsJsonObject("data").getAsJsonObject("tun");
         assertEquals("running", tun.get("state").getAsString());
+        assertEquals(engine, tun.get("engine").getAsString());
+        ok("POST", "/tun/request", "{\"engine\":\"tun2socks\"}", 409);
         assertEquals(network.get().getIndex(), tun.get("interfaceIndex").getAsInt());
         ok("PATCH", "/settings", "{\"port\":12345}", 409);
         ok("POST", "/tun/stop", null, 200);
@@ -93,6 +100,13 @@ class ControlHttpServerTest {
         assertTrue(status.get("running").getAsBoolean());
         assertEquals("off", status.getAsJsonObject("tun").get("state").getAsString());
         assertEquals(0, status.getAsJsonObject("tun").get("interfaceIndex").getAsInt());
+    }
+
+    @Test void tunEngineMustBeExplicitAndKnown() throws Exception {
+        for (String body : Arrays.asList(null, "{}", "{\"engine\":\"unknown\"}")) {
+            ok("POST", "/tun/request", body, 400);
+            assertEquals("off", ok("GET", "/status", null, 200).getAsJsonObject("data").getAsJsonObject("tun").get("state").getAsString());
+        }
     }
 
     @Test void trafficWindowsAreDefinedByKernelAndExcludeUnfinishedHours() throws Exception {

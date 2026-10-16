@@ -1,13 +1,20 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../models/tun_engine.dart';
+
 class RuntimePaths {
-  const RuntimePaths(this.javaPath, this.jarPath);
+  const RuntimePaths(
+    this.javaPath,
+    this.jarPath, {
+    this.tunEngine = TunEngine.outline,
+  });
   final String javaPath;
   final String jarPath;
+  final TunEngine tunEngine;
 }
 
-/// 只读写当前客户端的启动路径，不保存代理配置或凭据。
+/// 保存当前客户端的启动路径和 TUN 组件选择，不保存代理配置或凭据。
 class RuntimePreferences {
   Future<RuntimePaths> read(Directory directory) async {
     final file = File('${directory.path}/ui.json');
@@ -16,6 +23,7 @@ class RuntimePreferences {
     return RuntimePaths(
       data['javaPath'] as String? ?? '',
       data['jarPath'] as String? ?? '',
+      tunEngine: TunEngine.parse(data['tunEngine'] as String? ?? 'outline'),
     );
   }
 
@@ -23,7 +31,11 @@ class RuntimePreferences {
     await directory.create(recursive: true);
     final file = File('${directory.path}/ui.json.tmp');
     await file.writeAsString(
-      jsonEncode({'javaPath': paths.javaPath, 'jarPath': paths.jarPath}),
+      jsonEncode({
+        'javaPath': paths.javaPath,
+        'jarPath': paths.jarPath,
+        'tunEngine': paths.tunEngine.name,
+      }),
       flush: true,
     );
     await file.rename('${directory.path}/ui.json');

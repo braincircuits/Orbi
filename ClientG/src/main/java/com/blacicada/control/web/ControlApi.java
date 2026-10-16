@@ -21,7 +21,7 @@ final class ControlApi {
                 case "GET /api/v1/info" -> data = control.info();
                 case "GET /api/v1/health" -> data = Map.of("ready", true);
                 case "GET /api/v1/status" -> data = control.status();
-                case "POST /api/v1/tun/request" -> data = control.requestTun();
+                case "POST /api/v1/tun/request" -> data = control.requestTun(string(body, "engine"));
                 case "POST /api/v1/tun/prepare" -> data = control.prepareTun(string(body, "interface"), string(body, "ticket"));
                 case "POST /api/v1/tun/heartbeat" -> data = control.heartbeatTun(string(body, "session"), bool(body, "ready"));
                 case "POST /api/v1/tun/stop" -> { control.stopTun(); data = control.status(); }

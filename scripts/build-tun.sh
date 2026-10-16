@@ -1,5 +1,5 @@
 #!/bin/sh
-# 构建或测试 Outline 辅助程序；补丁只作用于本次构建副本，不修改 Go 共享缓存。
+# 构建或测试双组件 TUN 辅助程序；Outline 补丁只作用于本次构建副本，不修改 Go 共享缓存。
 set -eu
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$PROJECT_ROOT/scripts/build-tools.sh"
@@ -45,10 +45,10 @@ elif [ "$MODE" = --bench ]; then
   printf '%s\n' '正在测量 TUN TCP 在模拟确认延迟下的吞吐…'
   CGO_ENABLED=1 "$GO" test -modfile="$BUILD_DIR/tun.mod" -mod=readonly -run '^$' -bench '^(BenchmarkTCPUpload|BenchmarkTUNWrite)$' -benchmem -benchtime=3x -count=3 -timeout 60s .
 elif [ "$MODE" = --test ]; then
-  printf '%s\n' '正在测试包含补丁的 Outline 辅助程序…'
+  printf '%s\n' '正在测试 TUN 辅助程序（Outline SDK 与 xjasonlyu/tun2socks）…'
   CGO_ENABLED=1 "$GO" test -modfile="$BUILD_DIR/tun.mod" -mod=readonly -race -timeout 60s ./...
 else
-  printf '%s\n' '正在构建 Outline 虚拟网卡辅助程序…'
+  printf '%s\n' '正在构建双组件虚拟网卡辅助程序…'
   CGO_ENABLED=1 "$GO" build -modfile="$BUILD_DIR/tun.mod" -mod=readonly -trimpath -o "$PROJECT_ROOT/target/network-tun" .
   printf '辅助程序已生成：%s\n' "$PROJECT_ROOT/target/network-tun"
 fi

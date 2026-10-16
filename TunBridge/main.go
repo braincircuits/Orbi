@@ -15,9 +15,6 @@ import (
 	"strconv"
 	"syscall"
 	"time"
-
-	"golang.getoutline.org/sdk/network/lwip2transport"
-	"golang.getoutline.org/sdk/network/packetrelay"
 )
 
 type controlClient struct {
@@ -102,6 +99,7 @@ func run(control *controlClient, owner int, ticket string) (failure error) {
 	var prepared struct {
 		Session string `json:"session"`
 		Proxy   string `json:"proxy"`
+		Engine  string `json:"engine"`
 	}
 	if err = control.call("prepare", map[string]any{"interface": name, "ticket": ticket}, &prepared); err != nil {
 		return err
@@ -118,21 +116,16 @@ func run(control *controlClient, owner int, ticket string) (failure error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
 	dialer := localDialer{proxy: prepared.Proxy}
-	relay, err := packetrelay.NewTimeoutPacketRelay(udpRelay{dialer: dialer, context: ctx}, 60*time.Second)
-	if err != nil {
-		return err
-	}
-	device, err := lwip2transport.ConfigureDeviceWithRelay(dialer, relay)
-	if err != nil {
-		return fmt.Errorf("初始化 Outline SDK 失败：%w", err)
-	}
-	defer device.Close()
 	tun, err := openTun()
 	if err != nil {
 		return err
 	}
-	defer func() { cancel(); failure = errors.Join(failure, tun.Close()) }()
-	stopped := forwardPackets(device, tun)
+	device, stopped, err := startForwarding(prepared.Engine, ctx, dialer, tun)
+	if err != nil {
+		return errors.Join(err, tun.Close())
+	}
+	// 先关闭虚拟网卡以唤醒读取，再等待协议栈退出，最后通知 Java 恢复出口。
+	defer func() { cancel(); failure = errors.Join(failure, tun.Close(), device.Close()) }()
 	// 数据转发已经就绪后再接管路由；任意失败都按相反顺序释放。
 	check := func() error {
 		var heartbeat struct {
