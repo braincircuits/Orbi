@@ -5,6 +5,7 @@ import com.blacicada.common.h3.*;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
+import io.netty.channel.socket.ChannelInputShutdownEvent;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http3.*;
 import io.netty.handler.codec.quic.QuicStreamChannel;
@@ -149,9 +150,12 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
             var data = ctx.pipeline().context("data");
             ctx.pipeline().remove(this);
             while (!pending.isEmpty()) data.fireChannelRead(pending.remove());
+            // 数据先交付，再补交接管前的 FIN；由转发层等待排队写入完成后关闭目标输出。
+            if (((QuicStreamChannel) ctx.channel()).isInputShutdown())
+                data.fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+            // 续读统一由转发层按待写数据和水位决定，不能额外启读绕过反压。
             data.fireChannelReadComplete();
             target.read();
-            ctx.channel().read();
         });
     }
 

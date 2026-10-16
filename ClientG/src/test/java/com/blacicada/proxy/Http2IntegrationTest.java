@@ -123,6 +123,83 @@ class Http2IntegrationTest {
     }
 
     @Test
+    void unknownFramesDoNotCloseEstablishedTunnel() throws Exception {
+        var group = new NioEventLoopGroup(1);
+        Channel connection = null;
+        var settings = new CompletableFuture<Void>();
+        var status = new CompletableFuture<String>();
+        var received = new CompletableFuture<byte[]>();
+        byte[] payload = "unknown-frame-payload".getBytes(StandardCharsets.US_ASCII);
+        try {
+            var config = clientConfig("integration-test-secret", "localhost", false, 8);
+            var ssl = SslContextBuilder.forClient().trustManager(new File(resource("localhost.crt")))
+                    .applicationProtocolConfig(new ApplicationProtocolConfig(ApplicationProtocolConfig.Protocol.ALPN,
+                            ApplicationProtocolConfig.SelectorFailureBehavior.NO_ADVERTISE,
+                            ApplicationProtocolConfig.SelectedListenerFailureBehavior.FATAL_ALERT, "h2")).build();
+            connection = new Bootstrap().group(group).channel(NioSocketChannel.class)
+                    .handler(new ChannelInitializer<Channel>() {
+                        @Override
+                        protected void initChannel(Channel channel) {
+                            channel.pipeline().addLast(ssl.newHandler(channel.alloc(), "localhost", server.address().getPort()));
+                            channel.pipeline().addLast(Http2FrameCodecBuilder.forClient().build());
+                            channel.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+                                @Override
+                                public void channelRead(ChannelHandlerContext ctx, Object message) {
+                                    if (message instanceof Http2SettingsFrame) settings.complete(null);
+                                    ctx.fireChannelRead(message);
+                                }
+                            });
+                            channel.pipeline().addLast(new Http2MultiplexHandler(new ChannelInboundHandlerAdapter()));
+                        }
+                    }).connect(server.address()).sync().channel();
+            settings.get(5, TimeUnit.SECONDS);
+            var stream = new Http2StreamChannelBootstrap(connection).handler(new ChannelInboundHandlerAdapter() {
+                private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
+                @Override
+                public void channelRead(ChannelHandlerContext ctx, Object message) {
+                    try {
+                        if (message instanceof Http2HeadersFrame headers)
+                            status.complete(headers.headers().status().toString());
+                        else if (message instanceof Http2DataFrame frame) {
+                            byte[] part = new byte[frame.content().readableBytes()];
+                            frame.content().readBytes(part);
+                            bytes.writeBytes(part);
+                            if (bytes.size() >= payload.length) received.complete(bytes.toByteArray());
+                        }
+                    } finally {
+                        ReferenceCountUtil.release(message);
+                    }
+                }
+
+                @Override
+                public void channelInactive(ChannelHandlerContext ctx) {
+                    received.completeExceptionally(new EOFException("收到业务数据前隧道已关闭"));
+                }
+
+                @Override
+                public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                    status.completeExceptionally(cause);
+                    received.completeExceptionally(cause);
+                    ctx.close();
+                }
+            }).open().sync().getNow();
+            var request = new DefaultHttp2Headers().method("CONNECT").authority("127.0.0.1:" + echo.port())
+                    .set("proxy-authorization", ProxyCredentials.clientAuthorization(config));
+            stream.writeAndFlush(new DefaultHttp2HeadersFrame(request)).sync();
+            assertEquals("200", status.get(5, TimeUnit.SECONDS));
+            stream.writeAndFlush(new DefaultHttp2UnknownFrame((byte) 0x40, new Http2Flags(), Unpooled.buffer(1).writeByte(99))).sync();
+            stream.writeAndFlush(new DefaultHttp2DataFrame(Unpooled.wrappedBuffer(payload))).sync();
+            assertArrayEquals(payload, received.get(5, TimeUnit.SECONDS));
+            assertTrue(stream.isActive(), "忽略未知帧后业务隧道应保持可用");
+            stream.close().sync();
+        } finally {
+            if (connection != null) connection.close().syncUninterruptibly();
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
+        }
+    }
+
+    @Test
     void concurrentTunnelsShareOneConnection() throws Exception {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var tasks = new ArrayList<java.util.concurrent.Future<?>>();

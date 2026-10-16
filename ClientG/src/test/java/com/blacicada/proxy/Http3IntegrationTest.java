@@ -15,6 +15,8 @@ import io.netty.handler.codec.quic.*;
 import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.*;
 import java.net.*;
@@ -236,6 +238,106 @@ class Http3IntegrationTest {
             if (connection != null) connection.close().sync();
             if (transport != null) transport.close().sync();
             group.shutdownGracefully(0, 1, TimeUnit.SECONDS).sync();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 5})
+    void earlyFinIsReplayedAfterProtocolHandoff(int payloadSize) throws Exception {
+        byte[] payload = new byte[payloadSize];
+        new Random(31).nextBytes(payload);
+        var group = new NioEventLoopGroup(1);
+        Channel transport = null;
+        QuicChannel connection = null;
+        var status = new CompletableFuture<String>();
+        var received = new CompletableFuture<byte[]>();
+        try (var origin = new Origin(socket -> {
+            socket.setSoTimeout(3000);
+            assertArrayEquals(payload, socket.getInputStream().readNBytes(payload.length));
+            assertEquals(-1, socket.getInputStream().read(), "协议接管后必须将提前到达的 FIN 传给目标");
+            socket.getOutputStream().write(new byte[]{42});
+        })) {
+            var config = clientConfig("integration-test-secret", "localhost", false, 8);
+            var ssl = QuicSslContextBuilder.forClient().trustManager(new File(resource("localhost.crt")))
+                    .applicationProtocols(Http3.supportedApplicationProtocols()).build();
+            transport = new Bootstrap().group(group).channel(NioDatagramChannel.class)
+                    .handler(Transport.limits(Http3.newQuicClientCodecBuilder(), config)
+                            .sslEngineProvider(channel -> ssl.newEngine(channel.alloc(), "localhost", server.address().getPort())).build())
+                    .bind("127.0.0.1", 0).sync().channel();
+            connection = QuicChannel.newBootstrap(transport).handler(new Http3ClientConnectionHandler())
+                    .remoteAddress(server.address()).connect().sync().getNow();
+            var stream = Http3.newRequestStreamBootstrap(connection, new ChannelInboundHandlerAdapter() {
+                private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
+                @Override
+                public void channelRead(ChannelHandlerContext ctx, Object message) {
+                    try {
+                        if (message instanceof Http3HeadersFrame headers)
+                            status.complete(headers.headers().status().toString());
+                        else if (message instanceof Http3DataFrame frame) {
+                            byte[] part = new byte[frame.content().readableBytes()];
+                            frame.content().readBytes(part);
+                            bytes.writeBytes(part);
+                        }
+                    } finally {
+                        ReferenceCountUtil.release(message);
+                    }
+                }
+
+                @Override
+                public void channelInactive(ChannelHandlerContext ctx) {
+                    received.complete(bytes.toByteArray());
+                }
+
+                @Override
+                public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                    status.completeExceptionally(cause);
+                    received.completeExceptionally(cause);
+                    ctx.close();
+                }
+            }).create().sync().getNow();
+            var request = new DefaultHttp3HeadersFrame();
+            request.headers().method("CONNECT").authority("127.0.0.1:" + origin.port())
+                    .set("proxy-authorization", ProxyCredentials.clientAuthorization(config));
+            var sent = stream.newPromise();
+            stream.eventLoop().submit(() -> {
+                var encoded = new ByteArrayOutputStream();
+                stream.pipeline().addFirst("capture", new ChannelOutboundHandlerAdapter() {
+                    @Override
+                    public void write(ChannelHandlerContext ctx, Object message, ChannelPromise promise) {
+                        if (message instanceof io.netty.buffer.ByteBuf bytes) {
+                            try {
+                                byte[] part = new byte[bytes.readableBytes()];
+                                bytes.readBytes(part);
+                                encoded.writeBytes(part);
+                                promise.setSuccess();
+                            } finally {
+                                bytes.release();
+                            }
+                        } else ctx.write(message, promise);
+                    }
+                });
+                try {
+                    stream.write(request);
+                    // 用多个 DATA 帧验证接管时既保留数据顺序，也保留结束信号。
+                    for (int offset = 0; offset < payload.length; offset++)
+                        stream.write(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(payload, offset, 1)));
+                    stream.flush();
+                } finally {
+                    stream.pipeline().remove("capture");
+                }
+                // 保留正常 HTTP/3 编码，只将请求、数据和 FIN 合成一次底层写入，固定复现接管前半关闭。
+                stream.unsafe().write(new DefaultQuicStreamFrame(Unpooled.wrappedBuffer(encoded.toByteArray()), true), sent);
+                stream.unsafe().flush();
+            }).sync();
+            sent.sync();
+            assertEquals("200", status.get(5, TimeUnit.SECONDS));
+            assertArrayEquals(new byte[]{42}, received.get(5, TimeUnit.SECONDS), "目标收到 EOF 后仍应完整返回响应");
+            origin.check();
+        } finally {
+            if (connection != null) connection.close().syncUninterruptibly();
+            if (transport != null) transport.close().syncUninterruptibly();
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
         }
     }
 

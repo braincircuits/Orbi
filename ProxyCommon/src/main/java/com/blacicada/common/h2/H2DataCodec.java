@@ -26,6 +26,9 @@ public final class H2DataCodec extends ChannelDuplexHandler {
                 ctx.channel().attr(INPUT_CLOSED).set(true);
                 ctx.fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
             }
+        } else if (msg instanceof Http2UnknownFrame) {
+            ReferenceCountUtil.release(msg);
+            // 未知扩展帧不影响隧道；续读交给转发层或 DNS 查询处理器，不能绕过反压。
         } else {
             ReferenceCountUtil.release(msg);
             ctx.fireExceptionCaught(new java.io.IOException("CONNECT 成功后收到非预期 HTTP/2 帧"));
