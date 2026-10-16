@@ -732,12 +732,71 @@ class Http3IntegrationTest {
         }
     }
 
+    @Test
+    void cancelledHandshakeWaiterPreservesSharedConnectionAndActiveStreamLimit() throws Exception {
+        var network = com.blacicada.common.OutboundNetwork.DEFAULT;
+        var group = network.newGroup();
+        var loop = group.next();
+        var resolver = network.resolver();
+        try (var relay = new DatagramRelay(server.address())) {
+            relay.drop = true;
+            var values = clientConfig("integration-test-secret", "localhost", false, 1).values();
+            values.setProperty("server.port", Integer.toString(relay.port()));
+            try (var session = new Http3Session(loop, new ProxyConfig(values, directory), resolver)) {
+                var target = new com.blacicada.common.Authority("127.0.0.1", echo.port());
+                var cancelled = session.open(target);
+                assertTrue(relay.received.await(2, TimeUnit.SECONDS));
+                assertTrue(cancelled.cancel(false));
+                loop.submit(() -> {}).sync();
+
+                var pending = session.open(target);
+                loop.submit(() -> {}).sync();
+                assertFalse(pending.isDone(), "新请求应复用尚未完成的握手");
+                relay.drop = false;
+                var active = pending.get(5, TimeUnit.SECONDS);
+                var parent = active.parent();
+                var received = new CompletableFuture<byte[]>();
+                loop.submit(() -> {
+                    active.pipeline().addLast(new io.netty.channel.SimpleChannelInboundHandler<io.netty.buffer.ByteBuf>() {
+                        @Override
+                        protected void channelRead0(io.netty.channel.ChannelHandlerContext ctx, io.netty.buffer.ByteBuf data) {
+                            byte[] bytes = new byte[data.readableBytes()];
+                            data.readBytes(bytes);
+                            received.complete(bytes);
+                        }
+                    });
+                    active.writeAndFlush(io.netty.buffer.Unpooled.wrappedBuffer(new byte[]{42}));
+                    active.read();
+                }).sync();
+                assertArrayEquals(new byte[]{42}, received.get(3, TimeUnit.SECONDS));
+
+                // 旧请求的迟到回调不能再次归还额度，仍在使用的流必须继续占用唯一名额。
+                var rejected = session.open(target);
+                assertTrue(rejected.await(2, TimeUnit.SECONDS));
+                assertFalse(rejected.isSuccess());
+                assertTrue(rejected.cause().getMessage().contains("本地并发隧道额度已满"));
+
+                active.close().sync();
+                loop.submit(() -> {}).sync();
+                var next = session.open(target).get(5, TimeUnit.SECONDS);
+                assertSame(parent, next.parent(), "关闭业务流后应归还额度并复用共享连接");
+                next.close().sync();
+                assertEquals(1, session.connectionCount());
+                assertEquals(1, server.acceptedConnections());
+            }
+        } finally {
+            resolver.close();
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
+        }
+    }
+
     /**
      * 转发本机 UDP 数据；可模拟双向丢包，不依赖公网或系统防火墙。
      */
     private static final class DatagramRelay implements AutoCloseable {
         private final DatagramSocket socket;
         private final Thread thread;
+        private final CountDownLatch received = new CountDownLatch(1);
         volatile boolean drop;
         private SocketAddress clientAddress;
 
@@ -750,7 +809,10 @@ class Http3IntegrationTest {
                         var packet = new DatagramPacket(bytes, bytes.length);
                         socket.receive(packet);
                         boolean fromServer = packet.getSocketAddress().equals(serverAddress);
-                        if (!fromServer) clientAddress = packet.getSocketAddress();
+                        if (!fromServer) {
+                            clientAddress = packet.getSocketAddress();
+                            received.countDown();
+                        }
                         if (drop) continue;
                         SocketAddress destination = fromServer ? clientAddress : serverAddress;
                         if (destination != null)

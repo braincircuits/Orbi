@@ -14,6 +14,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
+import java.nio.channels.ClosedChannelException;
 import java.util.List;
 
 /**
@@ -82,48 +83,7 @@ public final class UdpTunnel {
                         io.netty.channel.socket.DatagramChannel channel = socket == null ? network.udp(ipv4
                                 ? io.netty.channel.socket.InternetProtocolFamily.IPv4
                                 : io.netty.channel.socket.InternetProtocolFamily.IPv6) : new NioDatagramChannel(socket);
-                        channel.pipeline().addLast("datagram", new ChannelDuplexHandler() {
-                            private InetSocketAddress target;
-
-                            @Override
-                            public void connect(ChannelHandlerContext ctx, SocketAddress remote, SocketAddress local, ChannelPromise promise) {
-                                target = (InetSocketAddress) remote;
-                                // JDK 已连接的 DatagramChannel 也会跳过空报文，因此绑定套接字并显式限定收发目标。
-                                ctx.bind(local == null ? new InetSocketAddress(ipv4 ? "0.0.0.0" : "::", 0) : local, promise);
-                            }
-
-                            @Override
-                            public void channelRead(ChannelHandlerContext ctx, Object message) {
-                                var packet = (DatagramPacket) message;
-                                if (!packet.sender().equals(target)) {
-                                    packet.release();
-                                    ctx.read();
-                                    return;
-                                }
-                                ByteBuf payload = packet.content().retain();
-                                packet.release();
-                                ctx.fireChannelRead(payload);
-                            }
-
-                            @Override
-                            public void write(ChannelHandlerContext ctx, Object message, ChannelPromise promise) throws Exception {
-                                // Netty 的 NIO 通道会跳过空 ByteBuf，空 UDP 报文需实际调用底层套接字发送。
-                                if (message instanceof ByteBuf payload && !payload.isReadable()) {
-                                    payload.release();
-                                    try {
-                                        if (socket != null) socket.send(ByteBuffer.allocate(0), target);
-                                        else
-                                            ((io.netty.channel.unix.Socket) ((io.netty.channel.kqueue.KQueueDatagramChannel) channel).fd())
-                                                    .sendTo(ByteBuffer.allocateDirect(0), 0, 0, target.getAddress(), target.getPort());
-                                        promise.setSuccess();
-                                    } catch (Exception e) {
-                                        promise.setFailure(e);
-                                    }
-                                } else if (message instanceof ByteBuf payload)
-                                    ctx.write(new DatagramPacket(payload, target), promise);
-                                else ctx.write(message, promise);
-                            }
-                        });
+                        channel.pipeline().addLast("datagram", new DatagramHandler(socket, ipv4));
                         return channel;
                     } catch (java.io.IOException e) {
                         throw new ChannelException("创建 UDP 套接字失败", e);
@@ -136,6 +96,121 @@ public final class UdpTunnel {
     }
 
     /**
+     * 空、非空报文共用发送队列，只有已刷新的报文才能发送，且必须等待前序写入完成。
+     */
+    private static final class DatagramHandler extends ChannelDuplexHandler {
+        private final DatagramChannel socket;
+        private final boolean ipv4;
+        private InetSocketAddress target;
+        private PendingWriteQueue pending;
+        private int flushed;
+        private boolean writing, draining;
+        private ByteBuffer emptyBuffer;
+
+        DatagramHandler(DatagramChannel socket, boolean ipv4) {
+            this.socket = socket;
+            this.ipv4 = ipv4;
+        }
+
+        @Override
+        public void handlerAdded(ChannelHandlerContext ctx) {
+            // 复用 Netty 的队列计费，积压仍计入通道写水位。
+            pending = new PendingWriteQueue(ctx);
+        }
+
+        @Override
+        public void connect(ChannelHandlerContext ctx, SocketAddress remote, SocketAddress local, ChannelPromise promise) {
+            target = (InetSocketAddress) remote;
+            // JDK 已连接的 DatagramChannel 会跳过空报文，因此绑定套接字并显式限定收发目标。
+            ctx.bind(local == null ? new InetSocketAddress(ipv4 ? "0.0.0.0" : "::", 0) : local, promise);
+        }
+
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object message) {
+            var packet = (DatagramPacket) message;
+            if (!packet.sender().equals(target)) {
+                packet.release();
+                ctx.read();
+                return;
+            }
+            ByteBuf payload = packet.content().retain();
+            packet.release();
+            ctx.fireChannelRead(payload);
+        }
+
+        @Override
+        public void write(ChannelHandlerContext ctx, Object message, ChannelPromise promise) {
+            Object queued = message instanceof ByteBuf payload && payload.isReadable()
+                    ? new DatagramPacket(payload, target) : message;
+            pending.add(queued, promise.unvoid());
+        }
+
+        @Override
+        public void flush(ChannelHandlerContext ctx) {
+            flushed = pending.size();
+            if (!ctx.channel().isActive()) {
+                failPending();
+                return;
+            }
+            if (writing) ctx.flush();
+            drain(ctx);
+        }
+
+        private void drain(ChannelHandlerContext ctx) {
+            if (draining || writing || ctx.isRemoved()) return;
+            draining = true;
+            try {
+                while (flushed > 0 && !writing && !pending.isEmpty()) {
+                    flushed--;
+                    if (pending.current() instanceof ByteBuf) {
+                        ChannelPromise promise = pending.remove();
+                        if (promise.setUncancellable()) sendEmpty(ctx, promise);
+                    } else {
+                        writing = true;
+                        pending.removeAndWrite().addListener(done -> {
+                            writing = false;
+                            drain(ctx);
+                        });
+                        ctx.flush();
+                    }
+                }
+            } finally {
+                draining = false;
+            }
+        }
+
+        private void sendEmpty(ChannelHandlerContext ctx, ChannelPromise promise) {
+            try {
+                // Netty 会跳过空 ByteBuf，排到队首后才调用底层套接字实际发送。
+                if (emptyBuffer == null) emptyBuffer = ByteBuffer.allocateDirect(0);
+                if (socket != null) socket.send(emptyBuffer, target);
+                else
+                    ((io.netty.channel.unix.Socket) ((io.netty.channel.kqueue.KQueueDatagramChannel) ctx.channel()).fd())
+                            .sendTo(emptyBuffer, 0, 0, target.getAddress(), target.getPort());
+                promise.setSuccess();
+            } catch (Exception e) {
+                promise.setFailure(e);
+            }
+        }
+
+        private void failPending() {
+            flushed = 0;
+            pending.removeAndFailAll(new ClosedChannelException());
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) {
+            failPending();
+            ctx.fireChannelInactive();
+        }
+
+        @Override
+        public void handlerRemoved(ChannelHandlerContext ctx) {
+            failPending();
+        }
+    }
+
+    /**
      * UDP 关联没有 TCP 半关闭语义，任一方向结束或空闲即释放两端资源。
      */
     public static RelayHandler relay(Channel peer) {
@@ -143,7 +218,7 @@ public final class UdpTunnel {
             @Override
             public void channelRead(ChannelHandlerContext ctx, Object message) {
                 super.channelRead(ctx, message);
-                // 空 UDP 直接调用底层套接字；逐报文刷新，避免越过此前尚未刷新的非空报文。
+                // 逐报文刷新，及时发送已经排队的 UDP 数据。
                 peer.flush();
             }
 

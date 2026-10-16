@@ -17,6 +17,8 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -38,7 +40,8 @@ public final class Http3Session implements ProxySession {
     private QuicChannel connection;
     private Promise<QuicChannel> connecting;
     private boolean closed;
-    private int streams;
+    // 包含建立中的请求和已建立的隧道；失败、取消或实际流关闭时移除。
+    private final Set<Promise<QuicStreamChannel>> requests = new HashSet<>();
     private final ArrayDeque<StreamRequest> waitingStreams = new ArrayDeque<>();
     private boolean creatingStream;
     private volatile String connectionState = "idle";
@@ -92,52 +95,66 @@ public final class Http3Session implements ProxySession {
                 result.tryFailure(new IOException("代理会话已关闭"));
                 return;
             }
-            if (streams >= config.maxStreams()) {
+            if (requests.size() >= config.maxStreams()) {
                 result.tryFailure(new IOException("HTTP/3 本地并发隧道额度已满：目标=" + target
-                        + "，原始协议=" + (udpTunnel ? "UDP" : "TCP") + "，占用=" + streams
+                        + "，原始协议=" + (udpTunnel ? "UDP" : "TCP") + "，占用=" + requests.size()
                         + "，上限=" + config.maxStreams() + "，等待流额度=" + waitingStreams.size()));
                 return;
             }
-            streams++;
-            acquire().addListener(f -> {
-                if (result.isDone()) {
-                    streams--;
-                    return;
+            requests.add(result);
+            Future<QuicChannel> connectionReady = acquire();
+            GenericFutureListener<Future<QuicChannel>> connected = ready -> {
+                if (result.isDone()) return;
+                if (!ready.isSuccess()) result.tryFailure(ready.cause());
+                else openStream(ready.getNow(), new ConnectResponse(result, target, udpTunnel, dns));
+            };
+            connectionReady.addListener(connected);
+            result.addListener(done -> {
+                if (!done.isSuccess()) {
+                    // 取消只移除本次等待，不影响其他请求共用的握手。
+                    // 集合移除可重复执行，避免取消与流关闭分别归还同一份额度。
+                    requests.remove(result);
+                    connectionReady.removeListener(connected);
                 }
-                if (!f.isSuccess()) {
-                    streams--;
-                    result.tryFailure(f.cause());
-                    return;
-                }
-                QuicChannel parent = (QuicChannel) f.getNow();
-                var response = new ConnectResponse(result, target, udpTunnel, dns);
-                Future<QuicStreamChannel> creation = createWhenAllowed(parent, response);
-                result.addListener(done -> {
-                    if (!done.isSuccess()) creation.cancel(false);
-                });
-                creation.addListener(created -> {
-                    if (!created.isSuccess()) {
-                        streams--;
-                        result.tryFailure(created.cause());
-                        return;
-                    }
-                    QuicStreamChannel stream = (QuicStreamChannel) created.getNow();
-                    stream.closeFuture().addListener(ignored -> streams--);
-                    result.addListener(done -> {
-                        if (!done.isSuccess()) Transport.abort(stream);
-                    });
-                    var request = new DefaultHttp3HeadersFrame();
-                    request.headers().method("CONNECT").authority(target.toString())
-                            .set("proxy-authorization", authorization);
-                    if (udpTunnel) request.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
-                    if (dns != null) request.headers().set(DnsTunnel.HEADER, dns.header());
-                    stream.writeAndFlush(request).addListener(write -> {
-                        if (!write.isSuccess()) result.tryFailure(write.cause());
-                    });
-                });
             });
         });
         return result;
+    }
+
+    private void openStream(QuicChannel parent, ConnectResponse response) {
+        var result = response.result;
+        Future<QuicStreamChannel> creation = createWhenAllowed(parent, response);
+        result.addListener(done -> {
+            if (!done.isSuccess()) creation.cancel(false);
+        });
+        creation.addListener(created -> {
+            if (!created.isSuccess()) {
+                result.tryFailure(created.cause());
+                return;
+            }
+            QuicStreamChannel stream = (QuicStreamChannel) created.getNow();
+            // 建立成功的请求一直占用本地额度，直到实际协议流关闭。
+            stream.closeFuture().addListener(ignored -> requests.remove(result));
+            if (result.isDone()) {
+                Transport.abort(stream);
+                return;
+            }
+            result.addListener(done -> {
+                if (!done.isSuccess()) Transport.abort(stream);
+            });
+            sendConnect(stream, response);
+        });
+    }
+
+    private void sendConnect(QuicStreamChannel stream, ConnectResponse response) {
+        var request = new DefaultHttp3HeadersFrame();
+        request.headers().method("CONNECT").authority(response.target.toString())
+                .set("proxy-authorization", authorization);
+        if (response.udpTunnel) request.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
+        if (response.dns != null) request.headers().set(DnsTunnel.HEADER, response.dns.header());
+        stream.writeAndFlush(request).addListener(write -> {
+            if (!write.isSuccess()) response.result.tryFailure(write.cause());
+        });
     }
 
     private Future<QuicStreamChannel> createWhenAllowed(QuicChannel parent, ConnectResponse handler) {
@@ -149,7 +166,7 @@ public final class Http3Session implements ProxySession {
             var failure = new IOException("等待 QUIC 流额度超时：连接 ID=" + parent.id().asShortText()
                     + "，目标=" + handler.target + "，原始协议=" + (handler.udpTunnel ? "UDP" : "TCP")
                     + "，对端剩余额度=" + parent.peerAllowedStreams(QuicStreamType.BIDIRECTIONAL)
-                    + "，本地占用（含排队）=" + streams + "，排队=" + waitingStreams.size()
+                    + "，本地占用（含排队）=" + requests.size() + "，排队=" + waitingStreams.size()
                     + "，超时预算=" + config.connectTimeoutMillis() + "ms");
             checkUnresponsiveConnection(parent, handler.receivedBefore, handler.sentBefore, "等待 QUIC 流额度");
             promise.tryFailure(failure);

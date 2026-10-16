@@ -17,7 +17,7 @@ public final class H3DataCodec extends ChannelDuplexHandler {
             ctx.fireChannelRead(data);
         } else if (msg instanceof Http3UnknownFrame) {
             ReferenceCountUtil.release(msg);
-            ctx.read();
+            // 恢复读取由转发层在轮次结束或待写数据完成后决定，不能绕过反压。
         } else {
             ReferenceCountUtil.release(msg);
             ctx.fireExceptionCaught(new IllegalStateException("CONNECT 成功后收到非预期帧"));
