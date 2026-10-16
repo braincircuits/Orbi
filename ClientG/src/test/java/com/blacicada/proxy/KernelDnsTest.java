@@ -5,6 +5,14 @@ import com.blacicada.common.OutboundNetwork;
 import com.blacicada.config.KernelConfig;
 import com.blacicada.control.ControlEvents;
 import com.blacicada.control.ControlLogs;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
+import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.channel.socket.ChannelInputShutdownEvent;
+import io.netty.util.ReferenceCountUtil;
 import io.netty.resolver.dns.DnsServerAddresses;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -387,6 +395,63 @@ class KernelDnsTest {
             try (var next = connect(client, "127.0.0.1:" + server.address().getPort(), udp, new byte[0])) {
                 assertTrue(client.tunnels().stream().allMatch(t -> t.get("target").equals("127.0.0.1:" + server.address().getPort())));
             }
+        }
+    }
+
+    @Test
+    void tcpHalfCloseWaitsForBufferedDnsResponseWrites() throws Exception {
+        record PendingWrite(Object data, ChannelPromise promise) {
+        }
+        var writes = new ArrayDeque<PendingWrite>();
+        var delayedWriter = new ChannelOutboundHandlerAdapter() {
+            @Override
+            public void write(ChannelHandlerContext ctx, Object data, ChannelPromise promise) {
+                // 模拟套接字发送缓冲已满，写入暂时不能完成。
+                writes.add(new PendingWrite(data, promise));
+            }
+        };
+        var dns = new KernelDns(OutboundNetwork.DEFAULT, null, null, 100, System::nanoTime);
+        var channel = new EmbeddedChannel(delayedWriter);
+        KernelDns.framing(channel.pipeline());
+        channel.pipeline().addLast(dns.handler(false));
+        try {
+            // 格式错误的查询同步产生错误响应，无须依赖 DNS 上游或网络时延。
+            channel.writeInbound(Unpooled.wrappedBuffer(frame(new byte[]{0, 99})));
+            assertEquals(2, writes.size());
+            channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+            assertTrue(channel.isActive(), "DNS 响应写完之前不能因输入半关闭而关闭连接");
+            var context = channel.pipeline().context(delayedWriter);
+            while (!writes.isEmpty()) {
+                var pending = writes.remove();
+                context.write(pending.data(), pending.promise());
+            }
+            context.flush();
+            channel.runPendingTasks();
+            ByteBuf response = Unpooled.buffer();
+            try {
+                ByteBuf part;
+                while ((part = channel.readOutbound()) != null) {
+                    try {
+                        response.writeBytes(part);
+                    } finally {
+                        part.release();
+                    }
+                }
+                assertEquals(14, response.readableBytes(), "关闭不能产生额外的空 DNS 帧");
+                assertEquals(12, response.readUnsignedShort());
+                assertEquals(99, response.readUnsignedShort());
+                assertEquals(1, response.readUnsignedShort() & 15);
+            } finally {
+                response.release();
+            }
+            assertFalse(channel.isActive(), "排队响应全部写完后应结束半关闭的 DNS 连接");
+        } finally {
+            while (!writes.isEmpty()) {
+                var pending = writes.remove();
+                ReferenceCountUtil.release(pending.data());
+                pending.promise().tryFailure(new IOException("测试通道已释放"));
+            }
+            channel.finishAndReleaseAll();
         }
     }
 

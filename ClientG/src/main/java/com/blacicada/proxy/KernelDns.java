@@ -105,7 +105,7 @@ final class KernelDns {
         // 域名关联只接受能用于连接目标的主机名，其他 DNS 记录仍原样转发。
         String domain;
         try {
-            domain = com.blacicada.config.DirectRoutes.normalizeHost(response.question.name());
+            domain = DirectRoutes.normalizeHost(response.question.name());
         } catch (IllegalArgumentException e) {
             return;
         }
@@ -134,6 +134,7 @@ final class KernelDns {
         private final boolean udp;
         private final Set<Future<byte[]>> requests = new HashSet<>();
         private boolean inputClosed;
+        private int pendingWrites;
 
         QueryHandler(boolean udp) {
             this.udp = udp;
@@ -152,9 +153,15 @@ final class KernelDns {
             requests.add(request);
             request.addListener(done -> {
                 requests.remove(request);
-                if (ctx.channel().isActive() && done.isSuccess())
-                    ctx.writeAndFlush(Unpooled.wrappedBuffer(request.getNow())).addListener(ChannelFutureListener.CLOSE_ON_FAILURE);
-                if (inputClosed && requests.isEmpty()) ctx.close();
+                if (ctx.channel().isActive() && done.isSuccess()) {
+                    pendingWrites++;
+                    ctx.writeAndFlush(Unpooled.wrappedBuffer(request.getNow())).addListener(sent -> {
+                        pendingWrites--;
+                        if (!sent.isSuccess()) ctx.close();
+                        else closeAfterResponses(ctx);
+                    });
+                }
+                closeAfterResponses(ctx);
             });
         }
 
@@ -169,8 +176,15 @@ final class KernelDns {
             if (event instanceof IdleStateEvent) ctx.close();
             else if (event == ChannelInputShutdownEvent.INSTANCE) {
                 inputClosed = true;
-                if (requests.isEmpty()) ctx.close();
+                closeAfterResponses(ctx);
             } else ctx.fireUserEventTriggered(event);
+        }
+
+        private void closeAfterResponses(ChannelHandlerContext ctx) {
+            if (inputClosed && requests.isEmpty() && pendingWrites == 0) {
+                // 查询结束不代表响应已写入套接字；慢客户端仍需收到排队的完整响应。
+                ctx.close();
+            }
         }
 
         @Override
@@ -212,24 +226,8 @@ final class KernelDns {
         // 只缓存无附加选项的标准查询，避免跨请求复用 EDNS Cookie、签名等状态。
         String key = question.additional == 0 ? proxy + ":" + udp + ":" + upstreams + ":"
                 + Base64.getEncoder().encodeToString(Arrays.copyOfRange(bytes, 2, bytes.length)) : null;
-        long now = clock.getAsLong();
-        cache.entrySet().removeIf(entry -> now - entry.getValue().expires >= 0);
-        Cached stored = key == null ? null : cache.get(key);
-        if (stored != null) {
-            byte[] answer = stored.bytes.clone();
-            long elapsed = Math.max(0, (now - stored.created + 999_999_999L) / 1_000_000_000L);
-            ByteBuf buffer = Unpooled.wrappedBuffer(answer);
-            try {
-                buffer.setShort(0, question.id);
-                for (var record : stored.message.records)
-                    if (record.type() != 41)
-                        buffer.setInt(record.ttlOffset(), (int) Math.max(0, record.ttl() - elapsed));
-            } finally {
-                buffer.release();
-            }
-            remember(new DnsMessage(answer, true));
-            return loop.newSucceededFuture(answer);
-        }
+        byte[] cached = cachedResponse(key, question);
+        if (cached != null) return loop.newSucceededFuture(cached);
         // 两种出口分别限流，代理等待额度时不能挤占放行域名的 DNS；缓存命中不占等待名额。
         if ((proxy ? proxyQueries : directQueries) >= MAX_QUERIES_PER_ROUTE)
             return loop.newSucceededFuture(DnsMessage.failure(bytes, 2));
@@ -244,6 +242,40 @@ final class KernelDns {
         });
         new Exchange(loop, bytes, udp, upstreams, key, result, proxy, browser).next();
         return result;
+    }
+
+    /**
+     * 每次命中都复制原始响应，只调整调用方 ID 和剩余 TTL，不修改缓存报文。
+     */
+    private byte[] cachedResponse(String key, DnsMessage question) {
+        long now = clock.getAsLong();
+        cache.entrySet().removeIf(entry -> now - entry.getValue().expires >= 0);
+        Cached stored = key == null ? null : cache.get(key);
+        if (stored == null) return null;
+        byte[] answer = stored.bytes.clone();
+        long elapsed = Math.max(0, (now - stored.created + 999_999_999L) / 1_000_000_000L);
+        ByteBuf buffer = Unpooled.wrappedBuffer(answer);
+        try {
+            buffer.setShort(0, question.id);
+            for (var record : stored.message.records)
+                if (record.type() != 41)
+                    buffer.setInt(record.ttlOffset(), (int) Math.max(0, record.ttl() - elapsed));
+        } finally {
+            buffer.release();
+        }
+        remember(new DnsMessage(answer, true));
+        return answer;
+    }
+
+    private void cacheResponse(String key, byte[] bytes, DnsMessage response) {
+        if (key == null || bytes.length > 4096 || !response.cacheable()) return;
+        long ttl = response.records.stream().filter(record -> record.type() != 41)
+                .mapToLong(DnsMessage.Record::ttl).min().orElse(0);
+        if (ttl <= 0) return;
+        long now = clock.getAsLong();
+        cache.remove(key);
+        cache.put(key, new Cached(bytes.clone(), response, now, now + TimeUnit.SECONDS.toNanos(ttl)));
+        trim(cache, MAX_CACHE);
     }
 
     private final class Exchange {
@@ -356,35 +388,7 @@ final class KernelDns {
                 upstream.pipeline().addLast(new SimpleChannelInboundHandler<ByteBuf>() {
                     @Override
                     protected void channelRead0(ChannelHandlerContext ctx, ByteBuf data) {
-                        if (attempt != generation || result.isDone()) return;
-                        byte[] bytes = new byte[data.readableBytes()];
-                        data.readBytes(bytes);
-                        DnsMessage response;
-                        try {
-                            response = new DnsMessage(bytes, true);
-                        } catch (RuntimeException e) {
-                            if (!udp) failed(attempt, "DNS 响应无效：" + e);
-                            else ctx.read();
-                            return;
-                        }
-                        if (!response.matches(question)) {
-                            ctx.read();
-                            return;
-                        }
-                        bytes[0] = original[0];
-                        bytes[1] = original[1];
-                        remember(response);
-                        if (cacheKey != null && bytes.length <= 4096 && response.cacheable()) {
-                            long ttl = response.records.stream().filter(r -> r.type() != 41)
-                                    .mapToLong(DnsMessage.Record::ttl).min().orElse(0);
-                            if (ttl > 0) {
-                                long now = clock.getAsLong();
-                                cache.remove(cacheKey);
-                                cache.put(cacheKey, new Cached(bytes.clone(), response, now, now + TimeUnit.SECONDS.toNanos(ttl)));
-                                trim(cache, MAX_CACHE);
-                            }
-                        }
-                        result.trySuccess(bytes);
+                        receiveResponse(attempt, ctx, data);
                     }
 
                     @Override
@@ -402,6 +406,30 @@ final class KernelDns {
                 });
                 upstream.read();
             });
+        }
+
+        private void receiveResponse(int attempt, ChannelHandlerContext ctx, ByteBuf data) {
+            if (attempt != generation || result.isDone()) return;
+            byte[] bytes = new byte[data.readableBytes()];
+            data.readBytes(bytes);
+            DnsMessage response;
+            try {
+                response = new DnsMessage(bytes, true);
+            } catch (RuntimeException e) {
+                // UDP 上游可能先送来无效数据，继续读取；TCP 报文无效则切换上游。
+                if (!udp) failed(attempt, "DNS 响应无效：" + e);
+                else ctx.read();
+                return;
+            }
+            if (!response.matches(question)) {
+                ctx.read();
+                return;
+            }
+            bytes[0] = original[0];
+            bytes[1] = original[1];
+            remember(response);
+            cacheResponse(cacheKey, bytes, response);
+            result.trySuccess(bytes);
         }
     }
 }
