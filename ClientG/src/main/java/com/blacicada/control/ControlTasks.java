@@ -9,13 +9,16 @@ import java.net.InetSocketAddress;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.Supplier;
 
 /**
  * 独立的有界诊断任务，不阻塞控制线程；概览检测复用实际转发路径。
  */
 public final class ControlTasks implements AutoCloseable {
-    private final ExecutorService workers = Executors.newFixedThreadPool(4);
-    private final Semaphore slots = new Semaphore(4);
+    private static final int MAX_CONCURRENT_JOBS = 4;
+    private static final int MAX_HISTORY_JOBS = 128;
+    private final ExecutorService workers = Executors.newFixedThreadPool(MAX_CONCURRENT_JOBS);
+    private final Semaphore slots = new Semaphore(MAX_CONCURRENT_JOBS);
     private final Map<String, Job> jobs = new LinkedHashMap<>();
     private final ControlEvents events;
     private boolean closed;
@@ -58,45 +61,50 @@ public final class ControlTasks implements AutoCloseable {
     private synchronized Map<String, Object> submit(Map<String, Object> context, Work work) {
         if (closed || !slots.tryAcquire())
             throw new ControlException(429, "DIAGNOSTICS_BUSY", "同时运行的诊断任务过多，请稍后重试");
-        while (jobs.size() >= 128) {
-            String first = jobs.entrySet().stream().filter(e -> e.getValue().terminal()).map(Map.Entry::getKey).findFirst().orElse(null);
-            if (first == null) {
+        while (jobs.size() >= MAX_HISTORY_JOBS) {
+            String oldestCompletedId = jobs.entrySet().stream().filter(e -> e.getValue().terminal()).map(Map.Entry::getKey).findFirst().orElse(null);
+            if (oldestCompletedId == null) {
                 slots.release();
                 throw new ControlException(429, "DIAGNOSTICS_BUSY", "诊断任务已满");
             }
-            jobs.remove(first);
+            jobs.remove(oldestCompletedId);
         }
         Job job = new Job();
         job.context = Map.copyOf(context);
         jobs.put(job.id, job);
-        job.future = workers.submit(() -> {
-            try {
-                synchronized (job) {
-                    if (job.state.equals("cancelled")) return;
-                    job.state = "running";
-                }
-                events.emit("operation", job.view());
-                Object result = work.run(job);
-                synchronized (job) {
-                    if (!job.state.equals("cancelled")) {
-                        job.result = result;
-                        job.state = "succeeded";
-                    }
-                }
-            } catch (Exception e) {
-                synchronized (job) {
-                    if (!job.state.equals("cancelled")) {
-                        job.result = failure(job.stage, e);
-                        job.state = "failed";
-                    }
-                }
-            } finally {
-                job.elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - job.started);
-                slots.release();
-                events.emit("operation", job.view());
-            }
-        });
+        job.future = workers.submit(() -> execute(job, work));
         return job.view();
+    }
+
+    /**
+     * 工作槽只由执行线程在 finally 释放；取消不能提前让仍在清理的任务占用额外线程。
+     */
+    private void execute(Job job, Work work) {
+        try {
+            synchronized (job) {
+                if (job.state.equals("cancelled")) return;
+                job.state = "running";
+            }
+            events.emit("operation", job.view());
+            Object result = work.run(job);
+            synchronized (job) {
+                if (!job.state.equals("cancelled")) {
+                    job.result = result;
+                    job.state = "succeeded";
+                }
+            }
+        } catch (Exception e) {
+            synchronized (job) {
+                if (!job.state.equals("cancelled")) {
+                    job.result = failure(job.stage, e);
+                    job.state = "failed";
+                }
+            }
+        } finally {
+            job.elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - job.started);
+            slots.release();
+            events.emit("operation", job.view());
+        }
     }
 
     private void stage(Job job, String value) {
@@ -142,7 +150,7 @@ public final class ControlTasks implements AutoCloseable {
         });
     }
 
-    public Map<String, Object> latency(java.util.function.Supplier<io.netty.util.concurrent.Future<Double>> measure,
+    public Map<String, Object> latency(Supplier<io.netty.util.concurrent.Future<Double>> measure,
                                        Map<String, Object> context) {
         return submit(context, job -> {
             stage(job, "latency");
@@ -195,12 +203,10 @@ public final class ControlTasks implements AutoCloseable {
     public Map<String, Object> resolve(Authority target, DirectRoutes rules, String defaultId, OutboundNetwork network) {
         return submit(job -> {
             stage(job, "routing");
-            if (!rules.mode().equals("rules")) return Map.of("action", rules.mode(),
-                    "profileId", rules.mode().equals("proxy") ? defaultId : "", "matchedBy", "global_mode");
+            if (!rules.mode().equals("rules")) return routeResult(rules.mode(), defaultId, "global_mode");
             String override = rules.override(target.host());
             if (override != null)
-                return Map.of("action", override.equals("proxy") && defaultId.isEmpty() ? "unavailable" : override,
-                        "profileId", override.equals("proxy") ? defaultId : "", "matchedBy", "target_rule");
+                return routeResult(override, defaultId, "target_rule");
             if (rules.matches(target.host())) return Map.of("action", "direct", "matchedBy", "direct_rule");
             if (rules.needsResolution(target.host())) {
                 var group = network.newGroup();
@@ -219,8 +225,17 @@ public final class ControlTasks implements AutoCloseable {
                     group.shutdownGracefully(0, 2, TimeUnit.SECONDS).syncUninterruptibly();
                 }
             }
-            return Map.of("action", defaultId.isEmpty() ? "unavailable" : "proxy", "profileId", defaultId, "matchedBy", "default");
+            return routeResult("proxy", defaultId, "default");
         });
+    }
+
+    /**
+     * 全局模式、精确规则和默认出口共用同一项检查，缺少默认节点时不能报告可用的代理路由。
+     */
+    private static Map<String, Object> routeResult(String action, String defaultId, String matchedBy) {
+        boolean proxy = action.equals("proxy");
+        String effectiveAction = proxy && defaultId.isEmpty() ? "unavailable" : action;
+        return Map.of("action", effectiveAction, "profileId", proxy ? defaultId : "", "matchedBy", matchedBy);
     }
 
     private static Object failure(String stage, Exception failure) {

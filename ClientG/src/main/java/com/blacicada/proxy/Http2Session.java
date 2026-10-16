@@ -10,8 +10,11 @@ import io.netty.handler.codec.http2.*;
 import io.netty.handler.ssl.*;
 import io.netty.handler.timeout.*;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
+import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.*;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
 import java.util.*;
@@ -22,6 +25,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * 会话分配、排队和关闭只在所属事件循环中执行。
  */
 public final class Http2Session implements ProxySession {
+    private static final Logger LOG = LogManager.getLogger(Http2Session.class);
+    private static final AttributeKey<Capacity> CAPACITY = AttributeKey.valueOf("h2.capacity");
     private final EventLoop loop;
     private final ProxyConfig config;
     private final DnsAddressResolverGroup resolver;
@@ -36,15 +41,12 @@ public final class Http2Session implements ProxySession {
     private Promise<Channel> connecting;
     private boolean closed;
     private volatile String state = "idle", error = "", stage = "idle";
-    private static final org.apache.logging.log4j.Logger LOG = org.apache.logging.log4j.LogManager.getLogger(Http2Session.class);
 
     private static final class Capacity {
         long maximum;
         int active;
         boolean creating, draining;
     }
-
-    private static final io.netty.util.AttributeKey<Capacity> CAPACITY = io.netty.util.AttributeKey.valueOf("h2.capacity");
 
     private final class Request {
         final Authority target;
@@ -151,52 +153,62 @@ public final class Http2Session implements ProxySession {
     }
 
     private void drain(Channel parent) {
-        Capacity c = parent.attr(CAPACITY).get();
-        if (c == null || c.creating) return;
-        for (Request r : new ArrayList<>(requests)) {
-            if (r.parent != parent || r.starting || r.result.isDone()) continue;
-            if (!parent.isActive() || c.draining) {
-                r.result.tryFailure(new IOException("HTTP/2 连接不再接收新流"));
+        Capacity capacity = parent.attr(CAPACITY).get();
+        if (capacity == null || capacity.creating) return;
+        for (Request request : new ArrayList<>(requests)) {
+            if (request.parent != parent || request.starting || request.result.isDone()) continue;
+            if (!parent.isActive() || capacity.draining) {
+                request.result.tryFailure(new IOException("HTTP/2 连接不再接收新流"));
                 continue;
             }
-            if (c.active >= c.maximum) return;
-            r.starting = true;
-            c.creating = true;
-            c.active++;
-            phase(r, "创建 HTTP/2 流");
-            new Http2StreamChannelBootstrap(parent).handler(new Response(r))
-                    .option(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK).open().addListener(f -> {
-                        c.creating = false;
-                        if (!f.isSuccess()) {
-                            c.active--;
-                            r.result.tryFailure(f.cause());
-                        } else {
-                            r.stream = (Http2StreamChannel) f.getNow();
-                            r.stream.closeFuture().addListener(ignored -> {
-                                c.active--;
-                                requests.remove(r);
-                                if (c.draining && c.active == 0) parent.close();
-                                    // 子通道关闭回调先于 HTTP/2 编解码器的额度回收，下一轮再分配新流。
-                                else loop.execute(() -> drain(parent));
-                            });
-                            if (r.result.isDone()) r.stream.close();
-                            else {
-                                phase(r, "发送 HTTP/2 CONNECT");
-                                var headers = new DefaultHttp2Headers().method("CONNECT").authority(r.target.toString())
-                                        .set("proxy-authorization", authorization);
-                                if (r.udp) headers.set(UdpTunnel.HEADER, UdpTunnel.VALUE);
-                                if (r.dns != null) headers.set(DnsTunnel.HEADER, r.dns.header());
-                                r.stream.writeAndFlush(new DefaultHttp2HeadersFrame(headers))
-                                        .addListener(w -> {
-                                            if (!w.isSuccess()) r.result.tryFailure(w.cause());
-                                            else if (!r.result.isDone()) phase(r, "等待 HTTP/2 CONNECT 响应");
-                                        });
-                            }
-                        }
-                        loop.execute(() -> drain(parent));
-                    });
+            if (capacity.active >= capacity.maximum) return;
+            request.starting = true;
+            capacity.creating = true;
+            capacity.active++;
+            phase(request, "创建 HTTP/2 流");
+            new Http2StreamChannelBootstrap(parent).handler(new Response(request))
+                    .option(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK).open()
+                    .addListener(created -> streamCreated(parent, capacity, request, created));
             return;
         }
+    }
+
+    /**
+     * 创建前已预留额度；失败时立即归还，成功后由流关闭回调归还。
+     */
+    private void streamCreated(Channel parent, Capacity capacity, Request request, Future<?> created) {
+        capacity.creating = false;
+        if (!created.isSuccess()) {
+            capacity.active--;
+            request.result.tryFailure(created.cause());
+        } else {
+            request.stream = (Http2StreamChannel) created.getNow();
+            request.stream.closeFuture().addListener(ignored -> {
+                capacity.active--;
+                requests.remove(request);
+                if (capacity.draining && capacity.active == 0) {
+                    parent.close();
+                } else {
+                    // 子通道关闭回调先于编解码器回收额度，下一轮再分配新流。
+                    loop.execute(() -> drain(parent));
+                }
+            });
+            if (request.result.isDone()) request.stream.close();
+            else sendConnect(request);
+        }
+        loop.execute(() -> drain(parent));
+    }
+
+    private void sendConnect(Request request) {
+        phase(request, "发送 HTTP/2 CONNECT");
+        var headers = new DefaultHttp2Headers().method("CONNECT").authority(request.target.toString())
+                .set("proxy-authorization", authorization);
+        if (request.udp) headers.set(UdpTunnel.HEADER, UdpTunnel.VALUE);
+        if (request.dns != null) headers.set(DnsTunnel.HEADER, request.dns.header());
+        request.stream.writeAndFlush(new DefaultHttp2HeadersFrame(headers)).addListener(sent -> {
+            if (!sent.isSuccess()) request.result.tryFailure(sent.cause());
+            else if (!request.result.isDone()) phase(request, "等待 HTTP/2 CONNECT 响应");
+        });
     }
 
     private Future<Channel> acquire() {

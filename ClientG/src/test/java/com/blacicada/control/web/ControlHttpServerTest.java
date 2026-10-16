@@ -502,6 +502,24 @@ class ControlHttpServerTest {
     }
 
     @Test
+    void globalProxyRoutingRequiresDefaultProfile() throws Exception {
+        ok("PUT", "/routing/mode", "{\"mode\":\"proxy\"}", 200);
+        String target = "{\"target\":\"127.0.0.1:443\"}";
+        String missing = ok("POST", "/routing/resolve", target, 202).getAsJsonObject("data").get("id").getAsString();
+        JsonObject unavailable = awaitJob(missing).getAsJsonObject("result");
+        assertEquals("unavailable", unavailable.get("action").getAsString());
+        assertEquals("", unavailable.get("profileId").getAsString());
+        assertEquals("global_mode", unavailable.get("matchedBy").getAsString());
+
+        addProfile("a", "http2", 4433, false);
+        String configured = ok("POST", "/routing/resolve", target, 202).getAsJsonObject("data").get("id").getAsString();
+        JsonObject available = awaitJob(configured).getAsJsonObject("result");
+        assertEquals("proxy", available.get("action").getAsString());
+        assertEquals("a", available.get("profileId").getAsString());
+        assertEquals("global_mode", available.get("matchedBy").getAsString());
+    }
+
+    @Test
     void diagnosticTcpFailureAndRoutingResultAreObservable() throws Exception {
         int closedPort;
         try (var port = new ServerSocket(0)) {
