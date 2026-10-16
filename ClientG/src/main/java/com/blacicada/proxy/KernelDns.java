@@ -392,6 +392,14 @@ final class KernelDns {
                     }
 
                     @Override
+                    public void channelReadComplete(ChannelHandlerContext ctx) {
+                        ctx.fireChannelReadComplete();
+                        // DNS 上游没有业务转发写入；即使 HTTP/3 未知帧未交付数据，也要继续等待完整回答。
+                        // 只允许当前尚未完成的尝试续读，避免关闭或切换上游后重新启动旧通道。
+                        if (attempt == generation && !result.isDone() && ctx.channel().isActive()) ctx.read();
+                    }
+
+                    @Override
                     public void channelInactive(ChannelHandlerContext ctx) {
                         failed(attempt, "收到 DNS 响应前连接已关闭");
                     }
