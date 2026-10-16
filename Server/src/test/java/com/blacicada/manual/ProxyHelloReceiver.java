@@ -7,7 +7,9 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 
-/** 在 IDEA 中直接运行 main，充当被代理服务端连接的目标 TCP 服务。 */
+/**
+ * 在 IDEA 中直接运行 main，充当被代理服务端连接的目标 TCP 服务。
+ */
 public final class ProxyHelloReceiver {
     private static final String BIND_HOST = "127.0.0.1";
     private static final int PORT = 18080;

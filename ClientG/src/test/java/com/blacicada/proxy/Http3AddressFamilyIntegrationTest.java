@@ -37,14 +37,16 @@ class Http3AddressFamilyIntegrationTest {
         return cases.stream();
     }
 
-    @ParameterizedTest @MethodSource("addresses")
+    @ParameterizedTest
+    @MethodSource("addresses")
     void handshakeAndReconnectUseResolvedAddressFamily(String host, int interfaceIndex) throws Exception {
         var network = new OutboundNetwork(interfaceIndex);
         var group = network.newGroup();
         var resolver = network.resolver();
         var values = new Properties();
         values.setProperty("password", "address-family-test");
-        values.setProperty("bind", host); values.setProperty("port", "0");
+        values.setProperty("bind", host);
+        values.setProperty("port", "0");
         values.setProperty("tls.cert", resource("localhost.crt"));
         values.setProperty("tls.key", resource("localhost.key"));
         try (var origin = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));

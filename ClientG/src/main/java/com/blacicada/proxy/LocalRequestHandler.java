@@ -9,10 +9,12 @@ import io.netty.handler.codec.http.*;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.ScheduledFuture;
+
 import java.net.URI;
 import java.net.InetSocketAddress;
 import java.util.ArrayDeque;
 import java.util.concurrent.TimeUnit;
+
 import org.apache.logging.log4j.LogManager;
 
 final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
@@ -46,19 +48,33 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
                         java.util.function.Consumer<java.util.Map<String, Object>> accessRecorder, OutboundNetwork network, KernelDns dns) {
         this.dns = dns;
         this.network = network;
-        this.config = config; this.session = session; this.resolver = resolver; this.routeSource = routes;
+        this.config = config;
+        this.session = session;
+        this.resolver = resolver;
+        this.routeSource = routes;
         this.traffic = traffic;
         this.accessRecorder = accessRecorder;
     }
-    @Override public void channelActive(ChannelHandlerContext ctx) {
+
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) {
         timeout = ctx.executor().schedule(() -> fail(ctx, HttpResponseStatus.GATEWAY_TIMEOUT),
                 config.connectTimeoutMillis() * 2L, TimeUnit.MILLISECONDS);
         ctx.fireChannelActive();
     }
-    @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        if (failed) { ReferenceCountUtil.release(msg); return; }
+
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+        if (failed) {
+            ReferenceCountUtil.release(msg);
+            return;
+        }
         if (msg instanceof HttpRequest incoming && request == null) {
-            if (!incoming.decoderResult().isSuccess()) { ReferenceCountUtil.release(msg); fail(ctx, HttpResponseStatus.BAD_REQUEST); return; }
+            if (!incoming.decoderResult().isSuccess()) {
+                ReferenceCountUtil.release(msg);
+                fail(ctx, HttpResponseStatus.BAD_REQUEST);
+                return;
+            }
             request = incoming;
             tunnel = HttpMethod.CONNECT.equals(request.method());
             final Authority target;
@@ -72,8 +88,10 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
                         || !(ctx.channel().remoteAddress() instanceof InetSocketAddress source)
                         || !source.getAddress().isLoopbackAddress()))
                     throw new IllegalArgumentException("TUN 来源标识无效");
+            } catch (RuntimeException e) {
+                fail(ctx, HttpResponseStatus.BAD_REQUEST);
+                return;
             }
-            catch (RuntimeException e) { fail(ctx, HttpResponseStatus.BAD_REQUEST); return; }
             ctx.channel().config().setAutoRead(false);
             if (!tunnel) {
                 ctx.pipeline().get(HttpRequestDecoder.class).setSingleDecode(false);
@@ -89,21 +107,39 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
             if (fromTun && target.port() == 53) acceptDns(ctx);
             else route(ctx, target);
         } else if (msg instanceof HttpContent content && request != null) {
-            if (!content.decoderResult().isSuccess()) { content.release(); fail(ctx, HttpResponseStatus.BAD_REQUEST); return; }
-            if (tunnel) { content.release(); return; }
+            if (!content.decoderResult().isSuccess()) {
+                content.release();
+                fail(ctx, HttpResponseStatus.BAD_REQUEST);
+                return;
+            }
+            if (tunnel) {
+                content.release();
+                return;
+            }
             pendingBytes += content.content().readableBytes();
-            if (pendingBytes > Transport.MAX_PENDING_BYTES) { content.release(); fail(ctx, HttpResponseStatus.REQUEST_ENTITY_TOO_LARGE); }
-            else pending.add(content);
-        } else { ReferenceCountUtil.release(msg); fail(ctx, HttpResponseStatus.BAD_REQUEST); }
+            if (pendingBytes > Transport.MAX_PENDING_BYTES) {
+                content.release();
+                fail(ctx, HttpResponseStatus.REQUEST_ENTITY_TOO_LARGE);
+            } else pending.add(content);
+        } else {
+            ReferenceCountUtil.release(msg);
+            fail(ctx, HttpResponseStatus.BAD_REQUEST);
+        }
     }
 
-    /** 在普通分流之前接管 DNS，复用 CONNECT 通道，不另开系统监听端口。 */
+    /**
+     * 在普通分流之前接管 DNS，复用 CONNECT 通道，不另开系统监听端口。
+     */
     private void acceptDns(ChannelHandlerContext ctx) {
-        ready = true; timeout.cancel(false);
+        ready = true;
+        timeout.cancel(false);
         var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
         if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
         ctx.writeAndFlush(response).addListener(f -> {
-            if (!f.isSuccess() || !ctx.channel().isActive()) { ctx.close(); return; }
+            if (!f.isSuccess() || !ctx.channel().isActive()) {
+                ctx.close();
+                return;
+            }
             if (udp) UdpTunnel.addFraming(ctx.pipeline());
             else {
                 KernelDns.framing(ctx.pipeline());
@@ -120,7 +156,8 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
 
     private void route(ChannelHandlerContext ctx, Authority target) {
         requestTarget = target;
-        requestConfig = session.config(); requestMethod = udp ? "CONNECT-UDP" : request.method().name();
+        requestConfig = session.config();
+        requestMethod = udp ? "CONNECT-UDP" : request.method().name();
         localSession = new LocalSession(ctx.channel(), target, fromTun ? dns.domain(target.host()) : null, resolver.getResolver(ctx.executor()), address -> {
             if (failed || !ctx.channel().isActive()) return;
             if (address == null) connectProxy(ctx, target);
@@ -132,13 +169,17 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
         localSession.apply(routeSource.get());
     }
 
-    /** 只记录请求目标和连接结果，不记录 URL 路径、查询参数、请求头及正文。 */
+    /**
+     * 只记录请求目标和连接结果，不记录 URL 路径、查询参数、请求头及正文。
+     */
     private void recordAccess(String state) {
         if (accessRecorder == null || localSession == null || accessCompleted) return;
         var value = new java.util.LinkedHashMap<String, Object>(localSession.snapshot(requestConfig));
         value.put("requestId", traffic.sessionId() + "/" + value.get("id"));
-        value.put("sessionId", traffic.sessionId()); value.put("method", requestMethod);
-        value.put("state", state); value.put("completedAt", state.equals("pending") ? 0L : System.currentTimeMillis());
+        value.put("sessionId", traffic.sessionId());
+        value.put("method", requestMethod);
+        value.put("state", state);
+        value.put("completedAt", state.equals("pending") ? 0L : System.currentTimeMillis());
         accessCompleted = !state.equals("pending");
         accessRecorder.accept(java.util.Map.copyOf(value));
     }
@@ -168,17 +209,21 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     static Authority target(HttpRequest request, boolean tunnel) {
         if (tunnel) return Authority.parse(request.uri(), -1);
         URI uri = URI.create(request.uri());
-        if (uri.getRawFragment() != null || uri.getRawUserInfo() != null) throw new IllegalArgumentException("请求目标无效");
+        if (uri.getRawFragment() != null || uri.getRawUserInfo() != null)
+            throw new IllegalArgumentException("请求目标无效");
         Authority target;
         if (uri.isAbsolute()) {
-            if (!"http".equalsIgnoreCase(uri.getScheme())) throw new IllegalArgumentException("HTTPS 请求必须使用 CONNECT");
+            if (!"http".equalsIgnoreCase(uri.getScheme()))
+                throw new IllegalArgumentException("HTTPS 请求必须使用 CONNECT");
             target = Authority.parse(uri.getRawAuthority(), 80);
             String path = uri.getRawPath();
             request.setUri((path == null || path.isEmpty() ? "/" : path)
                     + (uri.getRawQuery() == null ? "" : "?" + uri.getRawQuery()));
         } else {
-            if (!request.uri().startsWith("/") && !request.uri().equals("*")) throw new IllegalArgumentException("请求目标无效");
-            if (request.headers().getAll(HttpHeaderNames.HOST).size() != 1) throw new IllegalArgumentException("必须且只能提供一个 Host 请求头");
+            if (!request.uri().startsWith("/") && !request.uri().equals("*"))
+                throw new IllegalArgumentException("请求目标无效");
+            if (request.headers().getAll(HttpHeaderNames.HOST).size() != 1)
+                throw new IllegalArgumentException("必须且只能提供一个 Host 请求头");
             target = Authority.parse(request.headers().get(HttpHeaderNames.HOST), 80);
         }
         return target;
@@ -193,7 +238,8 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
             if (error != null) LogManager.getLogger(LocalRequestHandler.class).warn(
                     "目标连接失败：目标={}，原始协议={}，路由={}，原因={}",
                     requestTarget, udp ? "UDP" : "TCP", direct ? "直连" : "代理", error.toString());
-            fail(ctx, HttpResponseStatus.BAD_GATEWAY); return;
+            fail(ctx, HttpResponseStatus.BAD_GATEWAY);
+            return;
         }
         remote = channel;
         if (!localSession.remote(remote)) return;
@@ -209,7 +255,10 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
             if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
             ctx.writeAndFlush(response)
                     .addListener(f -> {
-                        if (!f.isSuccess() || !ctx.channel().isActive()) { remote.close(); return; }
+                        if (!f.isSuccess() || !ctx.channel().isActive()) {
+                            remote.close();
+                            return;
+                        }
                         if (udp) {
                             UdpTunnel.addFraming(ctx.pipeline());
                             ctx.pipeline().addLast("relay", UdpTunnel.relay(remote));
@@ -218,12 +267,18 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
                         ctx.pipeline().remove("responseEncoder");
                         // 移除 ByteToMessageDecoder 时，合并接收的隧道数据只转发一次。
                         ctx.pipeline().remove("requestDecoder");
-                        remote.read(); ctx.channel().read();
+                        remote.read();
+                        ctx.channel().read();
                     });
         } else {
             ctx.pipeline().remove("responseEncoder");
             remote.pipeline().addLast("httpEncoder", new HttpRequestEncoder());
-            remote.writeAndFlush(request).addListener(f -> { if (!f.isSuccess()) { remote.close(); ctx.close(); } });
+            remote.writeAndFlush(request).addListener(f -> {
+                if (!f.isSuccess()) {
+                    remote.close();
+                    ctx.close();
+                }
+            });
             request = null;
             var body = new HttpBodyRelay(remote);
             ctx.pipeline().replace(this, "body", body);
@@ -251,12 +306,19 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
         response.headers().setInt(HttpHeaderNames.CONTENT_LENGTH, 0).set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
         ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
     }
-    private void releasePending() { while (!pending.isEmpty()) pending.remove().release(); }
-    @Override public void handlerRemoved(ChannelHandlerContext ctx) {
+
+    private void releasePending() {
+        while (!pending.isEmpty()) pending.remove().release();
+    }
+
+    @Override
+    public void handlerRemoved(ChannelHandlerContext ctx) {
         if (timeout != null) timeout.cancel(false);
         if (!ready) releasePending();
     }
-    @Override public void channelInactive(ChannelHandlerContext ctx) {
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) {
         failed = true;
         if (opening != null && !opening.isDone()) opening.cancel(false);
         if (timeout != null) timeout.cancel(false);
@@ -264,16 +326,34 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
         if (remote != null) remote.close();
         ctx.fireChannelInactive();
     }
-    @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) { fail(ctx, HttpResponseStatus.BAD_REQUEST); }
 
-    /** 普通 HTTP 每条本地连接处理一个请求，请求体按流转发。 */
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        fail(ctx, HttpResponseStatus.BAD_REQUEST);
+    }
+
+    /**
+     * 普通 HTTP 每条本地连接处理一个请求，请求体按流转发。
+     */
     private static final class HttpBodyRelay extends RelayHandler {
         private boolean complete;
-        HttpBodyRelay(Channel peer) { super(peer); }
-        @Override protected boolean canRead() { return !complete; }
-        @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
+
+        HttpBodyRelay(Channel peer) {
+            super(peer);
+        }
+
+        @Override
+        protected boolean canRead() {
+            return !complete;
+        }
+
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) {
             if (!(msg instanceof HttpContent content) || complete || !content.decoderResult().isSuccess()) {
-                ReferenceCountUtil.release(msg); peer.close(); ctx.close(); return;
+                ReferenceCountUtil.release(msg);
+                peer.close();
+                ctx.close();
+                return;
             }
             if (msg instanceof LastHttpContent) complete = true;
             super.channelRead(ctx, msg);

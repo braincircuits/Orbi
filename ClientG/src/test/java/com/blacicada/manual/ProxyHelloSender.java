@@ -8,7 +8,9 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
-/** 在 IDEA 中直接运行 main，通过本地 HTTP 代理向目标发送 hello world。 */
+/**
+ * 在 IDEA 中直接运行 main，通过本地 HTTP 代理向目标发送 hello world。
+ */
 public final class ProxyHelloSender {
     private static final String PROXY_HOST = "127.0.0.1";
     private static final int PROXY_PORT = 8080;
@@ -61,7 +63,9 @@ public final class ProxyHelloSender {
         }
     }
 
-    /** 只读取到响应头末尾，避免吞掉隧道中的数据；同时限制头部大小。 */
+    /**
+     * 只读取到响应头末尾，避免吞掉隧道中的数据；同时限制头部大小。
+     */
     private static String readHeaders(InputStream input) throws IOException {
         var bytes = new ByteArrayOutputStream();
         int tail = 0;

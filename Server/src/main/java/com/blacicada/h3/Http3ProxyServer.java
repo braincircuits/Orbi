@@ -15,6 +15,7 @@ import io.netty.resolver.dns.DnsServerAddressStreamProviders;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+
 import java.net.InetSocketAddress;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicLong;
@@ -33,6 +34,7 @@ public final class Http3ProxyServer implements AutoCloseable {
     public Http3ProxyServer(ProxyConfig config) throws java.io.IOException {
         this(config, DnsServerAddressStreamProviders.platformDefault());
     }
+
     public Http3ProxyServer(ProxyConfig config, DnsServerAddressStreamProvider dnsServers) throws java.io.IOException {
         this.config = config;
         ProxyCredentials credentials = ProxyCredentials.loadServer(config);
@@ -44,18 +46,23 @@ public final class Http3ProxyServer implements AutoCloseable {
                 .sslContext(ssl).sslTaskExecutor(ForkJoinPool.commonPool())
                 .tokenHandler(new RetryTokenHandler())
                 .handler(new ChannelInitializer<QuicChannel>() {
-                    @Override protected void initChannel(QuicChannel ch) {
+                    @Override
+                    protected void initChannel(QuicChannel ch) {
                         ch.pipeline().addLast("connectionLog", new ChannelInboundHandlerAdapter() {
                             private boolean connected;
                             private java.net.SocketAddress peerAddress;
-                            @Override public void channelActive(ChannelHandlerContext ctx) {
+
+                            @Override
+                            public void channelActive(ChannelHandlerContext ctx) {
                                 connected = true;
                                 peerAddress = ch.remoteSocketAddress();
                                 LOGGER.info("与客户端的 HTTP/3 连接成功：客户端={}，连接 ID={}",
                                         peerAddress, ch.id().asShortText());
                                 ctx.fireChannelActive();
                             }
-                            @Override public void channelInactive(ChannelHandlerContext ctx) {
+
+                            @Override
+                            public void channelInactive(ChannelHandlerContext ctx) {
                                 if (connected) LOGGER.info("与客户端的 HTTP/3 连接已断开：客户端={}，连接 ID={}",
                                         peerAddress, ch.id().asShortText());
                                 ctx.fireChannelInactive();
@@ -68,7 +75,8 @@ public final class Http3ProxyServer implements AutoCloseable {
                                 (long) Transport.MAX_HEADER_SIZE);
                         ch.pipeline().addLast(new Http3ServerConnectionHandler(
                                 new ChannelInitializer<QuicStreamChannel>() {
-                                    @Override protected void initChannel(QuicStreamChannel stream) {
+                                    @Override
+                                    protected void initChannel(QuicStreamChannel stream) {
                                         stream.pipeline().addFirst("streamCleanup", new QuicStreamCleanupHandler());
                                         stream.config().setAllowHalfClosure(true);
                                         stream.config().setWriteBufferWaterMark(Transport.WATERMARK);
@@ -87,15 +95,30 @@ public final class Http3ProxyServer implements AutoCloseable {
                     .bind(new InetSocketAddress(config.get("bind", "0.0.0.0"),
                             config.integer("port", 4433, 0, 65535))).sync().channel();
             return this;
-        } catch (RuntimeException | InterruptedException e) { close(); throw e; }
+        } catch (RuntimeException | InterruptedException e) {
+            close();
+            throw e;
+        }
     }
 
-    public InetSocketAddress address() { return (InetSocketAddress) listener.localAddress(); }
-    public long acceptedConnections() { return acceptedConnections.get(); }
-    public void disconnectClients() { connections.close().awaitUninterruptibly(); }
-    public void await() throws InterruptedException { listener.closeFuture().sync(); }
+    public InetSocketAddress address() {
+        return (InetSocketAddress) listener.localAddress();
+    }
 
-    @Override public void close() {
+    public long acceptedConnections() {
+        return acceptedConnections.get();
+    }
+
+    public void disconnectClients() {
+        connections.close().awaitUninterruptibly();
+    }
+
+    public void await() throws InterruptedException {
+        listener.closeFuture().sync();
+    }
+
+    @Override
+    public void close() {
         if (!closed.compareAndSet(false, true)) return;
         connections.close().awaitUninterruptibly();
         if (listener != null) listener.close().awaitUninterruptibly();

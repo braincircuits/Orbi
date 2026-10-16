@@ -29,11 +29,13 @@ class QuicStreamCleanupIntegrationTest {
         return Path.of(getClass().getResource("/tls/" + name).toURI());
     }
 
-    @Test void closingInputAfterAcknowledgedFinReplenishesPeerCredit() throws Exception {
+    @Test
+    void closingInputAfterAcknowledgedFinReplenishesPeerCredit() throws Exception {
         verifyClose(true);
     }
 
-    @Test void closingOpenOutputPreservesBufferedResponse() throws Exception {
+    @Test
+    void closingOpenOutputPreservesBufferedResponse() throws Exception {
         verifyClose(false);
     }
 
@@ -44,20 +46,26 @@ class QuicStreamCleanupIntegrationTest {
         var received = new AtomicInteger();
         int responseBytes = outputAlreadyShutdown ? 0 : 64 * 1024;
         try {
-            var values = new Properties(); values.setProperty("maxStreams", "1");
+            var values = new Properties();
+            values.setProperty("maxStreams", "1");
             var config = new ProxyConfig(values, Path.of("."));
             var serverSsl = QuicSslContextBuilder.forServer(resource("localhost.key").toFile(), null,
                     resource("localhost.crt").toFile()).applicationProtocols("stream-cleanup-test").build();
             var serverCodec = Transport.limits(new QuicServerCodecBuilder(), config).sslContext(serverSsl)
                     .tokenHandler(InsecureQuicTokenHandler.INSTANCE)
                     .handler(new ChannelInitializer<QuicChannel>() {
-                        @Override protected void initChannel(QuicChannel channel) { channels.add(channel); }
+                        @Override
+                        protected void initChannel(QuicChannel channel) {
+                            channels.add(channel);
+                        }
                     })
                     .streamOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     .streamHandler(new ChannelInitializer<QuicStreamChannel>() {
-                        @Override protected void initChannel(QuicStreamChannel stream) {
+                        @Override
+                        protected void initChannel(QuicStreamChannel stream) {
                             stream.pipeline().addLast(new QuicStreamCleanupHandler(), new ChannelInboundHandlerAdapter() {
-                                @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                                @Override
+                                public void channelRead(ChannelHandlerContext ctx, Object msg) {
                                     ReferenceCountUtil.release(msg);
                                     if (outputAlreadyShutdown) {
                                         stream.shutdownOutput().addListener(sent -> {
@@ -76,20 +84,23 @@ class QuicStreamCleanupIntegrationTest {
                         }
                     }).build();
             Channel server = new Bootstrap().group(group).channel(NioDatagramChannel.class).handler(serverCodec)
-                    .bind("127.0.0.1", 0).sync().channel(); channels.add(server);
+                    .bind("127.0.0.1", 0).sync().channel();
+            channels.add(server);
             var clientSsl = QuicSslContextBuilder.forClient().trustManager(resource("localhost.crt").toFile())
                     .applicationProtocols("stream-cleanup-test").build();
             Channel udp = new Bootstrap().group(group).channel(NioDatagramChannel.class)
                     .handler(Transport.limits(new QuicClientCodecBuilder(), config).sslEngineProvider(channel ->
                             clientSsl.newEngine(channel.alloc(), "localhost", 443)).build())
-                    .bind("127.0.0.1", 0).sync().channel(); channels.add(udp);
+                    .bind("127.0.0.1", 0).sync().channel();
+            channels.add(udp);
             QuicChannel connection = QuicChannel.newBootstrap(udp).handler(new ChannelInboundHandlerAdapter())
                     .remoteAddress((InetSocketAddress) server.localAddress()).connect().sync().getNow();
             channels.add(connection);
             QuicStreamChannel stream = connection.newStreamBootstrap().type(QuicStreamType.BIDIRECTIONAL)
                     .option(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     .option(ChannelOption.AUTO_READ, outputAlreadyShutdown).handler(new ChannelInboundHandlerAdapter() {
-                        @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                        @Override
+                        public void channelRead(ChannelHandlerContext ctx, Object msg) {
                             received.addAndGet(((io.netty.buffer.ByteBuf) msg).readableBytes());
                             ReferenceCountUtil.release(msg);
                         }

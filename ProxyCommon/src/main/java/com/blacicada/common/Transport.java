@@ -7,13 +7,16 @@ import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.quic.QuicCodecBuilder;
 import io.netty.resolver.dns.*;
+
 import java.util.concurrent.TimeUnit;
 
 public final class Transport {
     public static final int MAX_HEADER_SIZE = 16384;
     public static final int MAX_PENDING_BYTES = 1024 * 1024;
     public static final WriteBufferWaterMark WATERMARK = new WriteBufferWaterMark(32768, 65536);
-    private Transport() { }
+
+    private Transport() {
+    }
 
     public static <B extends QuicCodecBuilder<B>> B limits(B builder, ProxyConfig config) {
         return builder.maxIdleTimeout(config.idleTimeoutSeconds(), TimeUnit.SECONDS)
@@ -29,7 +32,9 @@ public final class Transport {
                 .nameServerProvider(DnsServerAddressStreamProviders.platformDefault()).queryTimeoutMillis(3000));
     }
 
-    /** 异常取消时重置双向流，不等待已经无法完成的传输。 */
+    /**
+     * 异常取消时重置双向流，不等待已经无法完成的传输。
+     */
     public static void abort(Channel channel) {
         if (channel instanceof io.netty.handler.codec.quic.QuicStreamChannel stream && stream.isActive()) {
             stream.shutdown((int) io.netty.handler.codec.http3.Http3ErrorCode.H3_REQUEST_CANCELLED.code())

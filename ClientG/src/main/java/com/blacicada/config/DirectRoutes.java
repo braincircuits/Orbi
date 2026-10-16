@@ -2,6 +2,7 @@ package com.blacicada.config;
 
 import com.blacicada.common.ProxyConfig;
 import io.netty.util.NetUtil;
+
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.ArrayList;
@@ -12,7 +13,9 @@ import java.util.Set;
 import java.util.Map;
 import java.util.TreeMap;
 
-/** 不可变路由规则：精确目标覆盖，以及域名后缀、IP 地址和 CIDR 直连规则。 */
+/**
+ * 不可变路由规则：精确目标覆盖，以及域名后缀、IP 地址和 CIDR 直连规则。
+ */
 public final class DirectRoutes {
     private final String text;
     private String mode = "rules";
@@ -20,9 +23,13 @@ public final class DirectRoutes {
     private final Set<Network> networks;
     private final Map<String, String> overrides;
 
-    public DirectRoutes(String text) throws IOException { this(text, "直连规则", ""); }
+    public DirectRoutes(String text) throws IOException {
+        this(text, "直连规则", "");
+    }
 
-    /** 规则仅来自当前配置快照，外部文件不参与路由。 */
+    /**
+     * 规则仅来自当前配置快照，外部文件不参与路由。
+     */
     public static DirectRoutes load(ProxyConfig config) throws IOException {
         DirectRoutes rules = new DirectRoutes(config.values().getProperty("routesInline", ""), "直连规则",
                 config.get("routesOverrides", ""));
@@ -31,13 +38,26 @@ public final class DirectRoutes {
             throw new IllegalArgumentException("全局模式必须为 rules、direct 或 proxy");
         return rules;
     }
-    public String mode() { return mode; }
 
-    public String text() { return text; }
-    public Map<String, String> overrides() { return overrides; }
-    public String override(String host) { return overrides.get(hostKey(host)); }
+    public String mode() {
+        return mode;
+    }
 
-    /** 精确目标规则优先于域名后缀和 DNS 网段规则；不扩展到子域名。 */
+    public String text() {
+        return text;
+    }
+
+    public Map<String, String> overrides() {
+        return overrides;
+    }
+
+    public String override(String host) {
+        return overrides.get(hostKey(host));
+    }
+
+    /**
+     * 精确目标规则优先于域名后缀和 DNS 网段规则；不扩展到子域名。
+     */
     public static String normalizeHost(String host) {
         InetAddress address = literal(host);
         if (address != null) return address.getHostAddress();
@@ -53,7 +73,9 @@ public final class DirectRoutes {
         return address != null ? address.getHostAddress() : java.net.IDN.toASCII(normalize(host));
     }
 
-    /** 忽略注释、顺序、重复项及 CIDR 主机位，避免无效编辑触发重复 DNS。 */
+    /**
+     * 忽略注释、顺序、重复项及 CIDR 主机位，避免无效编辑触发重复 DNS。
+     */
     public boolean sameRules(DirectRoutes other) {
         return mode.equals(other.mode) && domains.equals(other.domains) && networks.equals(other.networks) && overrides.equals(other.overrides);
     }
@@ -79,7 +101,8 @@ public final class DirectRoutes {
                         networkRules.add(new Network(address.getAddress(), Integer.parseInt(prefix)));
                     } else {
                         InetAddress address = literal(rule);
-                        if (address != null) networkRules.add(new Network(address.getAddress(), address.getAddress().length * 8));
+                        if (address != null)
+                            networkRules.add(new Network(address.getAddress(), address.getAddress().length * 8));
                         else {
                             domainRules.add(normalizeHost(rule));
                         }
@@ -108,13 +131,20 @@ public final class DirectRoutes {
         overrides = Map.copyOf(targetRules);
     }
 
-    /** 合并规则原文并保留备注；相同规则优先保留现有行，CIDR 忽略主机位。 */
+    /**
+     * 合并规则原文并保留备注；相同规则优先保留现有行，CIDR 忽略主机位。
+     */
     public static String mergeText(String current, String incoming) throws IOException {
-        new DirectRoutes(current); new DirectRoutes(incoming);
-        var keys = new HashSet<Object>(); var lines = new ArrayList<String>();
+        new DirectRoutes(current);
+        new DirectRoutes(incoming);
+        var keys = new HashSet<Object>();
+        var lines = new ArrayList<String>();
         for (String line : (current + "\n" + incoming).split("\n", -1)) {
             String rule = line.split("#", 2)[0].trim();
-            if (rule.isEmpty()) { lines.add(line); continue; }
+            if (rule.isEmpty()) {
+                lines.add(line);
+                continue;
+            }
             int slash = rule.indexOf('/');
             var address = literal(slash < 0 ? rule : rule.substring(0, slash));
             Object key = address == null ? normalizeHost(rule) : new Network(address.getAddress(),
@@ -124,7 +154,9 @@ public final class DirectRoutes {
         return String.join("\n", lines).strip();
     }
 
-    /** 不执行 DNS 解析；IP 地址不参与域名后缀匹配。 */
+    /**
+     * 不执行 DNS 解析；IP 地址不参与域名后缀匹配。
+     */
     public boolean matches(String host) {
         if (!mode.equals("rules")) return mode.equals("direct");
         String override = override(host);
@@ -166,10 +198,17 @@ public final class DirectRoutes {
             address = address.clone();
             for (int bit = prefix; bit < address.length * 8; bit++) address[bit / 8] &= (byte) ~(1 << (7 - bit % 8));
         }
-        @Override public boolean equals(Object other) {
+
+        @Override
+        public boolean equals(Object other) {
             return other instanceof Network network && prefix == network.prefix && Arrays.equals(address, network.address);
         }
-        @Override public int hashCode() { return 31 * Arrays.hashCode(address) + prefix; }
+
+        @Override
+        public int hashCode() {
+            return 31 * Arrays.hashCode(address) + prefix;
+        }
+
         boolean matches(byte[] candidate) {
             if (candidate.length != address.length) return false;
             int fullBytes = prefix / 8;

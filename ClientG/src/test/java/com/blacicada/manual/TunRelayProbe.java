@@ -4,6 +4,7 @@ import com.blacicada.common.ProxyConfig;
 import com.blacicada.config.KernelConfig;
 import com.blacicada.proxy.LocalProxyServer;
 import com.google.gson.Gson;
+
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.lang.management.ManagementFactory;
@@ -13,7 +14,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 
-/** 供 ACK 测量脚本启动真实代理；KQueue 仅绑定 lo0，不创建 TUN 或修改系统路由。 */
+/**
+ * 供 ACK 测量脚本启动真实代理；KQueue 仅绑定 lo0，不创建 TUN 或修改系统路由。
+ */
 public final class TunRelayProbe {
     public static void main(String[] args) throws Exception {
         if (args.length != 1 || !List.of("kqueue", "nio").contains(args[0]))

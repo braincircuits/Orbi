@@ -7,14 +7,20 @@ import io.netty.channel.Channel;
 import io.netty.resolver.AddressResolver;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.Future;
+
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Map;
+
 import com.blacicada.config.KernelConfig;
+
 import java.util.function.Consumer;
+
 import org.apache.logging.log4j.LogManager;
 
-/** 每条浏览器连接自己的路由状态；所有访问都在该连接的 EventLoop 中执行。 */
+/**
+ * 每条浏览器连接自己的路由状态；所有访问都在该连接的 EventLoop 中执行。
+ */
 final class LocalSession {
     static final AttributeKey<LocalSession> KEY = AttributeKey.valueOf(LocalSession.class, "session");
     private final Channel browser;
@@ -33,9 +39,13 @@ final class LocalSession {
     private boolean closed;
     private boolean udp;
 
-    void udp(boolean value) { udp = value; }
+    void udp(boolean value) {
+        udp = value;
+    }
 
-    /** 首次决定路由时回调一次；地址为 null 表示走代理。 */
+    /**
+     * 首次决定路由时回调一次；地址为 null 表示走代理。
+     */
     LocalSession(Channel browser, Authority target, AddressResolver<InetSocketAddress> resolver,
                  Consumer<InetSocketAddress> start) {
         this(browser, target, null, resolver, start);
@@ -43,13 +53,19 @@ final class LocalSession {
 
     LocalSession(Channel browser, Authority target, String associatedDomain, AddressResolver<InetSocketAddress> resolver,
                  Consumer<InetSocketAddress> start) {
-        this.browser = browser; this.target = target; this.resolver = resolver; this.start = start;
+        this.browser = browser;
+        this.target = target;
+        this.resolver = resolver;
+        this.start = start;
         displayTarget = associatedDomain == null ? target : new Authority(associatedDomain, target.port());
         originalAddress = associatedDomain == null ? null
                 : new InetSocketAddress(java.net.InetAddress.ofLiteral(target.host()), target.port());
         browser.attr(KEY).set(this);
         browser.closeFuture().addListener(ignored -> {
-            closed = true; this.start = null; cancelLookup(); browser.attr(KEY).set(null);
+            closed = true;
+            this.start = null;
+            cancelLookup();
+            browser.attr(KEY).set(null);
         });
     }
 
@@ -59,9 +75,13 @@ final class LocalSession {
         evaluate();
     }
 
-    boolean isClosed() { return closed; }
+    boolean isClosed() {
+        return closed;
+    }
 
-    /** 在所属 EventLoop 中读取不可变快照，不暴露 Channel 或凭据。 */
+    /**
+     * 在所属 EventLoop 中读取不可变快照，不暴露 Channel 或凭据。
+     */
     Map<String, Object> snapshot(KernelConfig config) {
         var profile = direct == null || direct ? null : config.profile(config.defaultConnectionId());
         var source = browser.remoteAddress();
@@ -76,10 +96,15 @@ final class LocalSession {
                 "protocol", profile == null ? (udp ? "udp" : "tcp") : profile.config().get("protocol", "http3"), "createdAt", createdAt);
     }
 
-    /** 记录实际连接地址，防止 DNS 多地址中另一个地址命中规则却保留错误的直连。 */
+    /**
+     * 记录实际连接地址，防止 DNS 多地址中另一个地址命中规则却保留错误的直连。
+     */
     boolean remote(Channel channel) {
         remote = channel;
-        if (closed || !browser.isActive()) { Transport.abort(channel); return false; }
+        if (closed || !browser.isActive()) {
+            Transport.abort(channel);
+            return false;
+        }
         if (Boolean.TRUE.equals(direct) && channel.remoteAddress() instanceof InetSocketAddress address && !address.isUnresolved()) {
             directAddress = address;
             evaluate();
@@ -99,11 +124,14 @@ final class LocalSession {
             else route = rules.matches(displayTarget.host()) || rules.matches(target.host());
             decide(route ? originalAddress : null);
         } else if (rules.matches(target.host())) {
-            cancelLookup(); decide(target.unresolved());
+            cancelLookup();
+            decide(target.unresolved());
         } else if (!rules.needsResolution(target.host())) {
-            cancelLookup(); decide(null);
+            cancelLookup();
+            decide(null);
         } else if (directAddress != null) {
-            cancelLookup(); decide(rules.matches(directAddress.getAddress()) ? directAddress : null);
+            cancelLookup();
+            decide(rules.matches(directAddress.getAddress()) ? directAddress : null);
         } else if (addresses != null) {
             decide(addresses.stream().filter(address -> rules.matches(address.getAddress())).findFirst().orElse(null));
         } else if (lookup == null) {
@@ -124,7 +152,8 @@ final class LocalSession {
         if (direct == null) {
             direct = nextDirect;
             if (nextDirect && !address.isUnresolved()) directAddress = address;
-            var connect = start; start = null;
+            var connect = start;
+            start = null;
             connect.accept(address);
         } else if (direct != nextDirect) {
             closed = true;
@@ -138,7 +167,8 @@ final class LocalSession {
     }
 
     private void cancelLookup() {
-        var previous = lookup; lookup = null;
+        var previous = lookup;
+        lookup = null;
         if (previous != null) previous.cancel(false);
     }
 }

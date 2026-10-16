@@ -2,13 +2,20 @@ package com.blacicada.control.web;
 
 import com.blacicada.control.KernelControl;
 import com.blacicada.io.StorageConfig;
+
 import java.nio.file.*;
 import java.util.*;
 
-/** 管理地址、令牌和跨域白名单是启动参数，不随代理配置热更新。 */
+/**
+ * 管理地址、令牌和跨域白名单是启动参数，不随代理配置热更新。
+ */
 public final class WebApplication {
-    private WebApplication() { }
-    /** 原生程序取进程映像位置，JAR 取代码来源；IDE 运行时使用编译输出目录。 */
+    private WebApplication() {
+    }
+
+    /**
+     * 原生程序取进程映像位置，JAR 取代码来源；IDE 运行时使用编译输出目录。
+     */
     static Path defaultDatabase() throws Exception {
         if ("runtime".equals(System.getProperty("org.graalvm.nativeimage.imagecode"))) {
             Path executable = Path.of(ProcessHandle.current().info().command()
@@ -18,6 +25,7 @@ public final class WebApplication {
         Path source = Path.of(WebApplication.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toRealPath();
         return (Files.isDirectory(source) ? source : source.getParent()).resolve("kernel.db");
     }
+
     public static void run(String[] args) throws Exception {
         Path database = null, storageFile = null, endpoint = null;
         int port = 9090;
@@ -37,14 +45,16 @@ public final class WebApplication {
                     java.net.URI uri = java.net.URI.create(value);
                     if (!Set.of("http", "https").contains(uri.getScheme()) || uri.getHost() == null
                             || uri.getRawUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null
-                            || !uri.getRawPath().isEmpty()) throw new IllegalArgumentException("允许来源必须是完整的 HTTP 或 HTTPS Origin");
+                            || !uri.getRawPath().isEmpty())
+                        throw new IllegalArgumentException("允许来源必须是完整的 HTTP 或 HTTPS Origin");
                     origins.add(value);
                 }
                 default -> throw new IllegalArgumentException("未知启动参数：" + key);
             }
         }
         if (port < 0 || port > 65535) throw new IllegalArgumentException("管理端口无效");
-        if (database != null && storageFile != null) throw new IllegalArgumentException("--db 与 --storage-config 不能同时使用");
+        if (database != null && storageFile != null)
+            throw new IllegalArgumentException("--db 与 --storage-config 不能同时使用");
         StorageConfig storage = storageFile == null ? StorageConfig.sqlite(database == null ? defaultDatabase() : database)
                 : StorageConfig.load(storageFile);
         if (endpoint == null) endpoint = storage.directory().resolve("run/control.json");
@@ -53,18 +63,23 @@ public final class WebApplication {
             var hook = new Thread(web::close, "web-control-shutdown");
             Runtime.getRuntime().addShutdownHook(hook);
             try {
-                web.start(); web.writeEndpoint(endpointFile);
+                web.start();
+                web.writeEndpoint(endpointFile);
                 System.out.println("内核存储后端：" + storage.type().name().toLowerCase(Locale.ROOT));
                 System.out.println("代理内核管理接口已启动：" + web.url());
                 System.out.println("管理连接信息文件：" + endpointFile);
                 // 管理接口启动后保持代理停止，代理客户端按需要显式启动转发。
                 web.await();
             } finally {
-                try { Runtime.getRuntime().removeShutdownHook(hook); } catch (IllegalStateException ignored) { }
+                try {
+                    Runtime.getRuntime().removeShutdownHook(hook);
+                } catch (IllegalStateException ignored) {
+                }
                 // 只删除本进程创建的发现文件，避免覆盖其他实例的状态。
                 if (Files.exists(endpointFile)) {
                     var value = com.google.gson.JsonParser.parseString(Files.readString(endpointFile)).getAsJsonObject();
-                    if (value.get("pid").getAsLong() == ProcessHandle.current().pid()) Files.deleteIfExists(endpointFile);
+                    if (value.get("pid").getAsLong() == ProcessHandle.current().pid())
+                        Files.deleteIfExists(endpointFile);
                 }
             }
         }

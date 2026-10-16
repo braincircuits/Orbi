@@ -1,8 +1,11 @@
 import com.blacicada.control.KernelControl;
 import com.google.gson.Gson;
+
 import java.nio.file.Files;
 
-/** 对真实内核的零版本号状态持续序列化，覆盖打包运行时的即时编译阶段。 */
+/**
+ * 对真实内核的零版本号状态持续序列化，覆盖打包运行时的即时编译阶段。
+ */
 public class KernelJsonProbe {
     public static void main(String[] args) throws Exception {
         var directory = Files.createTempDirectory("network-json-probe-");

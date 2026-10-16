@@ -3,9 +3,12 @@ package com.blacicada.common;
 import java.net.IDN;
 import java.net.InetSocketAddress;
 import java.util.Locale;
+
 import io.netty.util.NetUtil;
 
-/** 解析 host:port，支持方括号包裹的 IPv6；不执行 DNS 解析。 */
+/**
+ * 解析 host:port，支持方括号包裹的 IPv6；不执行 DNS 解析。
+ */
 public record Authority(String host, int port) {
     public Authority {
         if (host == null || host.isBlank() || port < 1 || port > 65535) {
@@ -42,6 +45,12 @@ public record Authority(String host, int port) {
         return Integer.parseInt(value);
     }
 
-    public InetSocketAddress unresolved() { return InetSocketAddress.createUnresolved(host, port); }
-    @Override public String toString() { return (host.indexOf(':') >= 0 ? "[" + host + "]" : host) + ":" + port; }
+    public InetSocketAddress unresolved() {
+        return InetSocketAddress.createUnresolved(host, port);
+    }
+
+    @Override
+    public String toString() {
+        return (host.indexOf(':') >= 0 ? "[" + host + "]" : host) + ":" + port;
+    }
 }

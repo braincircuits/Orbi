@@ -6,7 +6,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
 
-/** 配置仅加载一次，在创建任何套接字或启动线程之前完成。 */
+/**
+ * 配置仅加载一次，在创建任何套接字或启动线程之前完成。
+ */
 public final class ProxyConfig {
     private final Properties values;
     private final Path base;
@@ -45,10 +47,25 @@ public final class ProxyConfig {
         return base.resolve(get(name, fallback)).normalize();
     }
 
-    public Properties values() { Properties copy = new Properties(); copy.putAll(values); return copy; }
-    public Path base() { return base; }
+    public Properties values() {
+        Properties copy = new Properties();
+        copy.putAll(values);
+        return copy;
+    }
 
-    public int connectTimeoutMillis() { return integer("connectTimeoutMillis", 10000, 100, 120000); }
-    public int maxStreams() { return integer("maxStreams", 1024, 1, 10000); }
-    public long idleTimeoutSeconds() { return integer("idleTimeoutSeconds", 300, 10, 86400); }
+    public Path base() {
+        return base;
+    }
+
+    public int connectTimeoutMillis() {
+        return integer("connectTimeoutMillis", 10000, 100, 120000);
+    }
+
+    public int maxStreams() {
+        return integer("maxStreams", 1024, 1, 10000);
+    }
+
+    public long idleTimeoutSeconds() {
+        return integer("idleTimeoutSeconds", 300, 10, 86400);
+    }
 }

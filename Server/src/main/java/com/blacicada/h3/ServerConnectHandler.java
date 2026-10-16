@@ -11,6 +11,7 @@ import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.ScheduledFuture;
+
 import java.util.ArrayDeque;
 import java.util.concurrent.TimeUnit;
 
@@ -33,25 +34,35 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
 
     ServerConnectHandler(ProxyConfig config, ProxyCredentials credentials, DnsAddressResolverGroup resolver,
                          io.netty.resolver.dns.DnsServerAddressStreamProvider dnsServers) {
-        this.config = config; this.credentials = credentials; this.resolver = resolver; this.dnsServers = dnsServers;
+        this.config = config;
+        this.credentials = credentials;
+        this.resolver = resolver;
+        this.dnsServers = dnsServers;
     }
 
-    @Override public void handlerAdded(ChannelHandlerContext ctx) {
+    @Override
+    public void handlerAdded(ChannelHandlerContext ctx) {
         timeout = ctx.executor().schedule(() -> fail(ctx, "504", new java.io.IOException(
-                "CONNECT 处理超时：阶段=" + phase + "，超时预算=" + config.connectTimeoutMillis() + "ms")),
+                        "CONNECT 处理超时：阶段=" + phase + "，超时预算=" + config.connectTimeoutMillis() + "ms")),
                 config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
     }
 
-    @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        if (finished) { ReferenceCountUtil.release(msg); return; }
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+        if (finished) {
+            ReferenceCountUtil.release(msg);
+            return;
+        }
         if (msg instanceof Http3HeadersFrame frame && !receivedHeaders) {
             receivedHeaders = true;
             if (credentials.authenticate(frame.headers().get("proxy-authorization")) == null) {
-                fail(ctx, "407"); return;
+                fail(ctx, "407");
+                return;
             }
             if (!"CONNECT".contentEquals(frame.headers().method()) || frame.headers().scheme() != null
                     || frame.headers().path() != null) {
-                fail(ctx, "400", new IllegalArgumentException("请求必须为 CONNECT，且不能包含 scheme 或 path")); return;
+                fail(ctx, "400", new IllegalArgumentException("请求必须为 CONNECT，且不能包含 scheme 或 path"));
+                return;
             }
             final Authority authority;
             final boolean udp;
@@ -59,13 +70,19 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
                 authority = Authority.parse(frame.headers().authority().toString(), -1);
                 udp = UdpTunnel.requested(frame.headers().getAll(UdpTunnel.HEADER));
                 dns = DnsTunnel.requested(frame.headers().getAll(DnsTunnel.HEADER), authority);
+            } catch (RuntimeException e) {
+                fail(ctx, "400", e);
+                return;
             }
-            catch (RuntimeException e) { fail(ctx, "400", e); return; }
             requestedTarget = authority;
             ctx.channel().config().setAutoRead(false);
             final java.net.InetSocketAddress destination;
-            try { destination = dns == null ? authority.unresolved() : dns.upstream(dnsServers); }
-            catch (RuntimeException e) { fail(ctx, "502", e); return; }
+            try {
+                destination = dns == null ? authority.unresolved() : dns.upstream(dnsServers);
+            } catch (RuntimeException e) {
+                fail(ctx, "502", e);
+                return;
+            }
             phase = udp ? "建立 UDP 目标通道（含地址解析）" : "建立 TCP 目标连接（含地址解析）";
             if (udp) {
                 var opening = UdpTunnel.connect(ctx.channel().eventLoop(), resolver, destination);
@@ -82,24 +99,46 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
             connecting.addListener((ChannelFutureListener) f -> connected(ctx, f.isSuccess() ? f.channel() : null, f.cause(), false));
         } else if (msg instanceof Http3DataFrame frame && receivedHeaders) {
             pendingBytes += frame.content().readableBytes();
-            if (pendingBytes > Transport.MAX_PENDING_BYTES) { frame.release(); fail(ctx, "413"); }
-            else { pending.add(frame.content().retain()); frame.release(); }
+            if (pendingBytes > Transport.MAX_PENDING_BYTES) {
+                frame.release();
+                fail(ctx, "413");
+            } else {
+                pending.add(frame.content().retain());
+                frame.release();
+            }
         } else if (msg instanceof Http3UnknownFrame) {
             ReferenceCountUtil.release(msg);
-        } else { ReferenceCountUtil.release(msg); fail(ctx, "400"); }
+        } else {
+            ReferenceCountUtil.release(msg);
+            fail(ctx, "400");
+        }
     }
 
     private void connected(ChannelHandlerContext ctx, Channel connected, Throwable failure, boolean udp) {
         if (connected != null) target = connected;
-        if (finished || !ctx.channel().isActive()) { if (connected != null) connected.close(); return; }
-        if (failure != null) { fail(ctx, "502", failure); return; }
-        var response = new DefaultHttp3HeadersFrame(); response.headers().status("200");
+        if (finished || !ctx.channel().isActive()) {
+            if (connected != null) connected.close();
+            return;
+        }
+        if (failure != null) {
+            fail(ctx, "502", failure);
+            return;
+        }
+        var response = new DefaultHttp3HeadersFrame();
+        response.headers().status("200");
         if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
         if (dns != null) response.headers().set(DnsTunnel.HEADER, dns.header());
         phase = "发送 CONNECT 成功响应";
         ctx.writeAndFlush(response).addListener(write -> {
-            if (finished) { target.close(); ctx.close(); return; }
-            if (!write.isSuccess() || !ctx.channel().isActive()) { fail(ctx, "502", write.cause()); return; }
+            if (finished) {
+                target.close();
+                ctx.close();
+                return;
+            }
+            if (!write.isSuccess() || !ctx.channel().isActive()) {
+                fail(ctx, "502", write.cause());
+                return;
+            }
             finished = true;
             timeout.cancel(false);
             ctx.pipeline().addAfter(ctx.name(), "data", new H3DataCodec());
@@ -130,22 +169,29 @@ final class ServerConnectHandler extends ChannelInboundHandlerAdapter {
         if (timeout != null) timeout.cancel(false);
         releasePending();
         if (target != null) target.close();
-        var response = new DefaultHttp3HeadersFrame(); response.headers().status(status);
+        var response = new DefaultHttp3HeadersFrame();
+        response.headers().status(status);
         if (status.equals("407")) response.headers().set("proxy-authenticate", credentials.challenge());
         ctx.writeAndFlush(response).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
         // 避免未认证的对端无限期占用半关闭的流。
         ctx.executor().schedule(() -> ctx.close(), 1, TimeUnit.SECONDS);
     }
 
-    private void releasePending() { while (!pending.isEmpty()) pending.remove().release(); }
-    @Override public void channelInactive(ChannelHandlerContext ctx) {
+    private void releasePending() {
+        while (!pending.isEmpty()) pending.remove().release();
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) {
         finished = true;
         if (timeout != null) timeout.cancel(false);
         releasePending();
         if (target != null) target.close();
         ctx.fireChannelInactive();
     }
-    @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         if (target != null) target.close();
         ctx.close();
     }

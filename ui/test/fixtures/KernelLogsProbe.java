@@ -1,12 +1,15 @@
 import com.blacicada.control.KernelControl;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.Logger;
+
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** 在打包运行时验证按类创建的业务日志可被管理接口读取和推送。 */
+/**
+ * 在打包运行时验证按类创建的业务日志可被管理接口读取和推送。
+ */
 public class KernelLogsProbe {
     private static final Logger LOGGER = (Logger) LogManager.getLogger(KernelLogsProbe.class);
 

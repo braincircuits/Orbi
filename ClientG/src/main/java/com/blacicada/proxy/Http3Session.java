@@ -12,6 +12,7 @@ import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.*;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.ArrayDeque;
@@ -20,7 +21,9 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** 连接与流的分配状态均限制在同一个事件循环内。 */
+/**
+ * 连接与流的分配状态均限制在同一个事件循环内。
+ */
 public final class Http3Session implements ProxySession {
     private static final Logger LOGGER = LogManager.getLogger(Http3Session.class);
     private final EventLoop loop;
@@ -41,19 +44,32 @@ public final class Http3Session implements ProxySession {
     private volatile String connectionState = "idle";
     private volatile String lastError = "";
     private volatile String stage = "idle";
-    public String stage() { return stage; }
 
-    public String connectionState() { return connectionState; }
-    public String lastError() { return lastError; }
+    public String stage() {
+        return stage;
+    }
+
+    public String connectionState() {
+        return connectionState;
+    }
+
+    public String lastError() {
+        return lastError;
+    }
 
     private record StreamRequest(QuicChannel parent, ChannelHandler handler,
-                                 Promise<QuicStreamChannel> promise) { }
+                                 Promise<QuicStreamChannel> promise) {
+    }
 
     public Http3Session(EventLoop loop, ProxyConfig config, DnsAddressResolverGroup resolver) throws Exception {
         this(loop, config, resolver, OutboundNetwork.DEFAULT);
     }
+
     public Http3Session(EventLoop loop, ProxyConfig config, DnsAddressResolverGroup resolver, OutboundNetwork network) throws Exception {
-        this.loop = loop; this.config = config; this.resolver = resolver; this.network = network;
+        this.loop = loop;
+        this.config = config;
+        this.resolver = resolver;
+        this.network = network;
         authorization = ProxyCredentials.clientAuthorization(config);
         server = new Authority(config.required("server.host"), config.integer("server.port", 4433, 1, 65535));
         Quic.ensureAvailability();
@@ -67,31 +83,49 @@ public final class Http3Session implements ProxySession {
                 .sslTaskExecutor(ForkJoinPool.commonPool());
     }
 
-    @Override public Future<QuicStreamChannel> open(Authority target, boolean udpTunnel, DnsTunnel dns) {
+    @Override
+    public Future<QuicStreamChannel> open(Authority target, boolean udpTunnel, DnsTunnel dns) {
         Promise<QuicStreamChannel> result = loop.newPromise();
         loop.execute(() -> {
             if (result.isDone()) return;
             if (closed) {
-                result.tryFailure(new IOException("代理会话已关闭")); return;
+                result.tryFailure(new IOException("代理会话已关闭"));
+                return;
             }
             if (streams >= config.maxStreams()) {
                 result.tryFailure(new IOException("HTTP/3 本地并发隧道额度已满：目标=" + target
                         + "，原始协议=" + (udpTunnel ? "UDP" : "TCP") + "，占用=" + streams
-                        + "，上限=" + config.maxStreams() + "，等待流额度=" + waitingStreams.size())); return;
+                        + "，上限=" + config.maxStreams() + "，等待流额度=" + waitingStreams.size()));
+                return;
             }
             streams++;
             acquire().addListener(f -> {
-                if (result.isDone()) { streams--; return; }
-                if (!f.isSuccess()) { streams--; result.tryFailure(f.cause()); return; }
+                if (result.isDone()) {
+                    streams--;
+                    return;
+                }
+                if (!f.isSuccess()) {
+                    streams--;
+                    result.tryFailure(f.cause());
+                    return;
+                }
                 QuicChannel parent = (QuicChannel) f.getNow();
                 var response = new ConnectResponse(result, target, udpTunnel, dns);
                 Future<QuicStreamChannel> creation = createWhenAllowed(parent, response);
-                result.addListener(done -> { if (!done.isSuccess()) creation.cancel(false); });
+                result.addListener(done -> {
+                    if (!done.isSuccess()) creation.cancel(false);
+                });
                 creation.addListener(created -> {
-                    if (!created.isSuccess()) { streams--; result.tryFailure(created.cause()); return; }
+                    if (!created.isSuccess()) {
+                        streams--;
+                        result.tryFailure(created.cause());
+                        return;
+                    }
                     QuicStreamChannel stream = (QuicStreamChannel) created.getNow();
                     stream.closeFuture().addListener(ignored -> streams--);
-                    result.addListener(done -> { if (!done.isSuccess()) Transport.abort(stream); });
+                    result.addListener(done -> {
+                        if (!done.isSuccess()) Transport.abort(stream);
+                    });
                     var request = new DefaultHttp3HeadersFrame();
                     request.headers().method("CONNECT").authority(target.toString())
                             .set("proxy-authorization", authorization);
@@ -133,7 +167,10 @@ public final class Http3Session implements ProxySession {
         if (creatingStream) return;
         while (!waitingStreams.isEmpty()) {
             StreamRequest request = waitingStreams.peek();
-            if (request.promise().isDone()) { waitingStreams.remove(); continue; }
+            if (request.promise().isDone()) {
+                waitingStreams.remove();
+                continue;
+            }
             if (closed || !request.parent().isActive()) {
                 waitingStreams.remove();
                 request.promise().tryFailure(new IOException("等待流额度期间 HTTP/3 连接已关闭"));
@@ -165,14 +202,21 @@ public final class Http3Session implements ProxySession {
         }
     }
 
-    @Override public Future<Double> latency() {
+    @Override
+    public Future<Double> latency() {
         Promise<Double> result = loop.newPromise();
         loop.execute(() -> acquire().addListener(ready -> {
             if (result.isDone()) return;
-            if (!ready.isSuccess()) { result.tryFailure(ready.cause()); return; }
+            if (!ready.isSuccess()) {
+                result.tryFailure(ready.cause());
+                return;
+            }
             QuicChannel channel = (QuicChannel) ready.getNow();
             channel.collectPathStats(0).addListener(measured -> {
-                if (!measured.isSuccess()) { result.tryFailure(measured.cause()); return; }
+                if (!measured.isSuccess()) {
+                    result.tryFailure(measured.cause());
+                    return;
+                }
                 long nanos = ((QuicConnectionPathStats) measured.getNow()).rtt();
                 if (nanos <= 0) result.tryFailure(new IOException("当前 QUIC 连接尚无有效 RTT 样本"));
                 else result.trySuccess(nanos / 1_000_000.0);
@@ -180,6 +224,7 @@ public final class Http3Session implements ProxySession {
         }));
         return result;
     }
+
     private Future<QuicChannel> acquire() {
         if (closed) return loop.newFailedFuture(new IOException("代理会话已关闭"));
         if (connection != null && connection.isActive()) return loop.newSucceededFuture(connection);
@@ -201,20 +246,34 @@ public final class Http3Session implements ProxySession {
         });
         resolver.getResolver(loop).resolve(server.unresolved()).addListener(resolved -> {
             if (attempt.isDone()) return;
-            if (!resolved.isSuccess()) { attempt.tryFailure(resolved.cause()); return; }
+            if (!resolved.isSuccess()) {
+                attempt.tryFailure(resolved.cause());
+                return;
+            }
             var remote = (InetSocketAddress) resolved.getNow();
             boolean ipv4 = remote.getAddress() instanceof java.net.Inet4Address;
             // 解析后选择原生地址族，避免 macOS 双栈通配端口与已有 IPv4 端口重叠、回包被其他进程接收。
             // 每次重连重新绑定，允许同一域名的解析结果切换地址族。
-            if (udp != null) { udp.close(); udp = null; }
+            if (udp != null) {
+                udp.close();
+                udp = null;
+            }
             var binding = new Bootstrap().group(loop).channelFactory(() -> network.udp(ipv4
                             ? InternetProtocolFamily.IPv4 : InternetProtocolFamily.IPv6))
                     .handler(codec.clone().build()).bind(new InetSocketAddress(ipv4 ? "0.0.0.0" : "::", 0));
             Channel transport = binding.channel();
-            attempt.addListener(done -> { if (!done.isSuccess()) transport.close(); });
+            attempt.addListener(done -> {
+                if (!done.isSuccess()) transport.close();
+            });
             binding.addListener(bound -> {
-                if (!bound.isSuccess()) { attempt.tryFailure(bound.cause()); return; }
-                if (closed || attempt.isDone()) { transport.close(); return; }
+                if (!bound.isSuccess()) {
+                    attempt.tryFailure(bound.cause());
+                    return;
+                }
+                if (closed || attempt.isDone()) {
+                    transport.close();
+                    return;
+                }
                 udp = transport;
                 stage = "quic_tls";
                 var settings = new DefaultHttp3SettingsFrame();
@@ -222,13 +281,17 @@ public final class Http3Session implements ProxySession {
                 QuicChannel.newBootstrap(transport)
                         .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, config.connectTimeoutMillis())
                         .handler(new ChannelInitializer<QuicChannel>() {
-                            @Override protected void initChannel(QuicChannel channel) {
+                            @Override
+                            protected void initChannel(QuicChannel channel) {
                                 channel.pipeline().addLast(new ChannelInboundHandlerAdapter() {
-                                    @Override public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
+                                    @Override
+                                    public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
                                         if (event instanceof QuicStreamLimitChangedEvent) drainWaitingStreams();
                                         ctx.fireUserEventTriggered(event);
                                     }
-                                    @Override public void channelInactive(ChannelHandlerContext ctx) {
+
+                                    @Override
+                                    public void channelInactive(ChannelHandlerContext ctx) {
                                         failWaitingStreams(channel);
                                         ctx.fireChannelInactive();
                                     }
@@ -237,9 +300,15 @@ public final class Http3Session implements ProxySession {
                             }
                         })
                         .remoteAddress(remote).connect().addListener(connected -> {
-                            if (!connected.isSuccess()) { attempt.tryFailure(connected.cause()); return; }
+                            if (!connected.isSuccess()) {
+                                attempt.tryFailure(connected.cause());
+                                return;
+                            }
                             QuicChannel channel = (QuicChannel) connected.getNow();
-                            if (closed || attempt.isDone()) { channel.close(); return; }
+                            if (closed || attempt.isDone()) {
+                                channel.close();
+                                return;
+                            }
                             connection = channel;
                             connectionState = "connected";
                             stage = "connect";
@@ -286,19 +355,27 @@ public final class Http3Session implements ProxySession {
         private final DnsTunnel dns;
         private long receivedBefore = -1;
         private long sentBefore = -1;
+
         ConnectResponse(Promise<QuicStreamChannel> result, Authority target, boolean udpTunnel, DnsTunnel dns) {
-            this.result = result; this.target = target; this.udpTunnel = udpTunnel; this.dns = dns;
+            this.result = result;
+            this.target = target;
+            this.udpTunnel = udpTunnel;
+            this.dns = dns;
         }
+
         private void observeConnection(QuicChannel parent) {
             receivedBefore = sentBefore = -1;
             parent.collectStats().addListener(done -> {
                 if (done.isSuccess()) {
                     QuicConnectionStats stats = (QuicConnectionStats) done.getNow();
-                    receivedBefore = stats.recv(); sentBefore = stats.sent();
+                    receivedBefore = stats.recv();
+                    sentBefore = stats.sent();
                 }
             });
         }
-        @Override public void handlerAdded(ChannelHandlerContext ctx) {
+
+        @Override
+        public void handlerAdded(ChannelHandlerContext ctx) {
             ctx.pipeline().addFirst("streamCleanup", new QuicStreamCleanupHandler());
             QuicStreamChannel stream = (QuicStreamChannel) ctx.channel();
             QuicChannel parent = stream.parent();
@@ -310,16 +387,22 @@ public final class Http3Session implements ProxySession {
                 Transport.abort(stream);
             }, config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
         }
-        @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
+
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) {
             if (msg instanceof Http3HeadersFrame headers) {
                 String status = String.valueOf(headers.headers().status());
                 if (status.startsWith("1")) return;
                 if (status.length() == 3 && status.charAt(0) == '2') {
                     if (udpTunnel && !UdpTunnel.requested(headers.headers().getAll(UdpTunnel.HEADER))) {
-                        result.tryFailure(new IOException("服务端未确认 UDP 隧道")); ctx.close(); return;
+                        result.tryFailure(new IOException("服务端未确认 UDP 隧道"));
+                        ctx.close();
+                        return;
                     }
                     if (dns != null && !dns.confirmed(headers.headers().getAll(DnsTunnel.HEADER))) {
-                        result.tryFailure(new IOException("服务端未确认系统 DNS 隧道，请更新服务端")); ctx.close(); return;
+                        result.tryFailure(new IOException("服务端未确认系统 DNS 隧道，请更新服务端"));
+                        ctx.close();
+                        return;
                     }
                     if (ctx.channel().parent() == connection) lastError = "";
                     timeout.cancel(false);
@@ -328,27 +411,50 @@ public final class Http3Session implements ProxySession {
                     if (!result.trySuccess((QuicStreamChannel) ctx.channel())) ctx.close();
                 } else {
                     // 认证失败影响整个代理；目标连接失败只属于当前请求。
-                    if (status.equals("407") && ctx.channel().parent() == connection) lastError = "代理账号或密码验证失败";
-                    result.tryFailure(new IOException("代理 CONNECT 失败：" + status)); ctx.close();
+                    if (status.equals("407") && ctx.channel().parent() == connection)
+                        lastError = "代理账号或密码验证失败";
+                    result.tryFailure(new IOException("代理 CONNECT 失败：" + status));
+                    ctx.close();
                 }
             } else if (msg instanceof Http3UnknownFrame) ReferenceCountUtil.release(msg);
-            else { ReferenceCountUtil.release(msg); result.tryFailure(new IOException("CONNECT 响应无效")); ctx.close(); }
+            else {
+                ReferenceCountUtil.release(msg);
+                result.tryFailure(new IOException("CONNECT 响应无效"));
+                ctx.close();
+            }
         }
-        @Override public void handlerRemoved(ChannelHandlerContext ctx) { if (timeout != null) timeout.cancel(false); }
-        @Override public void channelInactive(ChannelHandlerContext ctx) {
-            result.tryFailure(new IOException("CONNECT 流已关闭")); ctx.fireChannelInactive();
+
+        @Override
+        public void handlerRemoved(ChannelHandlerContext ctx) {
+            if (timeout != null) timeout.cancel(false);
         }
-        @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) { result.tryFailure(cause); ctx.close(); }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) {
+            result.tryFailure(new IOException("CONNECT 流已关闭"));
+            ctx.fireChannelInactive();
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            result.tryFailure(cause);
+            ctx.close();
+        }
     }
 
-    public long connectionCount() { return connectionCount.get(); }
-    @Override public void close() {
+    public long connectionCount() {
+        return connectionCount.get();
+    }
+
+    @Override
+    public void close() {
         Runnable shutdown = () -> {
             closed = true;
             if (connecting != null) connecting.tryFailure(new IOException("代理会话已关闭"));
             if (connection != null) connection.close();
             if (udp != null) udp.close();
         };
-        if (loop.inEventLoop()) shutdown.run(); else loop.submit(shutdown).syncUninterruptibly();
+        if (loop.inEventLoop()) shutdown.run();
+        else loop.submit(shutdown).syncUninterruptibly();
     }
 }

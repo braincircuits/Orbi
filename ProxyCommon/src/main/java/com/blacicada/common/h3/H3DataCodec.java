@@ -5,9 +5,12 @@ import io.netty.channel.*;
 import io.netty.handler.codec.http3.*;
 import io.netty.util.ReferenceCountUtil;
 
-/** 在 CONNECT 成功后安装；应用数据始终封装为 HTTP/3 DATA 帧。 */
+/**
+ * 在 CONNECT 成功后安装；应用数据始终封装为 HTTP/3 DATA 帧。
+ */
 public final class H3DataCodec extends ChannelDuplexHandler {
-    @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) {
         if (msg instanceof Http3DataFrame frame) {
             ByteBuf data = frame.content().retain();
             frame.release();
@@ -20,7 +23,9 @@ public final class H3DataCodec extends ChannelDuplexHandler {
             ctx.fireExceptionCaught(new IllegalStateException("CONNECT 成功后收到非预期帧"));
         }
     }
-    @Override public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+
+    @Override
+    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
         if (msg instanceof ByteBuf data) {
             // 为帧创建从零开始的可读字节视图；
             // 尤其是 CONNECT 后 HTTP 解码器的剩余数据可能保留非零 readerIndex。

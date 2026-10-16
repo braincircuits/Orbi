@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
@@ -14,11 +15,13 @@ import java.net.NetworkInterface;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(15)
 class UdpTunnelTest {
-    @ParameterizedTest @ValueSource(booleans = {false, true})
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
     void coalescedNonemptyEmptyNonemptyPacketsKeepOrderBeforeReadComplete(boolean protectedEgress) throws Exception {
         if (protectedEgress) Assumptions.assumeTrue(System.getProperty("os.name").startsWith("Mac"));
         var network = new OutboundNetwork(protectedEgress ? NetworkInterface.getByName("lo0").getIndex() : 0);
@@ -50,7 +53,9 @@ class UdpTunnelTest {
         } finally {
             if (source != null) {
                 EmbeddedChannel stream = source;
-                group.next().submit(() -> { stream.finishAndReleaseAll(); }).sync();
+                group.next().submit(() -> {
+                    stream.finishAndReleaseAll();
+                }).sync();
             }
             if (peer != null) peer.close().sync();
             resolver.close();

@@ -6,9 +6,12 @@ import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http3.Http3ErrorCode;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 
-/** 完整关闭流时停止接收，释放未读数据占用的 QUIC 连接级流控额度。 */
+/**
+ * 完整关闭流时停止接收，释放未读数据占用的 QUIC 连接级流控额度。
+ */
 public final class QuicStreamCleanupHandler extends ChannelOutboundHandlerAdapter {
-    @Override public void close(ChannelHandlerContext ctx, ChannelPromise promise) {
+    @Override
+    public void close(ChannelHandlerContext ctx, ChannelPromise promise) {
         QuicStreamChannel stream = (QuicStreamChannel) ctx.channel();
         if (stream.isActive() && !stream.isInputShutdown()) {
             int error = (int) Http3ErrorCode.H3_REQUEST_CANCELLED.code();

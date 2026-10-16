@@ -2,17 +2,22 @@ package com.blacicada.io;
 
 import com.blacicada.control.KernelControl;
 import com.blacicada.control.web.WebApplication;
+
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class StorageConfigTest {
-    @TempDir Path directory;
+    @TempDir
+    Path directory;
 
-    @Test void sqlitePathsResolveAgainstStartupFileAndPreserveExistingStorage() throws Exception {
+    @Test
+    void sqlitePathsResolveAgainstStartupFileAndPreserveExistingStorage() throws Exception {
         Path file = directory.resolve("storage.properties");
         Files.writeString(file, "type=sqlite\npath=数据/kernel.db\n");
         var config = StorageConfig.load(file);
@@ -26,24 +31,29 @@ class StorageConfigTest {
         assertThrows(IllegalArgumentException.class, () -> WebApplication.run(new String[]{"--db", "unused.db", "--storage-config", file.toString()}));
     }
 
-    @Test void invalidPropertiesCannotInjectDriverOptionsOrExposePasswords() throws Exception {
+    @Test
+    void invalidPropertiesCannotInjectDriverOptionsOrExposePasswords() throws Exception {
         Properties valid = remote("postgresql");
-        valid.remove("password"); valid.setProperty("passwordEnv", "TEST_DB_SECRET");
+        valid.remove("password");
+        valid.setProperty("passwordEnv", "TEST_DB_SECRET");
         assertThrows(IOException.class, () -> StorageConfig.parse(valid, directory, Map.of()));
         assertEquals(StorageConfig.Type.POSTGRESQL, StorageConfig.parse(valid, directory, Map.of("TEST_DB_SECRET", "口令")).type());
         valid.setProperty("password", "不能泄漏");
         assertThrows(IOException.class, () -> StorageConfig.parse(valid, directory, Map.of("TEST_DB_SECRET", "口令")));
         for (var entry : Map.of("host", "localhost?password=不能泄漏", "port", "70000", "database", "kernel?autoReconnect=true",
                 "sslMode", "prefer", "type", "unknown").entrySet()) {
-            Properties values = remote("mysql"); values.setProperty(entry.getKey(), entry.getValue());
+            Properties values = remote("mysql");
+            values.setProperty(entry.getKey(), entry.getValue());
             var failure = assertThrows(IOException.class, () -> StorageConfig.parse(values, directory, Map.of()));
             assertFalse(failure.toString().contains("不能泄漏"));
         }
-        Properties values = remote("mysql"); values.setProperty("autoReconnect", "true");
+        Properties values = remote("mysql");
+        values.setProperty("autoReconnect", "true");
         assertThrows(IOException.class, () -> StorageConfig.parse(values, directory, Map.of()));
     }
 
-    @Test void unreachableRemoteNeverCreatesSqliteOrPrintsCredentials() throws Exception {
+    @Test
+    void unreachableRemoteNeverCreatesSqliteOrPrintsCredentials() throws Exception {
         for (String type : List.of("postgresql", "mysql")) {
             Properties values = remote(type);
             // 保持回环端口被非监听套接字占用，使连接立即拒绝。
@@ -58,12 +68,17 @@ class StorageConfigTest {
                 assertNull(failure.getCause());
             }
         }
-        try (var files = Files.list(directory)) { assertEquals(0, files.count()); }
+        try (var files = Files.list(directory)) {
+            assertEquals(0, files.count());
+        }
     }
+
     private Properties remote(String type) {
         Properties values = new Properties();
-        values.setProperty("type", type); values.setProperty("host", "127.0.0.1");
-        values.setProperty("database", "network_test"); values.setProperty("username", "network");
+        values.setProperty("type", type);
+        values.setProperty("host", "127.0.0.1");
+        values.setProperty("database", "network_test");
+        values.setProperty("username", "network");
         values.setProperty("password", "不能泄漏");
         return values;
     }

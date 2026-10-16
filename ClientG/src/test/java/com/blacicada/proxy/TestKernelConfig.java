@@ -2,9 +2,12 @@ package com.blacicada.proxy;
 
 import com.blacicada.common.ProxyConfig;
 import com.blacicada.config.KernelConfig;
+
 import java.util.*;
 
-/** 测试夹具分别组织公共参数和单个测试节点的参数。 */
+/**
+ * 测试夹具分别组织公共参数和单个测试节点的参数。
+ */
 final class TestKernelConfig {
     static KernelConfig from(ProxyConfig options) {
         Properties local = new Properties(), connection = options.values();

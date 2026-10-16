@@ -1,14 +1,18 @@
 package com.blacicada.common;
 
 import io.netty.resolver.dns.DnsServerAddresses;
+
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+
 import org.junit.jupiter.api.Test;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class DnsTunnelTest {
-    @Test void validatesMarkerAndUsesOnlyServerProvidedAddresses() {
+    @Test
+    void validatesMarkerAndUsesOnlyServerProvidedAddresses() {
         var first = new InetSocketAddress("127.0.0.1", 1053);
         var second = new InetSocketAddress("127.0.0.1", 2053);
         var name = new AtomicReference<String>();
@@ -21,7 +25,8 @@ class DnsTunnelTest {
             assertFalse(request.confirmed(List.of(new DnsTunnel(query, 0).header())));
             assertEquals(request, DnsTunnel.requested(List.of(request.header()), DnsTunnel.TARGET));
             assertEquals(second, request.upstream(domain -> {
-                name.set(domain); return DnsServerAddresses.sequential(first, first, second).stream();
+                name.set(domain);
+                return DnsServerAddresses.sequential(first, first, second).stream();
             }));
             assertEquals(query, name.get());
         }

@@ -5,9 +5,13 @@ import java.nio.file.*;
 import java.nio.file.attribute.*;
 import java.util.*;
 
-/** 数据库与管理令牌文件的权限保护；父目录由调用方准备。 */
+/**
+ * 数据库与管理令牌文件的权限保护；父目录由调用方准备。
+ */
 public final class PrivateFiles {
-    private PrivateFiles() { }
+    private PrivateFiles() {
+    }
+
     public static void restrict(Path file) throws IOException {
         if (Files.getFileStore(file).supportsFileAttributeView("posix"))
             Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));
@@ -18,6 +22,7 @@ public final class PrivateFiles {
                     .setPermissions(EnumSet.allOf(AclEntryPermission.class)).build()));
         }
     }
+
     public static void writeAtomic(Path file, String contents) throws IOException {
         Path absolute = file.toAbsolutePath();
         Path temporary = Files.createTempFile(absolute.getParent(), ".network-", ".json");
@@ -25,6 +30,8 @@ public final class PrivateFiles {
             restrict(temporary);
             Files.writeString(temporary, contents);
             Files.move(temporary, absolute, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } finally { Files.deleteIfExists(temporary); }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
 }

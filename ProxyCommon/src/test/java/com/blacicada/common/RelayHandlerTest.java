@@ -14,6 +14,7 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -21,11 +22,13 @@ import java.util.ArrayList;
 import java.util.Random;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(15)
 class RelayHandlerTest {
-    @Test void productionTcpAllocatorsAllowMultipleMessagesPerRead() throws Exception {
+    @Test
+    void productionTcpAllocatorsAllowMultipleMessagesPerRead() throws Exception {
         var networks = new ArrayList<OutboundNetwork>();
         networks.add(OutboundNetwork.DEFAULT);
         if (System.getProperty("os.name").startsWith("Mac"))
@@ -35,17 +38,30 @@ class RelayHandlerTest {
             try {
                 MaxMessagesRecvByteBufAllocator allocator = socket.config().getRecvByteBufAllocator();
                 assertTrue(allocator.maxMessagesPerRead() > 1, "生产 TCP 接收分配器必须允许同轮批读");
-            } finally { socket.unsafe().closeForcibly(); }
+            } finally {
+                socket.unsafe().closeForcibly();
+            }
         }
     }
 
     private static final class Operations extends ChannelOutboundHandlerAdapter {
         int flushes, reads;
-        @Override public void flush(ChannelHandlerContext ctx) { flushes++; ctx.flush(); }
-        @Override public void read(ChannelHandlerContext ctx) { reads++; ctx.read(); }
+
+        @Override
+        public void flush(ChannelHandlerContext ctx) {
+            flushes++;
+            ctx.flush();
+        }
+
+        @Override
+        public void read(ChannelHandlerContext ctx) {
+            reads++;
+            ctx.read();
+        }
     }
 
-    @Test void batchesReadyBuffersAndFlushesSmallRequestsWithoutWaiting() {
+    @Test
+    void batchesReadyBuffersAndFlushesSmallRequestsWithoutWaiting() {
         var operations = new Operations();
         var peer = new EmbeddedChannel(operations);
         var reads = new Operations();
@@ -63,17 +79,25 @@ class RelayHandlerTest {
             assertEquals(1, operations.flushes);
             assertEquals(readsBeforeFlush + 1, reads.reads);
             ByteBuf first = peer.readOutbound(), second = peer.readOutbound();
-            assertEquals(2, first.readableBytes()); assertEquals(3, second.readByte());
-            first.release(); second.release();
+            assertEquals(2, first.readableBytes());
+            assertEquals(3, second.readByte());
+            first.release();
+            second.release();
 
             source.pipeline().fireChannelRead(Unpooled.wrappedBuffer(new byte[]{4}));
             source.pipeline().fireChannelReadComplete();
             assertEquals(2, operations.flushes);
-            ByteBuf small = peer.readOutbound(); assertEquals(4, small.readByte()); small.release();
-        } finally { source.finishAndReleaseAll(); peer.finishAndReleaseAll(); }
+            ByteBuf small = peer.readOutbound();
+            assertEquals(4, small.readByte());
+            small.release();
+        } finally {
+            source.finishAndReleaseAll();
+            peer.finishAndReleaseAll();
+        }
     }
 
-    @Test void highWatermarkStopsTheBatchAndCompletionResumesManualReading() {
+    @Test
+    void highWatermarkStopsTheBatchAndCompletionResumesManualReading() {
         var peer = new EmbeddedChannel();
         peer.config().setWriteBufferWaterMark(Transport.WATERMARK);
         var reads = new Operations();
@@ -94,14 +118,21 @@ class RelayHandlerTest {
             assertEquals(before + 1, reads.reads);
             assertFalse(source.config().isAutoRead());
             for (int i = 0; i < messages; i++) ((ByteBuf) peer.readOutbound()).release();
-        } finally { source.finishAndReleaseAll(); peer.finishAndReleaseAll(); }
+        } finally {
+            source.finishAndReleaseAll();
+            peer.finishAndReleaseAll();
+        }
     }
 
-    @Test void completedRequestBodyDoesNotRestartReading() {
+    @Test
+    void completedRequestBodyDoesNotRestartReading() {
         var peer = new EmbeddedChannel();
         var reads = new Operations();
         var source = new EmbeddedChannel(reads, new RelayHandler(peer) {
-            @Override protected boolean canRead() { return false; }
+            @Override
+            protected boolean canRead() {
+                return false;
+            }
         });
         source.config().setAutoRead(false);
         try {
@@ -111,15 +142,21 @@ class RelayHandlerTest {
             assertFalse(source.config().isAutoRead());
             assertEquals(before, reads.reads);
             ((ByteBuf) peer.readOutbound()).release();
-        } finally { source.finishAndReleaseAll(); peer.finishAndReleaseAll(); }
+        } finally {
+            source.finishAndReleaseAll();
+            peer.finishAndReleaseAll();
+        }
     }
 
-    @Test void halfCloseWaitsForEveryBufferedWrite() {
+    @Test
+    void halfCloseWaitsForEveryBufferedWrite() {
         var messages = new ArrayList<Object>();
         var promises = new ArrayList<ChannelPromise>();
         var peer = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
-            @Override public void write(ChannelHandlerContext ctx, Object message, ChannelPromise promise) {
-                messages.add(message); promises.add(promise);
+            @Override
+            public void write(ChannelHandlerContext ctx, Object message, ChannelPromise promise) {
+                messages.add(message);
+                promises.add(promise);
             }
         });
         var source = new EmbeddedChannel(new RelayHandler(peer));
@@ -130,18 +167,23 @@ class RelayHandlerTest {
             source.pipeline().fireChannelReadComplete();
             source.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
             assertTrue(peer.isActive());
-            promises.get(0).setSuccess(); assertTrue(peer.isActive());
-            promises.get(1).setSuccess(); assertFalse(peer.isActive());
+            promises.get(0).setSuccess();
+            assertTrue(peer.isActive());
+            promises.get(1).setSuccess();
+            assertFalse(peer.isActive());
             assertFalse(source.config().isAutoRead());
         } finally {
             messages.forEach(ReferenceCountUtil::release);
-            source.finishAndReleaseAll(); peer.finishAndReleaseAll();
+            source.finishAndReleaseAll();
+            peer.finishAndReleaseAll();
         }
     }
 
-    @Test void synchronousWriteFailureCannotReenableReading() {
+    @Test
+    void synchronousWriteFailureCannotReenableReading() {
         var peer = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
-            @Override public void write(ChannelHandlerContext ctx, Object message, ChannelPromise promise) {
+            @Override
+            public void write(ChannelHandlerContext ctx, Object message, ChannelPromise promise) {
                 ReferenceCountUtil.release(message);
                 promise.setFailure(new java.io.IOException("模拟写入失败"));
             }
@@ -150,16 +192,22 @@ class RelayHandlerTest {
         source.config().setAutoRead(false);
         try {
             source.pipeline().fireChannelRead(Unpooled.wrappedBuffer(new byte[]{1}));
-            assertFalse(source.isActive()); assertFalse(peer.isActive());
+            assertFalse(source.isActive());
+            assertFalse(peer.isActive());
             assertFalse(source.config().isAutoRead());
-        } finally { source.finishAndReleaseAll(); peer.finishAndReleaseAll(); }
+        } finally {
+            source.finishAndReleaseAll();
+            peer.finishAndReleaseAll();
+        }
     }
 
-    @Test void sameEventLoopBatchesSocketReadsAndPreservesHalfClose() throws Exception {
+    @Test
+    void sameEventLoopBatchesSocketReadsAndPreservesHalfClose() throws Exception {
         transferAcrossLoops(false);
     }
 
-    @Test void differentEventLoopsPreservePayloadAndHalfClose() throws Exception {
+    @Test
+    void differentEventLoopsPreservePayloadAndHalfClose() throws Exception {
         transferAcrossLoops(true);
     }
 
@@ -168,7 +216,8 @@ class RelayHandlerTest {
         var peerGroup = separateLoops ? new NioEventLoopGroup(1) : sourceGroup;
         var largestBatch = new java.util.concurrent.atomic.AtomicInteger();
         Channel listener = null;
-        byte[] payload = new byte[256 * 1024]; new Random(23).nextBytes(payload);
+        byte[] payload = new byte[256 * 1024];
+        new Random(23).nextBytes(payload);
         try (var origin = new ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress());
              var executor = Executors.newSingleThreadExecutor()) {
             var echoed = executor.submit(() -> {
@@ -184,35 +233,49 @@ class RelayHandlerTest {
                     // 替换分配器不会继承 SocketChannel 的默认每轮条数，需显式保留批读额度。
                     .childOption(ChannelOption.RCVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(1024).maxMessagesPerRead(16))
                     .childHandler(new ChannelInitializer<SocketChannel>() {
-                        @Override protected void initChannel(SocketChannel source) {
+                        @Override
+                        protected void initChannel(SocketChannel source) {
                             source.pipeline().addLast(new ChannelInboundHandlerAdapter() {
                                 private int messages;
-                                @Override public void channelRead(ChannelHandlerContext ctx, Object message) {
-                                    messages++; ctx.fireChannelRead(message);
+
+                                @Override
+                                public void channelRead(ChannelHandlerContext ctx, Object message) {
+                                    messages++;
+                                    ctx.fireChannelRead(message);
                                 }
-                                @Override public void channelReadComplete(ChannelHandlerContext ctx) {
+
+                                @Override
+                                public void channelReadComplete(ChannelHandlerContext ctx) {
                                     largestBatch.accumulateAndGet(messages, Math::max);
-                                    messages = 0; ctx.fireChannelReadComplete();
+                                    messages = 0;
+                                    ctx.fireChannelReadComplete();
                                 }
                             });
                             new Bootstrap().group(peerGroup).channel(NioSocketChannel.class)
                                     .option(ChannelOption.AUTO_READ, false).option(ChannelOption.ALLOW_HALF_CLOSURE, true)
                                     .handler(new ChannelInitializer<SocketChannel>() {
-                                        @Override protected void initChannel(SocketChannel peer) {
+                                        @Override
+                                        protected void initChannel(SocketChannel peer) {
                                             peer.pipeline().addLast(new RelayHandler(source));
                                         }
                                     }).connect(origin.getLocalSocketAddress()).addListener((ChannelFutureListener) connected -> {
-                                        if (!connected.isSuccess()) { source.close(); return; }
+                                        if (!connected.isSuccess()) {
+                                            source.close();
+                                            return;
+                                        }
                                         source.eventLoop().execute(() -> {
                                             source.pipeline().addLast(new RelayHandler(connected.channel()));
-                                            source.read(); connected.channel().read();
+                                            source.read();
+                                            connected.channel().read();
                                         });
                                     });
                         }
                     }).bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
             try (var browser = new Socket()) {
-                browser.connect(listener.localAddress()); browser.setSoTimeout(5000);
-                browser.getOutputStream().write(payload); browser.shutdownOutput();
+                browser.connect(listener.localAddress());
+                browser.setSoTimeout(5000);
+                browser.getOutputStream().write(payload);
+                browser.shutdownOutput();
                 assertArrayEquals(payload, browser.getInputStream().readAllBytes());
                 assertArrayEquals(payload, echoed.get(5, TimeUnit.SECONDS));
                 if (!separateLoops) assertTrue(largestBatch.get() > 1, "真实 TCP 同一读取轮次应合并多个缓冲区");

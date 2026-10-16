@@ -5,7 +5,9 @@ import io.netty.channel.socket.ChannelInputShutdownEvent;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.util.ReferenceCountUtil;
 
-/** 按轮次读取并集中刷新；目标写入变慢时暂停源端读取。 */
+/**
+ * 按轮次读取并集中刷新；目标写入变慢时暂停源端读取。
+ */
 public class RelayHandler extends ChannelInboundHandlerAdapter {
     protected final Channel peer;
     private int pendingWrites;
@@ -13,11 +15,16 @@ public class RelayHandler extends ChannelInboundHandlerAdapter {
     private boolean outputShutdown;
     private boolean reading;
 
-    public RelayHandler(Channel peer) { this.peer = peer; }
+    public RelayHandler(Channel peer) {
+        this.peer = peer;
+    }
 
-    protected boolean canRead() { return true; }
+    protected boolean canRead() {
+        return true;
+    }
 
-    @Override public void channelRead(ChannelHandlerContext ctx, Object msg) {
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) {
         if (!peer.isActive()) {
             ReferenceCountUtil.release(msg);
             Transport.abort(ctx.channel());
@@ -37,7 +44,8 @@ public class RelayHandler extends ChannelInboundHandlerAdapter {
                 && peer.eventLoop().inEventLoop() && peer.isWritable());
     }
 
-    @Override public void channelReadComplete(ChannelHandlerContext ctx) {
+    @Override
+    public void channelReadComplete(ChannelHandlerContext ctx) {
         ctx.channel().config().setAutoRead(false);
         // 保持 reading 到刷新结束，避免同步写完成在当前轮次里重复启动读取。
         peer.flush();
@@ -47,8 +55,10 @@ public class RelayHandler extends ChannelInboundHandlerAdapter {
 
     private void written(ChannelHandlerContext ctx, boolean success) {
         pendingWrites--;
-        if (!success) { Transport.abort(peer); Transport.abort(ctx.channel()); }
-        else if (inputClosed) finishOutput();
+        if (!success) {
+            Transport.abort(peer);
+            Transport.abort(ctx.channel());
+        } else if (inputClosed) finishOutput();
         else readNext(ctx);
     }
 
@@ -57,7 +67,8 @@ public class RelayHandler extends ChannelInboundHandlerAdapter {
                 && ctx.channel().isActive()) ctx.read();
     }
 
-    @Override public void channelWritabilityChanged(ChannelHandlerContext ctx) {
+    @Override
+    public void channelWritabilityChanged(ChannelHandlerContext ctx) {
         if (ctx.channel().isWritable() && peer.isActive()) {
             peer.eventLoop().execute(() -> {
                 RelayHandler relay = peer.pipeline().get(RelayHandler.class);
@@ -67,7 +78,8 @@ public class RelayHandler extends ChannelInboundHandlerAdapter {
         ctx.fireChannelWritabilityChanged();
     }
 
-    @Override public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
+    @Override
+    public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
         if (event == ChannelInputShutdownEvent.INSTANCE) {
             inputClosed = true;
             ctx.channel().config().setAutoRead(false);
@@ -86,12 +98,14 @@ public class RelayHandler extends ChannelInboundHandlerAdapter {
         }
     }
 
-    @Override public void channelInactive(ChannelHandlerContext ctx) {
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) {
         Transport.closeAfterWrites(peer);
         ctx.fireChannelInactive();
     }
 
-    @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         Transport.abort(peer);
         Transport.abort(ctx.channel());
     }
