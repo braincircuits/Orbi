@@ -373,6 +373,9 @@ public final class Http2Session implements ProxySession {
                     if (status.equals("407") && request.parent == connection) error = "代理账号或密码验证失败";
                     request.result.tryFailure(new IOException("代理 CONNECT 失败：" + status));
                 }
+            } else if (msg instanceof Http2UnknownFrame) {
+                // 扩展帧也可能先于 CONNECT 响应到达；等待响应期间继续由自动读取驱动。
+                ReferenceCountUtil.release(msg);
             } else {
                 ReferenceCountUtil.release(msg);
                 request.result.tryFailure(new IOException("HTTP/2 CONNECT 响应无效"));

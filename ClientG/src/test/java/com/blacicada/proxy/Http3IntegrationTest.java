@@ -559,6 +559,113 @@ class Http3IntegrationTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void goAwayReplacesConnectionAndPreservesExistingTunnel(boolean closeSession) throws Exception {
+        try (Socket active = tunnel(client, echo.port())) {
+            QuicChannel previous = currentConnection();
+            Channel previousTransport = previous.parent();
+            sendGoAway(previous);
+            try (Socket next = tunnel(client, echo.port())) {
+                QuicChannel replacement = currentConnection();
+                assertNotSame(previous, replacement);
+                assertEquals(2, client.connectionCount());
+                send(active, "old");
+                assertEquals("old", new String(active.getInputStream().readNBytes(3), StandardCharsets.US_ASCII),
+                        "更换连接不能关闭仍在转发的旧隧道");
+                if (closeSession) {
+                    client.close();
+                    assertTrue(previous.closeFuture().await(2, TimeUnit.SECONDS));
+                    assertTrue(replacement.closeFuture().await(2, TimeUnit.SECONDS));
+                    assertTrue(previousTransport.closeFuture().await(2, TimeUnit.SECONDS));
+                    assertTrue(replacement.parent().closeFuture().await(2, TimeUnit.SECONDS));
+                } else {
+                    active.close();
+                    assertTrue(previous.closeFuture().await(2, TimeUnit.SECONDS), "旧隧道全部结束后必须回收旧连接");
+                    assertTrue(previousTransport.closeFuture().await(2, TimeUnit.SECONDS), "旧连接的 UDP 端口必须一起回收");
+                    send(next, "new");
+                    assertEquals("new", new String(next.getInputStream().readNBytes(3), StandardCharsets.US_ASCII));
+                }
+            }
+        }
+    }
+
+    @Test
+    void goAwayClosesIdleConnectionAndItsTransport() throws Exception {
+        QuicChannel previous;
+        try (Socket active = tunnel(client, echo.port())) {
+            previous = currentConnection();
+            send(active, "x");
+            assertEquals('x', active.getInputStream().read());
+        }
+        Object session = field(field(client, "session"), "session");
+        awaitCondition(() -> previous.eventLoop().submit(() -> ((Set<?>) field(session, "requests")).isEmpty()).sync().getNow());
+        sendGoAway(previous);
+        assertTrue(previous.closeFuture().await(2, TimeUnit.SECONDS));
+        assertTrue(previous.parent().closeFuture().await(2, TimeUnit.SECONDS));
+        try (Socket next = tunnel(client, echo.port())) {
+            send(next, "y");
+            assertEquals('y', next.getInputStream().read());
+        }
+        assertEquals(2, client.connectionCount());
+    }
+
+    @Test
+    void goAwayFailsCreditWaitersAndAllowsNewConnection() throws Exception {
+        useSinglePeerStream();
+        try (Socket active = tunnel(client, echo.port()); Socket waiting = socket(client);
+             var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            QuicChannel previous = currentConnection();
+            Object session = field(field(client, "session"), "session");
+            send(waiting, "CONNECT localhost:" + echo.port() + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            var response = executor.submit(() -> headers(waiting.getInputStream()));
+            awaitCondition(() -> previous.eventLoop().submit(() -> !((Collection<?>) field(session, "waitingStreams")).isEmpty()).sync().getNow());
+            sendGoAway(previous);
+            assertTrue(response.get(2, TimeUnit.SECONDS).startsWith("HTTP/1.1 502"),
+                    "旧连接排队的请求应及时失败，不能继续等待永远无法使用的额度");
+            try (Socket next = tunnel(client, echo.port())) {
+                send(next, "n");
+                assertEquals('n', next.getInputStream().read());
+                send(active, "a");
+                assertEquals('a', active.getInputStream().read());
+            }
+            assertEquals(2, client.connectionCount());
+        }
+    }
+
+    private QuicChannel currentConnection() throws Exception {
+        Object session = field(field(client, "session"), "session");
+        EventLoop loop = (EventLoop) field(session, "loop");
+        return loop.submit(() -> (QuicChannel) field(session, "connection")).sync().getNow();
+    }
+
+    private void sendGoAway(QuicChannel connection) throws Exception {
+        var peers = (io.netty.channel.group.ChannelGroup) field(server, "connections");
+        QuicChannel peer = peers.stream().map(channel -> (QuicChannel) channel)
+                .filter(channel -> ((InetSocketAddress) channel.remoteSocketAddress()).getPort()
+                        == ((InetSocketAddress) connection.localSocketAddress()).getPort()).findFirst().orElseThrow();
+        // 允许编号为 0 的原有流继续工作，禁止新建请求流。
+        Http3.getLocalControlStream(peer).writeAndFlush(new DefaultHttp3GoAwayFrame(4)).sync();
+        awaitCondition(() -> connection.eventLoop().submit(() -> {
+            var handler = connection.pipeline().get(Http3ClientConnectionHandler.class);
+            return handler == null ? !connection.isActive() : handler.isGoAwayReceived();
+        }).sync().getNow());
+    }
+
+    private static Object field(Object object, String name) throws Exception {
+        var field = object.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(object);
+    }
+
+    private static void awaitCondition(Callable<Boolean> condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (!condition.call()) {
+            if (System.nanoTime() >= deadline) fail("等待连接状态变化超时");
+            Thread.sleep(10);
+        }
+    }
+
     private void useSinglePeerStream() throws Exception {
         client.close();
         server.close();

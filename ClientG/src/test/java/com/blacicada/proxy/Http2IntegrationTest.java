@@ -200,6 +200,36 @@ class Http2IntegrationTest {
     }
 
     @Test
+    void unknownFramesBeforeConnectResponseDoNotFailNewTunnel() throws Exception {
+        try (Socket active = tunnel(client, echo.port())) {
+            var field = server.getClass().getDeclaredField("connections");
+            field.setAccessible(true);
+            var connections = (io.netty.channel.group.ChannelGroup) field.get(server);
+            Channel parent = connections.iterator().next();
+            parent.eventLoop().submit(() -> {
+                String multiplex = parent.pipeline().context(Http2MultiplexHandler.class).name();
+                parent.pipeline().addBefore(multiplex, "unknownBeforeResponse", new ChannelOutboundHandlerAdapter() {
+                    @Override
+                    public void write(ChannelHandlerContext ctx, Object message, ChannelPromise promise) {
+                        if (message instanceof Http2HeadersFrame headers && "200".contentEquals(headers.headers().status())) {
+                            ctx.write(new DefaultHttp2UnknownFrame((byte) 0x40, new Http2Flags(),
+                                    Unpooled.buffer(1).writeByte(99)).stream(headers.stream()));
+                        }
+                        ctx.write(message, promise);
+                    }
+                });
+            }).sync();
+            try (Socket next = tunnel(client, echo.port())) {
+                send(next, "ok");
+                assertEquals("ok", new String(next.getInputStream().readNBytes(2), StandardCharsets.US_ASCII));
+                send(active, "x");
+                assertEquals('x', active.getInputStream().read());
+            }
+            assertEquals(1, client.connectionCount(), "未知扩展帧不能破坏 CONNECT 或触发重连");
+        }
+    }
+
+    @Test
     void concurrentTunnelsShareOneConnection() throws Exception {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var tasks = new ArrayList<java.util.concurrent.Future<?>>();
