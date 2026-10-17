@@ -581,8 +581,8 @@ class Http3IntegrationTest {
                     assertTrue(replacement.parent().closeFuture().await(2, TimeUnit.SECONDS));
                 } else {
                     active.close();
-                    assertTrue(previous.closeFuture().await(2, TimeUnit.SECONDS), "旧隧道全部结束后必须回收旧连接");
-                    assertTrue(previousTransport.closeFuture().await(2, TimeUnit.SECONDS), "旧连接的 UDP 端口必须一起回收");
+                    assertTrue(previous.isActive(), "本地流结束后仍应保留旧连接的重传能力");
+                    assertTrue(previousTransport.isActive(), "旧连接的 UDP 端口需保留到传输层关闭");
                     send(next, "new");
                     assertEquals("new", new String(next.getInputStream().readNBytes(3), StandardCharsets.US_ASCII));
                 }
@@ -590,8 +590,60 @@ class Http3IntegrationTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {150, 1200})
+    void goAwayRetainsTransportForRetransmittingFinalData(int lossMillis) throws Exception {
+        byte[] payload = "final-upload-needs-retransmission".getBytes(StandardCharsets.US_ASCII);
+        var received = new CompletableFuture<byte[]>();
+        try (var origin = new Origin(socket -> {
+            socket.setSoTimeout(8000);
+            // 对端先半关闭输出；客户端之后发送的尾部数据和 FIN 仍需可靠送达。
+            socket.getOutputStream().write(42);
+            socket.shutdownOutput();
+            try {
+                received.complete(socket.getInputStream().readAllBytes());
+            } catch (IOException failure) {
+                received.completeExceptionally(failure);
+                throw failure;
+            }
+        }); var relay = new DatagramRelay(server.address())) {
+            client.close();
+            var options = clientConfig("integration-test-secret", "localhost", false, 32).values();
+            options.setProperty("server.port", Integer.toString(relay.port()));
+            client = proxy(new ProxyConfig(options, directory)).start();
+            try (Socket active = tunnel(client, origin.port())) {
+                assertEquals(42, active.getInputStream().read());
+                assertEquals(-1, active.getInputStream().read());
+                QuicChannel previous = currentConnection();
+                sendGoAway(previous, relay.port());
+                Object session = field(field(client, "session"), "session");
+                relay.dropClient = true;
+                try {
+                    send(active, new String(payload, StandardCharsets.US_ASCII));
+                    active.shutdownOutput();
+                    // 等到 Java 流已关闭，再恢复网络，确保只靠 QUIC 重传才能交付尾部数据。
+                    awaitCondition(() -> previous.eventLoop().submit(() -> ((Set<?>) field(session, "requests")).isEmpty()).sync().getNow());
+                    awaitCondition(() -> relay.droppedClient.get() > 0);
+                    Thread.sleep(lossMillis);
+                } finally {
+                    relay.dropClient = false;
+                }
+                assertArrayEquals(payload, received.get(10, TimeUnit.SECONDS), "GOAWAY 后关闭本地流不能截断待重传的尾部数据或 FIN");
+                assertTrue(previous.isActive(), "旧连接应由 QUIC 自身处理可靠传输和空闲回收");
+                var stats = previous.collectStats().get(2, TimeUnit.SECONDS);
+                assertTrue(stats.streamRetransBytes() >= payload.length, "应实际重传尾部数据，不能只验证未丢包时的正常发送");
+                assertEquals(1, client.connectionCount(), "尾部数据应在原连接中完成重传");
+            }
+            origin.check();
+        }
+    }
+
     @Test
-    void goAwayClosesIdleConnectionAndItsTransport() throws Exception {
+    void goAwayConnectionAndTransportAreReclaimedByQuicIdleTimeout() throws Exception {
+        client.close();
+        var options = clientConfig("integration-test-secret", "localhost", false, 32).values();
+        options.setProperty("idleTimeoutSeconds", "10");
+        client = proxy(new ProxyConfig(options, directory)).start();
         QuicChannel previous;
         try (Socket active = tunnel(client, echo.port())) {
             previous = currentConnection();
@@ -601,7 +653,9 @@ class Http3IntegrationTest {
         Object session = field(field(client, "session"), "session");
         awaitCondition(() -> previous.eventLoop().submit(() -> ((Set<?>) field(session, "requests")).isEmpty()).sync().getNow());
         sendGoAway(previous);
-        assertTrue(previous.closeFuture().await(2, TimeUnit.SECONDS));
+        assertTrue(previous.isActive(), "不能用 Java 流关闭代替 QUIC 可靠排空");
+        assertTrue(previous.closeFuture().await(14, TimeUnit.SECONDS), "无业务的旧连接应由已有 QUIC 空闲超时回收");
+        assertTrue(previous.isTimedOut(), "连接必须通过传输层空闲超时关闭");
         assertTrue(previous.parent().closeFuture().await(2, TimeUnit.SECONDS));
         try (Socket next = tunnel(client, echo.port())) {
             send(next, "y");
@@ -640,10 +694,14 @@ class Http3IntegrationTest {
     }
 
     private void sendGoAway(QuicChannel connection) throws Exception {
+        sendGoAway(connection, ((InetSocketAddress) connection.localSocketAddress()).getPort());
+    }
+
+    private void sendGoAway(QuicChannel connection, int clientPort) throws Exception {
         var peers = (io.netty.channel.group.ChannelGroup) field(server, "connections");
         QuicChannel peer = peers.stream().map(channel -> (QuicChannel) channel)
                 .filter(channel -> ((InetSocketAddress) channel.remoteSocketAddress()).getPort()
-                        == ((InetSocketAddress) connection.localSocketAddress()).getPort()).findFirst().orElseThrow();
+                        == clientPort).findFirst().orElseThrow();
         // 允许编号为 0 的原有流继续工作，禁止新建请求流。
         Http3.getLocalControlStream(peer).writeAndFlush(new DefaultHttp3GoAwayFrame(4)).sync();
         awaitCondition(() -> connection.eventLoop().submit(() -> {
@@ -1006,7 +1064,8 @@ class Http3IntegrationTest {
         private final DatagramSocket socket;
         private final Thread thread;
         private final CountDownLatch received = new CountDownLatch(1);
-        volatile boolean drop;
+        volatile boolean drop, dropClient;
+        private final AtomicInteger droppedClient = new AtomicInteger();
         private SocketAddress clientAddress;
 
         DatagramRelay(InetSocketAddress serverAddress) throws IOException {
@@ -1023,6 +1082,10 @@ class Http3IntegrationTest {
                             received.countDown();
                         }
                         if (drop) continue;
+                        if (!fromServer && dropClient) {
+                            droppedClient.incrementAndGet();
+                            continue;
+                        }
                         SocketAddress destination = fromServer ? clientAddress : serverAddress;
                         if (destination != null)
                             socket.send(new DatagramPacket(bytes, packet.getLength(), destination));

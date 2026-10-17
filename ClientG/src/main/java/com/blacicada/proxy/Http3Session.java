@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class Http3Session implements ProxySession {
     private static final Logger LOGGER = LogManager.getLogger(Http3Session.class);
-    private static final AttributeKey<Capacity> CAPACITY = AttributeKey.valueOf("h3.capacity");
+    private static final AttributeKey<Boolean> DRAINING = AttributeKey.valueOf("h3.draining");
     private final EventLoop loop;
     private final ProxyConfig config;
     private final Authority server;
@@ -62,11 +62,6 @@ public final class Http3Session implements ProxySession {
 
     public String lastError() {
         return lastError;
-    }
-
-    private static final class Capacity {
-        int active;
-        boolean draining;
     }
 
     private record StreamRequest(QuicChannel parent, ChannelHandler handler,
@@ -198,8 +193,7 @@ public final class Http3Session implements ProxySession {
                 waitingStreams.remove();
                 continue;
             }
-            Capacity capacity = request.parent().attr(CAPACITY).get();
-            if (closed || !request.parent().isActive() || capacity.draining) {
+            if (closed || !request.parent().isActive() || Boolean.TRUE.equals(request.parent().attr(DRAINING).get())) {
                 waitingStreams.remove();
                 request.promise().tryFailure(new IOException("等待流额度期间 HTTP/3 连接已关闭或停止接收新流"));
                 continue;
@@ -207,7 +201,6 @@ public final class Http3Session implements ProxySession {
             if (request.parent().peerAllowedStreams(QuicStreamType.BIDIRECTIONAL) <= 0) return;
             waitingStreams.remove();
             creatingStream = true;
-            capacity.active++;
             Http3.newRequestStreamBootstrap(request.parent(), request.handler())
                     .option(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     .option(ChannelOption.WRITE_BUFFER_WATER_MARK, Transport.WATERMARK)
@@ -215,19 +208,11 @@ public final class Http3Session implements ProxySession {
                         creatingStream = false;
                         if (created.isSuccess()) {
                             QuicStreamChannel stream = (QuicStreamChannel) created.getNow();
-                            stream.closeFuture().addListener(ignored -> {
-                                capacity.active--;
-                                closeIfDrained(request.parent(), capacity);
-                            });
-                            if (closed || capacity.draining) {
+                            if (closed || Boolean.TRUE.equals(request.parent().attr(DRAINING).get())) {
                                 request.promise().tryFailure(new IOException("HTTP/3 连接不再接收新流"));
                                 Transport.abort(stream);
                             } else if (!request.promise().trySuccess(stream)) Transport.abort(stream);
-                        } else {
-                            capacity.active--;
-                            request.promise().tryFailure(created.cause());
-                            closeIfDrained(request.parent(), capacity);
-                        }
+                        } else request.promise().tryFailure(created.cause());
                         // 下一轮调度避免同步完成回调造成递归，并重新读取剩余额度。
                         loop.execute(this::drainWaitingStreams);
                     });
@@ -243,20 +228,17 @@ public final class Http3Session implements ProxySession {
     }
 
     private void goAway(QuicChannel parent) {
-        Capacity capacity = parent.attr(CAPACITY).get();
-        capacity.draining = true;
+        parent.attr(DRAINING).set(true);
         if (connection == parent) {
             connection = null;
             connectionState = "idle";
         }
         // 已发送的请求继续完成；尚在等待额度的请求不能再使用此连接。
         failWaitingStreams(parent);
-        closeIfDrained(parent, capacity);
+        // 本地流关闭不代表尾部数据和 FIN 已获确认，不能据此关闭 QUIC 连接。
+        // 保留旧连接及 UDP 端口供传输层重传，由对端关闭或已有 QUIC 空闲超时回收。
+        // 会话停止与配置切换仍通过 channels 立即关闭全部资源。
         drainWaitingStreams();
-    }
-
-    private void closeIfDrained(QuicChannel parent, Capacity capacity) {
-        if (capacity.draining && capacity.active == 0) parent.close();
     }
 
     @Override
@@ -337,7 +319,6 @@ public final class Http3Session implements ProxySession {
                             @Override
                             protected void initChannel(QuicChannel channel) {
                                 channels.add(channel);
-                                channel.attr(CAPACITY).set(new Capacity());
                                 channel.closeFuture().addListener(ignored -> transport.close());
                                 channel.pipeline().addLast(new ChannelInboundHandlerAdapter() {
                                     @Override
@@ -368,7 +349,7 @@ public final class Http3Session implements ProxySession {
                                 return;
                             }
                             QuicChannel channel = (QuicChannel) connected.getNow();
-                            if (closed || attempt.isDone() || channel.attr(CAPACITY).get().draining) {
+                            if (closed || attempt.isDone() || Boolean.TRUE.equals(channel.attr(DRAINING).get())) {
                                 attempt.tryFailure(new IOException("HTTP/3 连接在握手完成前已停止接收新流"));
                                 channel.close();
                                 return;
