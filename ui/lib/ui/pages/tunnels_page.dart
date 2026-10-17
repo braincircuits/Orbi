@@ -21,6 +21,7 @@ class _TunnelsPageState extends State<TunnelsPage> {
   final search = TextEditingController();
   String route = 'all';
   bool history = false;
+  bool historyOpened = false;
   int sortColumn = 5;
   bool ascending = false;
 
@@ -164,13 +165,26 @@ class _TunnelsPageState extends State<TunnelsPage> {
             ButtonSegment(value: true, label: Text('访问记录')),
           ],
           selected: {history},
-          onSelectionChanged: (value) => setState(() => history = value.single),
+          onSelectionChanged: (value) => setState(() {
+            history = value.single;
+            if (history) historyOpened = true;
+          }),
         ),
         const SizedBox(height: 16),
         Expanded(
-          child: history
-              ? AccessRecordsPage(proxy: widget.model.proxy)
-              : _live(context),
+          child: IndexedStack(
+            index: history ? 1 : 0,
+            children: [
+              _live(context),
+              if (historyOpened)
+                AccessRecordsPage(
+                  proxy: widget.model.proxy,
+                  visible: widget.visible && history,
+                )
+              else
+                const SizedBox.shrink(),
+            ],
+          ),
         ),
       ],
     );
@@ -218,7 +232,7 @@ class _TunnelsPageState extends State<TunnelsPage> {
         Expanded(
           child: ListenableBuilder(
             listenable: Listenable.merge([
-              if (widget.visible) widget.model.tunnelChanges,
+              if (widget.visible && !history) widget.model.tunnelChanges,
             ]),
             builder: (context, _) => _tunnelList(context, ui),
           ),
@@ -234,6 +248,13 @@ class _TunnelsPageState extends State<TunnelsPage> {
 
   Widget _tunnelList(BuildContext context, DesktopWidgets ui) {
     final proxy = widget.model.proxy;
+    // 各列均为单行；固定随文字缩放的行高，恢复深处位置时直接定位可见行。
+    // 行内路由按钮需要 30 像素，另保留上下内边距和分隔线。
+    final rowHeight =
+        56 *
+        (MediaQuery.textScalerOf(context).scale(DesktopDesign.bodyFontSize) /
+                DesktopDesign.bodyFontSize)
+            .clamp(1.0, double.infinity);
     final all = proxy.tunnels;
     final query = search.text.trim().toLowerCase();
     final entries = all
@@ -290,6 +311,7 @@ class _TunnelsPageState extends State<TunnelsPage> {
               sortColumn = column;
             }),
             rowCount: entries.length,
+            itemExtent: rowHeight,
             rowKey: (index) => entries[index].id,
             listKey: const PageStorageKey('tunnels'),
             empty: ui.empty(

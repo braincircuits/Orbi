@@ -103,6 +103,131 @@ class LargeHistoryKernel extends HistoryKernel {
 }
 
 void main() {
+  testWidgets('缓存页面隐藏时不查询或连续分页，返回后从原游标继续', (tester) async {
+    final kernel = PagedHistoryKernel()..connected = true;
+    addTearDown(kernel.dispose);
+    Widget page(bool visible) => MaterialApp(
+      theme: desktopTheme(Brightness.light),
+      home: Scaffold(
+        body: AccessRecordsPage(proxy: kernel, visible: visible),
+      ),
+    );
+    await tester.pumpWidget(page(false));
+    expect(kernel.requests, isEmpty);
+    await tester.pumpWidget(page(true));
+    expect(kernel.requests.length, 1);
+    kernel.completePage(0, 81);
+    await tester.pumpAndSettle();
+    final position = tester
+        .state<ScrollableState>(
+          find.descendant(
+            of: find.byKey(const PageStorageKey('access-records')),
+            matching: find.byType(Scrollable),
+          ),
+        )
+        .position;
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pump();
+    expect(kernel.requests.length, 2);
+    await tester.pumpWidget(page(false));
+    // 已发出的请求可以完成，但隐藏页不应继续补页。
+    kernel.pending[1].complete(
+      AccessRecordPage.fromJson({
+        'items': <Map<String, dynamic>>[],
+        'hasMore': true,
+        'nextValue': 50,
+        'nextHost': 'next.example',
+      }),
+    );
+    await tester.pumpAndSettle();
+    expect(kernel.requests.length, 2);
+    await tester.pumpWidget(page(true));
+    expect(kernel.requests.last, ('', 50, false, 'recent'));
+    expect(kernel.requests.length, 3);
+    kernel.completePage(2, 0);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已显示 40 个域名 / IP'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('隐藏页内核切换清除旧记录和错误，显示后重新查询并回到顶部', (tester) async {
+    final kernel = PagedHistoryKernel()..connected = true;
+    addTearDown(kernel.dispose);
+    Widget page(bool visible) => MaterialApp(
+      theme: desktopTheme(Brightness.light),
+      home: Scaffold(
+        body: AccessRecordsPage(proxy: kernel, visible: visible),
+      ),
+    );
+    await tester.pumpWidget(page(true));
+    kernel.completePage(0, 81);
+    await tester.pumpAndSettle();
+    ScrollPosition position() => tester
+        .state<ScrollableState>(
+          find.descendant(
+            of: find.byKey(const PageStorageKey('access-records')),
+            matching: find.byType(Scrollable),
+          ),
+        )
+        .position;
+    position().jumpTo(position().maxScrollExtent);
+    await tester.pump();
+    kernel.pending[1].completeError(StateError('旧内核分页失败'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('旧内核分页失败'), findsOneWidget);
+    await tester.pumpWidget(page(false));
+    kernel.kernelGeneration++;
+    await tester.pumpWidget(page(false));
+    expect(kernel.requests.length, 2);
+    expect(find.textContaining('已显示 0 个域名 / IP'), findsOneWidget);
+    expect(find.textContaining('旧内核分页失败'), findsNothing);
+    await tester.pumpWidget(page(true));
+    expect(kernel.requests.length, 3);
+    expect(kernel.requests.last, ('', null, false, 'recent'));
+    kernel.completePage(2, 81);
+    await tester.pumpAndSettle();
+    expect(position().pixels, 0);
+    expect(kernel.requests.length, 3);
+    expect(find.text('page-2-item-0.example'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('缓存页替换相同代次的控制器，拒绝旧请求响应', (tester) async {
+    final first = PagedHistoryKernel()..connected = true;
+    final second = PagedHistoryKernel()..connected = true;
+    addTearDown(first.dispose);
+    addTearDown(second.dispose);
+    Widget page(ProxyController kernel) => MaterialApp(
+      theme: desktopTheme(Brightness.light),
+      home: Scaffold(body: AccessRecordsPage(proxy: kernel)),
+    );
+    await tester.pumpWidget(page(first));
+    await tester.pumpWidget(page(second));
+    expect(second.requests.length, 1);
+    second.completePage(0, 0);
+    await tester.pumpAndSettle();
+    first.pending[0].complete(
+      AccessRecordPage.fromJson({
+        'items': [
+          {
+            'host': 'old.example',
+            'connectionCount': 1,
+            'lastAccessAt': 1791716489000,
+            'lastFailureAt': 0,
+          },
+        ],
+        'hasMore': true,
+        'nextValue': 81,
+        'nextHost': 'old.example',
+      }),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('old.example'), findsNothing);
+    expect(find.text('page-0-item-0.example'), findsOneWidget);
+    expect(second.requests.length, 1);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('5000 条访问记录滚动跳到底部仅构建可见行', (tester) async {
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1;

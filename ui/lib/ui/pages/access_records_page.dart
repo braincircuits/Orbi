@@ -10,8 +10,13 @@ import '../../services/proxy_controller.dart';
 
 /// 按数据库游标加载历史，滚动接近底部时自动加载下一页。
 class AccessRecordsPage extends StatefulWidget {
-  const AccessRecordsPage({super.key, required this.proxy});
+  const AccessRecordsPage({
+    super.key,
+    required this.proxy,
+    this.visible = true,
+  });
   final ProxyController proxy;
+  final bool visible;
   @override
   State<AccessRecordsPage> createState() => _AccessRecordsPageState();
 }
@@ -29,6 +34,7 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
   bool hasMore = false;
   int cursor = 0, request = 0, generation = 0;
   bool loading = false;
+  bool queried = false;
   @override
   void initState() {
     super.initState();
@@ -40,7 +46,8 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
   @override
   void didUpdateWidget(AccessRecordsPage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (generation != widget.proxy.kernelGeneration) {
+    if (oldWidget.proxy != widget.proxy ||
+        generation != widget.proxy.kernelGeneration) {
       generation = widget.proxy.kernelGeneration;
       request++;
       records = [];
@@ -49,7 +56,18 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
       cursorHost = '';
       hasMore = false;
       loading = false;
-      if (widget.proxy.connected) _load();
+      queried = false;
+      error = '';
+    }
+    if (widget.visible) {
+      if (!queried) {
+        _load();
+      } else if (!oldWidget.visible) {
+        // 页签保留分页位置；重新显示后再判断是否需要补满当前视口。
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _loadNearBottom();
+        });
+      }
     }
   }
 
@@ -61,7 +79,8 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
   }
 
   void _loadNearBottom() {
-    if (scroll.hasClients &&
+    if (widget.visible &&
+        scroll.hasClients &&
         scroll.position.extentAfter < 120 &&
         error.isEmpty) {
       _load(more: true);
@@ -69,13 +88,14 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
   }
 
   Future<void> _load({bool more = false}) async {
-    if (!widget.proxy.connected) return;
+    if (!widget.visible || !widget.proxy.connected) return;
     if (more && (loading || !hasMore)) return;
     final current = ++request;
     setState(() {
       loading = true;
       error = '';
       if (!more) {
+        queried = true;
         filter = search.text.trim();
         cursor = 0;
         cursorHost = '';
@@ -109,7 +129,10 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
       });
       if (!more && scroll.hasClients) scroll.jumpTo(0);
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _loadNearBottom();
+        if (!mounted || current != request) return;
+        // 内核切换后列表可能刚从空状态重建，等挂载后再清除旧滚动位置。
+        if (!more && scroll.hasClients) scroll.jumpTo(0);
+        _loadNearBottom();
       });
     } catch (failure) {
       if (!mounted || current != request) return;
