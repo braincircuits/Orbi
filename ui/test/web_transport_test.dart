@@ -13,6 +13,62 @@ import 'package:network_ui/view_models/proxy_view_model.dart';
 import 'view_model_test.dart' show TestDesktop;
 
 void main() {
+  const unknownToken = 'unknown-control-token-012345678901234567890';
+  for (final (label, content) in [
+    ('损坏 JSON', '{"token":"$unknownToken","url":'),
+    ('非对象 JSON', jsonEncode([unknownToken])),
+    (
+      '地址类型错误',
+      jsonEncode({
+        'url': [unknownToken],
+        'token': unknownToken,
+        'apiVersion': 1,
+      }),
+    ),
+    (
+      '地址格式错误',
+      jsonEncode({
+        'url': 'http://[$unknownToken',
+        'token': unknownToken,
+        'apiVersion': 1,
+      }),
+    ),
+  ]) {
+    test('发现文件$label从解析入口丢弃含令牌原文，异常与日志均不泄漏', () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'network-discovery-secret-',
+      );
+      final controller = ProxyController(directory: directory);
+      try {
+        await controller.endpointFile.parent.create(recursive: true);
+        await controller.endpointFile.writeAsString(content);
+        // 令牌尚未成功载入，不能依赖后续按已知凭据替换来隐藏异常原文。
+        expect(controller.redact(unknownToken), unknownToken);
+        final failure = isA<StateError>()
+            .having((error) => error.message, '错误说明', contains('内核发现文件'))
+            .having(
+              (error) => error.toString(),
+              '异常不包含令牌',
+              isNot(contains(unknownToken)),
+            );
+        await expectLater(controller.attach(), throwsA(failure));
+        await expectLater(
+          controller.start(ProxyProfile(), ''),
+          throwsA(failure),
+        );
+        expect(controller.canShutdown, isFalse);
+        expect(controller.error, contains('内核发现文件'));
+        expect(controller.error, isNot(contains(unknownToken)));
+        expect(controller.logs.single.level, 'ERROR');
+        expect(controller.logs.single.message, isNot(contains(unknownToken)));
+        expect(await controller.endpointFile.readAsString(), content);
+      } finally {
+        controller.dispose();
+        await directory.delete(recursive: true);
+      }
+    });
+  }
+
   for (final timing in ['请求前', '请求期间', '仍有发现文件']) {
     test('内核断线退出：$timing，按发现文件判断能否退出客户端', () async {
       final directory = await Directory.systemTemp.createTemp('network-exit-');

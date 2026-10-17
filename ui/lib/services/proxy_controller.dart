@@ -306,12 +306,23 @@ class ProxyController extends ChangeNotifier {
     }
   }
 
+  Future<Map<String, dynamic>> _readDiscovery() async {
+    try {
+      final value = jsonDecode(await endpointFile.readAsString());
+      if (value is Map<String, dynamic>) return value;
+    } on FormatException {
+      // 解析异常会附带输入原文，不能让尚未载入的管理令牌进入错误提示或日志。
+    }
+    throw StateError('内核发现文件格式无效，请检查管理连接信息');
+  }
+
   Future<bool> attach() async {
     if (!await endpointFile.exists()) return false;
-    final value =
-        jsonDecode(await endpointFile.readAsString()) as Map<String, dynamic>;
-    final uri = Uri.parse(value['url'] as String);
-    if (uri.scheme != 'http' ||
+    final value = await _readDiscovery();
+    final address = value['url'];
+    final uri = address is String ? Uri.tryParse(address) : null;
+    if (uri == null ||
+        uri.scheme != 'http' ||
         uri.host != '127.0.0.1' ||
         !uri.hasPort ||
         uri.userInfo.isNotEmpty ||
@@ -482,9 +493,7 @@ class ProxyController extends ChangeNotifier {
       for (var i = 0; i < 150 && !_disposed; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 100));
         if (!await endpointFile.exists()) continue;
-        final discovery = jsonDecode(
-          await endpointFile.readAsString(),
-        ) as Map<String, dynamic>;
+        final discovery = await _readDiscovery();
         if (discovery['pid'] != process.pid) continue;
         ready = await attach();
         if (ready) break;
