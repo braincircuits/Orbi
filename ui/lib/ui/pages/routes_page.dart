@@ -754,6 +754,8 @@ class _RoutesPageState extends State<RoutesPage> {
           children: [
             SelectableText(
               target,
+              // 隔离文字内部滚动位置，避免恢复外层列表偏移后再向下滑回原位。
+              key: PageStorageKey('route-title-$target'),
               style: DesktopDesign.monoText.copyWith(color: ui.ink),
             ),
             const SizedBox(height: 3),

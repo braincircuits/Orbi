@@ -384,6 +384,88 @@ void main() {
     await tester.pumpAndSettle();
   });
 
+  for (final platform in [
+    TargetPlatform.macOS,
+    TargetPlatform.windows,
+    TargetPlatform.linux,
+  ]) {
+    for (final targets in [false, true]) {
+      testWidgets('滚入视野的规则标题首帧完整，不继承列表位置：$platform / 指定目标=$targets', (
+        tester,
+      ) async {
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final profile = kernel.copyProfile()
+          ..rules = List.generate(
+            150,
+            (i) => 'route-$i.example # 中文备注',
+          ).join('\n')
+          ..routesOverrides = List.generate(
+            150,
+            (i) => 'proxy target-$i.example',
+          ).join('\n');
+        kernel.publish(profile, 2);
+        model.accept(profile);
+        await mount(
+          tester,
+          platform: platform,
+          brightness: targets ? Brightness.dark : Brightness.light,
+          scale: targets ? 1.3 : 1,
+        );
+        if (targets) {
+          await tester.tap(find.text('指定目标 150'));
+          await tester.pumpAndSettle();
+        }
+        final list = find.byKey(const PageStorageKey('routes'));
+        final outer = find
+            .descendant(of: list, matching: find.byType(Scrollable))
+            .first;
+        final position = tester.state<ScrollableState>(outer).position;
+        for (final offset in [700.0, 1500.0, 2300.0, 700.0]) {
+          position.jumpTo(offset);
+          await tester.pump();
+          final titles = find.descendant(
+            of: list,
+            matching: find.byType(SelectableText),
+          );
+          expect(titles, findsWidgets);
+          for (final delay in [
+            Duration.zero,
+            const Duration(milliseconds: 16),
+            const Duration(milliseconds: 200),
+          ]) {
+            if (delay != Duration.zero) await tester.pump(delay);
+            for (final title in titles.evaluate()) {
+              final editor = find.descendant(
+                of: find.byWidget(title.widget),
+                matching: find.byType(EditableText),
+              );
+              final editable = tester
+                  .state<EditableTextState>(editor)
+                  .renderEditable;
+              expect(
+                editable.offset.pixels,
+                0,
+                reason:
+                    '${(title.widget as SelectableText).data} 首帧及后续帧不得继承外层偏移',
+              );
+              expect(
+                editable
+                    .getLocalRectForCaret(const TextPosition(offset: 0))
+                    .top,
+                greaterThanOrEqualTo(0),
+                reason: '标题顶部不能在自己的文字区域内被裁切',
+              );
+            }
+          }
+          expect(position.pixels, offset, reason: '修复标题不能改变用户的列表位置');
+          await tester.pumpAndSettle();
+        }
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
+
   testWidgets('指定目标列表启用时首帧即显示最终状态，不逐项淡入', (tester) async {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -586,6 +668,16 @@ void main() {
       });
     }
     final boundary = GlobalKey();
+    Future<void> capture(String name) => tester.runAsync(() async {
+      final render =
+          boundary.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+      final image = await render.toImage();
+      final data = await image.toByteData(format: painting.ImageByteFormat.png);
+      await Directory(destination).create(recursive: true);
+      await File('$destination/$name.png')
+          .writeAsBytes(data!.buffer.asUint8List());
+      image.dispose();
+    });
     for (final brightness in Brightness.values) {
       tester.view.physicalSize = const Size(850, 680);
       tester.view.devicePixelRatio = 1;
@@ -604,19 +696,22 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.runAsync(() async {
-        final render =
-            boundary.currentContext!.findRenderObject()!
-                as RenderRepaintBoundary;
-        final image = await render.toImage();
-        final data = await image.toByteData(
-          format: painting.ImageByteFormat.png,
-        );
-        await Directory(destination).create(recursive: true);
-        await File('$destination/routes-${brightness.name}.png')
-            .writeAsBytes(data!.buffer.asUint8List());
-        image.dispose();
-      });
+      await capture('routes-${brightness.name}');
+      model.editRules(
+        List.generate(100, (i) => 'route-$i.example # 规则备注').join('\n'),
+      );
+      await tester.pumpAndSettle();
+      final scrollable = find
+          .descendant(
+            of: find.byKey(const PageStorageKey('routes')),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      tester.state<ScrollableState>(scrollable).position.jumpTo(700);
+      await tester.pump();
+      await capture('routes-${brightness.name}-scrolled-first');
+      await tester.pump(const Duration(milliseconds: 200));
+      await capture('routes-${brightness.name}-scrolled-later');
       expect(tester.takeException(), isNull);
     }
   }, skip: Platform.environment['UI_ROUTES_PREVIEW_DIR'] == null);
