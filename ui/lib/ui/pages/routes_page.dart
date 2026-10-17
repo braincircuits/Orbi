@@ -361,13 +361,19 @@ class _RoutesPageState extends State<RoutesPage> {
                                       onChanged: (_) => setState(() {}),
                                       decoration: InputDecoration(
                                         hintText: '搜索目标或备注',
-                                        prefixIcon: const Icon(Icons.search),
+                                        prefixIcon: const Icon(
+                                          Icons.search,
+                                          size: DesktopDesign.actionIconSize,
+                                        ),
                                         suffixIcon: IconButton(
                                           tooltip: '清空规则搜索',
                                           onPressed: _search.text.isEmpty
                                               ? null
                                               : () => setState(_search.clear),
-                                          icon: const Icon(Icons.close),
+                                          icon: const Icon(
+                                            Icons.close,
+                                            size: DesktopDesign.actionIconSize,
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -599,7 +605,10 @@ class _RoutesPageState extends State<RoutesPage> {
                   },
                   decoration: const InputDecoration(
                     hintText: '查询域名或 IP 的实际路由',
-                    prefixIcon: Icon(Icons.alt_route),
+                    prefixIcon: Icon(
+                      Icons.alt_route,
+                      size: DesktopDesign.actionIconSize,
+                    ),
                   ),
                 ),
               ),

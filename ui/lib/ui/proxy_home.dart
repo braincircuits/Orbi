@@ -352,13 +352,23 @@ class _ProxyHomeState extends State<ProxyHome> {
                                         children: [
                                           OverviewPage(
                                             model: model,
+                                            visible: model.page == 0,
                                             onSettings: _showSettings,
                                           ),
                                           ConfigurationPage(model: model),
                                           RoutesPage(model: model),
-                                          LogsPage(model: model),
-                                          TunnelsPage(model: model),
-                                          DiagnosticsPage(model: model),
+                                          LogsPage(
+                                            model: model,
+                                            visible: model.page == 3,
+                                          ),
+                                          TunnelsPage(
+                                            model: model,
+                                            visible: model.page == 4,
+                                          ),
+                                          DiagnosticsPage(
+                                            model: model,
+                                            visible: model.page == 5,
+                                          ),
                                         ],
                                       ),
                                     ),

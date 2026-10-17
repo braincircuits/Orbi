@@ -6,8 +6,9 @@ import 'traffic_summary_chart.dart';
 
 /// 分钟趋势读取持久化窗口，仅跨分钟、连接变化及手动刷新时请求。
 class TrafficChart extends StatefulWidget {
-  const TrafficChart({super.key, required this.proxy});
+  const TrafficChart({super.key, required this.proxy, this.visible = true});
   final ProxyController proxy;
+  final bool visible;
   @override
   State<TrafficChart> createState() => _TrafficChartState();
 }
@@ -31,13 +32,17 @@ class _TrafficChartState extends State<TrafficChart> {
     if (oldWidget.proxy != widget.proxy) {
       oldWidget.proxy.removeListener(_changed);
       widget.proxy.addListener(_changed);
+      request++;
       observed = null;
       summary = null;
-      _changed();
+      error = '';
+      loading = false;
     }
+    _changed();
   }
 
   void _changed() {
+    if (!widget.visible) return;
     final next = (
       widget.proxy.connected,
       widget.proxy.running,
@@ -48,6 +53,11 @@ class _TrafficChartState extends State<TrafficChart> {
           60000,
     );
     if (next == observed) return;
+    // 新内核可能使用另一份数据库，不展示上一实例的趋势或错误。
+    if (observed != null && observed!.$3 != next.$3) {
+      summary = null;
+      error = '';
+    }
     observed = next;
     if (!next.$1) {
       request++;
@@ -59,19 +69,28 @@ class _TrafficChartState extends State<TrafficChart> {
 
   Future<void> _load() async {
     final current = ++request;
+    final generation = widget.proxy.kernelGeneration;
     setState(() {
       loading = true;
       error = '';
     });
     try {
       final value = await widget.proxy.trafficSummary(hourly: false);
-      if (!mounted || current != request) return;
+      if (!mounted ||
+          current != request ||
+          generation != widget.proxy.kernelGeneration) {
+        return;
+      }
       setState(() {
         summary = value;
         loading = false;
       });
     } catch (failure) {
-      if (!mounted || current != request) return;
+      if (!mounted ||
+          current != request ||
+          generation != widget.proxy.kernelGeneration) {
+        return;
+      }
       setState(() {
         error = widget.proxy.redact('$failure');
         loading = false;

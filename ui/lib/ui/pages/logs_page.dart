@@ -6,8 +6,9 @@ import '../widgets/desktop_select.dart';
 import '../desktop_theme.dart';
 
 class LogsPage extends StatefulWidget {
-  const LogsPage({super.key, required this.model});
+  const LogsPage({super.key, required this.model, this.visible = true});
   final ProxyViewModel model;
+  final bool visible;
   @override
   State<LogsPage> createState() => _LogsPageState();
 }
@@ -31,7 +32,10 @@ class _LogsPageState extends State<LogsPage> {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: model.proxy.logChanges,
+    // 隐藏或暂停时保留列表状态，仅在重新显示时读取最新缓存。
+    listenable: Listenable.merge([
+      if (widget.visible && !model.pauseLogs) model.proxy.logChanges,
+    ]),
     builder: (context, _) => _content(context, DesktopWidgets(context, model)),
   );
   String _logTime(String value) {
@@ -67,7 +71,10 @@ class _LogsPageState extends State<LogsPage> {
                   onChanged: (_) => _searchChanged(),
                   decoration: InputDecoration(
                     hintText: '搜索日志内容',
-                    prefixIcon: const Icon(Icons.search),
+                    prefixIcon: const Icon(
+                      Icons.search,
+                      size: DesktopDesign.actionIconSize,
+                    ),
                     suffixIcon: IconButton(
                       tooltip: '清空日志搜索',
                       onPressed: search.text.isEmpty
@@ -76,7 +83,10 @@ class _LogsPageState extends State<LogsPage> {
                               search.clear();
                               _searchChanged();
                             },
-                      icon: const Icon(Icons.close),
+                      icon: const Icon(
+                        Icons.close,
+                        size: DesktopDesign.actionIconSize,
+                      ),
                     ),
                   ),
                 ),

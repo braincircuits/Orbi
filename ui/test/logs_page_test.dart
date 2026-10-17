@@ -3,10 +3,20 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:network_ui/ui/desktop_theme.dart';
+import 'package:network_ui/services/proxy_controller.dart' show KernelLog;
 import 'package:network_ui/ui/pages/logs_page.dart';
 import 'package:network_ui/view_models/proxy_view_model.dart';
 
 import 'view_model_test.dart' show TestDesktop, TestKernel;
+
+class _LogKernel extends TestKernel {
+  int reads = 0;
+  @override
+  List<KernelLog> get logs {
+    reads++;
+    return super.logs;
+  }
+}
 
 class _Desktop extends TestDesktop {
   _Desktop() : super(Directory.systemTemp);
@@ -19,11 +29,11 @@ class _Desktop extends TestDesktop {
 }
 
 void main() {
-  late TestKernel kernel;
+  late _LogKernel kernel;
   late _Desktop desktop;
   late ProxyViewModel model;
   setUp(() {
-    kernel = TestKernel();
+    kernel = _LogKernel();
     desktop = _Desktop();
     model = ProxyViewModel(proxy: kernel, native: desktop)
       ..loading = false
@@ -101,9 +111,11 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('暂停日志'));
     await tester.pumpAndSettle();
+    kernel.reads = 0;
     kernel.addLog('INFO api.example.com 新请求');
     await tester.pumpAndSettle();
     expect(find.text('api.example.com 新请求'), findsNothing);
+    expect(kernel.reads, 0, reason: '暂停显示时不重复读取和过滤后台日志');
     expect(find.text('2 / 3 条'), findsOneWidget);
     await tester.tap(find.byTooltip('恢复日志'));
     await tester.pumpAndSettle();

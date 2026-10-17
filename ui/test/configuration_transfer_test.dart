@@ -7,6 +7,7 @@ import 'package:network_ui/models/connection_document.dart';
 import 'package:network_ui/models/proxy_profile.dart';
 import 'package:network_ui/ui/desktop_theme.dart';
 import 'package:network_ui/ui/widgets/configuration_transfer.dart';
+import 'package:network_ui/ui/widgets/desktop_select.dart';
 import 'package:network_ui/view_models/proxy_view_model.dart';
 
 import 'view_model_test.dart' show TestDesktop, TestKernel;
@@ -211,6 +212,45 @@ void main() {
     expect(kernel.exports.single.$1, ['a']);
     expect(kernel.exports.single.$2, isTrue);
     expect(desktop.saved.single.toString(), contains('文件密码'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('导入覆盖选项使用共享尺寸，取消保留配置，确认只覆盖所选连接', (tester) async {
+    model.incoming = document();
+    await show(tester, false);
+    await tester.tap(find.text('导入连接'));
+    await tester.pumpAndSettle();
+    final originalEndpoint = model.connectionDrafts.first.endpoint;
+    final selector = find.byType(DesktopSelect<String>);
+    expect(tester.getSize(selector).height, DesktopDesign.controlHeight);
+    await tester.tap(find.text('作为新连接'));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.widgetWithText(MenuItemButton, '覆盖 连接甲 · $originalEndpoint'),
+    );
+    await tester.pumpAndSettle();
+    expect(model.dirty, isFalse);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(model.connectionDrafts.length, 2);
+    expect(model.connectionDrafts.first.endpoint, originalEndpoint);
+    await tester.tap(find.text('导入连接'));
+    await tester.pumpAndSettle();
+    expect(find.text('作为新连接'), findsOneWidget);
+    await tester.tap(find.text('作为新连接'));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.widgetWithText(MenuItemButton, '覆盖 连接甲 · $originalEndpoint'),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('导入草稿'));
+    await tester.pumpAndSettle();
+    expect(model.connectionDrafts.length, 2);
+    expect(model.connectionDrafts.first.id, 'a');
+    expect(model.connectionDrafts.first.endpoint, 'new.example:4433');
+    expect(model.connectionDrafts.first.hasPassword, isTrue);
+    expect(model.defaultId, 'a');
+    expect(kernel.writes, isEmpty);
     expect(tester.takeException(), isNull);
   });
 

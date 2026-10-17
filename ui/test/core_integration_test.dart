@@ -267,7 +267,12 @@ void main() {
         await browser.flush();
         await connected.future.timeout(const Duration(seconds: 5));
         expect(headers.toString(), startsWith('HTTP/1.1 200'));
-        await until(() => controller.tunnels.length == 1);
+        // 建连成功响应可能先于 active 状态的 SSE，等待目标状态再核对明细。
+        await until(
+          () =>
+              controller.tunnels.length == 1 &&
+              controller.tunnels.single.state == 'active',
+        );
         expect(controller.tunnels.single.target, '127.0.0.1:${origin.port}');
         expect(controller.tunnels.single.route, 'direct');
         expect(controller.tunnels.single.state, 'active');

@@ -14,6 +14,51 @@ const options = [
 ];
 
 void main() {
+  testWidgets('大字体菜单按文字自然增高，选项不裁切且能选中', (tester) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 3;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    String? selected = 'small';
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: desktopTheme(Brightness.light),
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            child: StatefulBuilder(
+              builder: (context, update) => DesktopSelect<String>(
+                value: selected,
+                options: const [('small', '原选项'), ('large', '大字体选项')],
+                onSelected: (value) => update(() => selected = value),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byType(TextField));
+    await tester.pumpAndSettle();
+    final item = find.widgetWithText(MenuItemButton, '大字体选项').hitTestable();
+    final label = find
+        .descendant(of: item, matching: find.byType(RichText))
+        .first;
+    expect(
+      tester.getRect(item).height,
+      greaterThanOrEqualTo(tester.getRect(label).height),
+    );
+    expect(
+      tester.getRect(label).top,
+      greaterThanOrEqualTo(tester.getRect(item).top),
+    );
+    expect(
+      tester.getRect(label).bottom,
+      lessThanOrEqualTo(tester.getRect(item).bottom),
+    );
+    await tester.tap(item);
+    await tester.pumpAndSettle();
+    expect(selected, 'large');
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('实时刷新发生在按下与松开之间仍能选中筛选项', (tester) async {
     String? selected = 'direct';
     late StateSetter refresh;

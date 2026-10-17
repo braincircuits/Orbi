@@ -28,64 +28,64 @@ class _DesktopSelectState<T> extends State<DesktopSelect<T>> {
   Color? _selectionColor;
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      final width = constraints.maxWidth.clamp(0.0, DesktopDesign.menuWidth);
-      final theme = Theme.of(context);
-      // DropdownMenu 会在选项列表对象变化时重建菜单项，导致刷新期间的点击丢失。
-      // 仅在选项、选中值或勾选颜色变化时更新列表，保留正在进行的鼠标和键盘操作。
-      if (!listEquals(_options, widget.options) ||
-          _value != widget.value ||
-          _selectionColor != theme.colorScheme.primary) {
-        _options = List.of(widget.options);
-        _value = widget.value;
-        _selectionColor = theme.colorScheme.primary;
-        _entries = [
-          for (final option in _options)
-            DropdownMenuEntry(
-              value: option.$1,
-              label: option.$2,
-              labelWidget: Text(
-                option.$2,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              trailingIcon: option.$1 == widget.value
-                  ? Icon(Icons.check, size: 16, color: _selectionColor)
-                  : const SizedBox(width: 16),
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    // DropdownMenu 会在选项列表对象变化时重建菜单项，导致刷新期间的点击丢失。
+    // 仅在选项、选中值或勾选颜色变化时更新列表，保留正在进行的鼠标和键盘操作。
+    if (!listEquals(_options, widget.options) ||
+        _value != widget.value ||
+        _selectionColor != theme.colorScheme.primary) {
+      _options = List.of(widget.options);
+      _value = widget.value;
+      _selectionColor = theme.colorScheme.primary;
+      _entries = [
+        for (final option in _options)
+          DropdownMenuEntry(
+            value: option.$1,
+            label: option.$2,
+            labelWidget: Text(
+              option.$2,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
-        ];
-      }
-      return DropdownMenu<T>(
-        key: ValueKey((
-          widget.value,
-          _options.where((option) => option.$1 == widget.value).firstOrNull?.$2,
-        )),
-        enabled: widget.onSelected != null,
-        initialSelection: widget.value,
-        expandedInsets: EdgeInsets.zero,
-        selectOnly: true,
-        requestFocusOnTap: true,
-        enableSearch: false,
-        alignmentOffset: const Offset(0, 4),
-        decorationBuilder: (_, controller) => InputDecoration(
-          suffixIcon: Icon(
-            controller.isOpen
-                ? Icons.keyboard_arrow_up
-                : Icons.keyboard_arrow_down,
-            size: 18,
+            trailingIcon: option.$1 == widget.value
+                ? Icon(Icons.check, size: 16, color: _selectionColor)
+                : const SizedBox(width: 16),
           ),
+      ];
+    }
+    return DropdownMenu<T>(
+      key: ValueKey((
+        widget.value,
+        _options.where((option) => option.$1 == widget.value).firstOrNull?.$2,
+      )),
+      enabled: widget.onSelected != null,
+      initialSelection: widget.value,
+      expandedInsets: EdgeInsets.zero,
+      selectOnly: true,
+      requestFocusOnTap: true,
+      enableSearch: false,
+      alignmentOffset: const Offset(0, 4),
+      decorationBuilder: (_, controller) => InputDecoration(
+        suffixIcon: Icon(
+          controller.isOpen
+              ? Icons.keyboard_arrow_up
+              : Icons.keyboard_arrow_down,
+          size: DesktopDesign.actionIconSize,
         ),
-        menuStyle: theme.dropdownMenuTheme.menuStyle!.copyWith(
-          maximumSize: WidgetStatePropertyAll(Size(width, 320)),
+      ),
+      // 菜单自行适配视口，不用 LayoutBuilder 阻断弹窗的固有尺寸测量。
+      menuStyle: theme.dropdownMenuTheme.menuStyle!.copyWith(
+        maximumSize: const WidgetStatePropertyAll(
+          Size(DesktopDesign.menuWidth, 320),
         ),
-        dropdownMenuEntries: _entries,
-        onSelected: (next) {
-          if (next != null) widget.onSelected?.call(next);
-        },
-      );
-    },
-  );
+      ),
+      dropdownMenuEntries: _entries,
+      onSelected: (next) {
+        if (next != null) widget.onSelected?.call(next);
+      },
+    );
+  }
 }
 
 @Preview(name: '桌面下拉菜单 · 浅色', size: Size(640, 320))

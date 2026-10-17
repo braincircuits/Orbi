@@ -200,7 +200,10 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
             onChanged: (_) => _filterChanged(),
             decoration: InputDecoration(
               hintText: '搜索名称或服务器',
-              prefixIcon: const Icon(Icons.search, size: 17),
+              prefixIcon: const Icon(
+                Icons.search,
+                size: DesktopDesign.actionIconSize,
+              ),
               suffixIcon: search.text.isEmpty
                   ? null
                   : IconButton(
@@ -209,7 +212,10 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                         search.clear();
                         _filterChanged();
                       },
-                      icon: const Icon(Icons.close, size: 16),
+                      icon: const Icon(
+                        Icons.close,
+                        size: DesktopDesign.actionIconSize,
+                      ),
                     ),
             ),
           );

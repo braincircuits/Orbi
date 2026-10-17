@@ -14,6 +14,13 @@ import 'traffic_fixture.dart';
 
 class _Kernel extends ProxyController {
   final records = <String, DiagnosticOperation>{};
+  int logReads = 0;
+  @override
+  List<KernelLog> get logs {
+    logReads++;
+    return super.logs;
+  }
+
   @override
   Map<String, DiagnosticOperation> get operations => records;
 
@@ -144,6 +151,50 @@ void main() {
     expect(notifications, 2);
     publish(name: '另一个名称', protocol: 'http3');
     expect(notifications, 3);
+  });
+
+  testWidgets('隐藏的日志和隧道列表不响应推送，切回时显示最新数据且保留搜索', (tester) async {
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    model.page = 3;
+    kernel.addLog('INFO 匹配旧记录');
+    await tester.pumpWidget(NetworkApp(model: model));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('log-search')), '匹配');
+    model.navigate(1);
+    await tester.pumpAndSettle();
+    var tables = 0;
+    final previous = debugOnRebuildDirtyWidget;
+    debugOnRebuildDirtyWidget = (element, _) {
+      if (element.widget.runtimeType.toString() == 'SortableTable') tables++;
+    };
+    addTearDown(() => debugOnRebuildDirtyWidget = previous);
+    kernel.logReads = 0;
+    for (var i = 0; i < 5; i++) {
+      kernel.tunnels = [_tunnel('latest-$i')];
+      kernel.publish();
+      kernel.addLog('INFO 匹配新记录 $i');
+      await tester.pump();
+    }
+    expect(kernel.logReads, 0, reason: '隐藏日志不应重新过滤和构建');
+    expect(tables, 0, reason: '隐藏隧道不应重新排序和构建表格');
+    model.navigate(3);
+    await tester.pumpAndSettle();
+    expect(find.text('匹配新记录 4'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const ValueKey('log-search')))
+          .controller!
+          .text,
+      '匹配',
+    );
+    model.navigate(4);
+    await tester.pumpAndSettle();
+    expect(find.text('latest-4.example.com:443'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('异步路由结果更新查询卡片和诊断记录，不刷新主页面或概览', (tester) async {

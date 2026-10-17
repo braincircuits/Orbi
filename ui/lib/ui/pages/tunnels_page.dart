@@ -9,8 +9,9 @@ import '../widgets/sortable_table.dart';
 import 'access_records_page.dart';
 
 class TunnelsPage extends StatefulWidget {
-  const TunnelsPage({super.key, required this.model});
+  const TunnelsPage({super.key, required this.model, this.visible = true});
   final ProxyViewModel model;
+  final bool visible;
 
   @override
   State<TunnelsPage> createState() => _TunnelsPageState();
@@ -105,7 +106,7 @@ class _TunnelsPageState extends State<TunnelsPage> {
               ? () => controller.isOpen ? controller.close() : controller.open()
               : null,
           style: TextButton.styleFrom(
-            minimumSize: const Size(0, 28),
+            minimumSize: const Size(0, DesktopDesign.controlHeight),
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             alignment: Alignment.centerLeft,
             foregroundColor: scheme.onSurface,
@@ -216,7 +217,9 @@ class _TunnelsPageState extends State<TunnelsPage> {
         const SizedBox(height: 12),
         Expanded(
           child: ListenableBuilder(
-            listenable: widget.model.tunnelChanges,
+            listenable: Listenable.merge([
+              if (widget.visible) widget.model.tunnelChanges,
+            ]),
             builder: (context, _) => _tunnelList(context, ui),
           ),
         ),

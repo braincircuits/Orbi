@@ -14,8 +14,14 @@ import 'traffic_history_dialog.dart';
 
 /// 概览只读展示当前配置；检测统一由内核按实际出口执行。
 class OverviewPage extends StatefulWidget {
-  const OverviewPage({super.key, required this.model, this.onSettings});
+  const OverviewPage({
+    super.key,
+    required this.model,
+    this.onSettings,
+    this.visible = true,
+  });
   final ProxyViewModel model;
+  final bool visible;
   final VoidCallback? onSettings;
 
   @override
@@ -64,7 +70,8 @@ class _OverviewPageState extends State<OverviewPage> {
   }
 
   void _modelChanged() {
-    setState(_rememberExit);
+    _rememberExit();
+    if (widget.visible) setState(() {});
   }
 
   @override
@@ -365,8 +372,7 @@ class _OverviewPageState extends State<OverviewPage> {
         padding: EdgeInsets.zero,
         child: ListenableBuilder(
           listenable: Listenable.merge([
-            model.trafficChanges,
-            model.tunnelChanges,
+            if (widget.visible) ...[model.trafficChanges, model.tunnelChanges],
           ]),
           builder: (context, _) => LayoutBuilder(
             builder: (context, constraints) {
@@ -491,7 +497,7 @@ class _OverviewPageState extends State<OverviewPage> {
       ui.card(
         Column(
           children: [
-            TrafficChart(proxy: proxy),
+            TrafficChart(proxy: proxy, visible: widget.visible),
             Align(
               alignment: Alignment.centerRight,
               child: TextButton.icon(

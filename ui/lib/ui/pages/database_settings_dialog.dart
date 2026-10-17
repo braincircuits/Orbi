@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../models/database_settings.dart';
 import '../../view_models/proxy_view_model.dart';
 import '../widgets/desktop_select.dart';
+import '../desktop_theme.dart';
 
 /// 数据库启动设置独立保存，不参与代理配置的“应用并保存”。
 class DatabaseSettingsDialog extends StatefulWidget {
@@ -93,7 +94,7 @@ class _DatabaseSettingsDialogState extends State<DatabaseSettingsDialog> {
                   _showPassword
                       ? Icons.visibility_off_outlined
                       : Icons.visibility_outlined,
-                  size: 18,
+                  size: DesktopDesign.actionIconSize,
                 ),
               )
             : null,

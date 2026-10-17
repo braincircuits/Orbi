@@ -8,11 +8,12 @@ import '../widgets/desktop_select.dart';
 import '../desktop_theme.dart';
 
 class DiagnosticsPage extends StatelessWidget {
-  const DiagnosticsPage({super.key, required this.model});
+  const DiagnosticsPage({super.key, required this.model, this.visible = true});
   final ProxyViewModel model;
+  final bool visible;
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: model.operationChanges,
+    listenable: Listenable.merge([if (visible) model.operationChanges]),
     builder: (context, _) => _content(context, DesktopWidgets(context, model)),
   );
   Widget _content(BuildContext context, DesktopWidgets ui) {

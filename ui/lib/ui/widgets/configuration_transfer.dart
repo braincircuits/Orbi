@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../models/connection_document.dart';
 import '../../models/direct_rule_entry.dart';
 import '../../view_models/proxy_view_model.dart';
+import 'desktop_select.dart';
 
 /// 文件选择和持久化由视图模型执行，此处仅管理预览、选择及确认。
 class ConfigurationTransfer extends StatelessWidget {
@@ -133,27 +134,21 @@ class ConfigurationTransfer extends StatelessWidget {
                                   ? '文件未包含密码'
                                   : '文件包含密码',
                             ),
-                            DropdownButton<String>(
-                              isExpanded: true,
+                            DesktopSelect<String>(
+                              key: ValueKey('import-replacement-$index'),
                               value: replacements[index] ?? '',
-                              items: [
-                                const DropdownMenuItem(
-                                  value: '',
-                                  child: Text('作为新连接'),
-                                ),
+                              options: [
+                                ('', '作为新连接'),
                                 for (final current
                                     in model.connectionDrafts.where(
                                       (c) => c.name == item.name,
                                     ))
-                                  DropdownMenuItem(
-                                    value: current.id,
-                                    child: Text(
-                                      '覆盖 ${current.name} · ${current.endpoint}',
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
+                                  (
+                                    current.id,
+                                    '覆盖 ${current.name} · ${current.endpoint}',
                                   ),
                               ],
-                              onChanged: (value) => setState(
+                              onSelected: (value) => setState(
                                 () => replacements[index] = value == ''
                                     ? null
                                     : value,
