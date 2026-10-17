@@ -170,9 +170,9 @@ final class H2ServerConnectHandler extends ChannelInboundHandlerAdapter {
         if (finished) return;
         finished = true;
         Http2StreamChannel stream = (Http2StreamChannel) ctx.channel();
-        LOGGER.warn("CONNECT 请求失败：状态={}，目标={}，连接 ID={}，流 ID={}，DNS={}，原因={}",
+        LOGGER.warn("CONNECT 请求失败：状态={}，目标={}，连接 ID={}，流 ID={}，DNS={}，阶段={}，原因={}",
                 status, requestedTarget, stream.parent().id().asShortText(), stream.stream().id(), dns,
-                cause == null ? "无底层异常" : cause.toString());
+                phase, cause == null ? "无底层异常" : cause.getClass().getSimpleName());
         if (timeout != null) timeout.cancel(false);
         releasePending();
         if (target != null) target.close();

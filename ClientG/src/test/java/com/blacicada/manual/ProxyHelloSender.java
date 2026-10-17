@@ -42,10 +42,9 @@ public final class ProxyHelloSender {
             output.flush();
 
             String headers = readHeaders(input);
-            System.out.println("代理响应：\n" + headers.stripTrailing());
             String[] status = headers.substring(0, headers.indexOf("\r\n")).split(" +", 3);
             if (status.length < 2 || !status[1].matches("2[0-9]{2}")) {
-                throw new IOException("CONNECT 未成功，停止发送：" + headers.stripTrailing());
+                throw new IOException("CONNECT 未成功，停止发送");
             }
 
             byte[] message = "hello world".getBytes(StandardCharsets.UTF_8);
@@ -56,7 +55,7 @@ public final class ProxyHelloSender {
             System.out.println("已发送：hello world");
             byte[] reply = input.readNBytes(message.length);
             if (!Arrays.equals(message, reply)) {
-                throw new IOException("回显内容不一致：" + new String(reply, StandardCharsets.UTF_8));
+                throw new IOException("回显内容不一致");
             }
             System.out.println("收到目标回显：" + new String(reply, StandardCharsets.UTF_8));
             System.out.println("代理通信测试成功");

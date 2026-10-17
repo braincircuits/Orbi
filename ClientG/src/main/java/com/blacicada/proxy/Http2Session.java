@@ -353,8 +353,9 @@ public final class Http2Session implements ProxySession {
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
             if (msg instanceof Http2HeadersFrame headers) {
                 String status = String.valueOf(headers.headers().status());
-                if (status.startsWith("1") && !headers.isEndStream()) return;
-                if (status.matches("2[0-9]{2}") && !headers.isEndStream()) {
+                boolean validStatus = status.matches("[1-5][0-9]{2}");
+                if (validStatus && status.startsWith("1") && !headers.isEndStream()) return;
+                if (validStatus && status.startsWith("2") && !headers.isEndStream()) {
                     if (request.udp && !UdpTunnel.requested(headers.headers().getAll(UdpTunnel.HEADER))) {
                         request.result.tryFailure(new IOException("服务端未确认 UDP 隧道"));
                         ctx.close();
@@ -371,7 +372,7 @@ public final class Http2Session implements ProxySession {
                     if (!request.result.trySuccess(ctx.channel())) ctx.close();
                 } else {
                     if (status.equals("407") && request.parent == connection) error = "代理账号或密码验证失败";
-                    request.result.tryFailure(new IOException("代理 CONNECT 失败：" + status));
+                    request.result.tryFailure(new IOException("代理 CONNECT 失败：" + (validStatus ? status : "无效状态码")));
                 }
             } else if (msg instanceof Http2UnknownFrame) {
                 // 扩展帧也可能先于 CONNECT 响应到达；等待响应期间继续由自动读取驱动。

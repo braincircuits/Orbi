@@ -190,6 +190,22 @@ os.replace(sys.argv[-2], sys.argv[-1])
         self.assertIn(str(PROJECT_DIR / "release/server/server.jar"), result.stdout)
         self.assertFalse((self.root / "ssh-called").exists())
 
+    def test_preview_and_syntax_errors_do_not_echo_command_credentials(self):
+        for preview, command in ((True, "TOKEN=deployment-secret; true"),
+                                 (False, "TOKEN=deployment-secret; )")):
+            with self.subTest(preview=preview):
+                self.config["command.1"] = command
+                result = self.run_deploy(*(["--dry-run"] if preview else []))
+                self.assertEqual(result.returncode == 0, preview)
+                self.assertNotIn("deployment-secret", result.stdout + result.stderr)
+                self.assertFalse((self.root / "ssh-called").exists())
+
+    def test_unknown_options_do_not_echo_credentials(self):
+        result = self.run_deploy("--password=unregistered-cli-secret")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("unregistered-cli-secret", result.stdout + result.stderr)
+        self.assertFalse((self.root / "ssh-called").exists())
+
     def test_invalid_config_does_not_connect(self):
         for update in ({"ssh.host": "-oProxyCommand=bad"}, {"ssh.port": "bad"},
                        {"ssh.auth": "invalid"}, {"ssh.auth": ""},

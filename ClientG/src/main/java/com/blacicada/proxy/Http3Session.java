@@ -437,8 +437,9 @@ public final class Http3Session implements ProxySession {
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
             if (msg instanceof Http3HeadersFrame headers) {
                 String status = String.valueOf(headers.headers().status());
-                if (status.startsWith("1")) return;
-                if (status.length() == 3 && status.charAt(0) == '2') {
+                boolean validStatus = status.matches("[1-5][0-9]{2}");
+                if (validStatus && status.startsWith("1")) return;
+                if (validStatus && status.startsWith("2")) {
                     if (udpTunnel && !UdpTunnel.requested(headers.headers().getAll(UdpTunnel.HEADER))) {
                         result.tryFailure(new IOException("服务端未确认 UDP 隧道"));
                         ctx.close();
@@ -458,7 +459,7 @@ public final class Http3Session implements ProxySession {
                     // 认证失败影响整个代理；目标连接失败只属于当前请求。
                     if (status.equals("407") && ctx.channel().parent() == connection)
                         lastError = "代理账号或密码验证失败";
-                    result.tryFailure(new IOException("代理 CONNECT 失败：" + status));
+                    result.tryFailure(new IOException("代理 CONNECT 失败：" + (validStatus ? status : "无效状态码")));
                     ctx.close();
                 }
             } else if (msg instanceof Http3UnknownFrame) ReferenceCountUtil.release(msg);

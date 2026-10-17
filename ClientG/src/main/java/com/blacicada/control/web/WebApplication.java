@@ -31,25 +31,32 @@ public final class WebApplication {
         int port = 9090;
         Set<String> origins = new HashSet<>();
         String token = ControlHttpServer.newToken();
+        Set<String> options = Set.of("--db", "--storage-config", "--port", "--endpoint-file", "--token-file", "--allow-origin");
         for (int i = 0; i < args.length; i++) {
             String key = args[i];
+            if (!options.contains(key)) throw new IllegalArgumentException("未知启动参数");
             if (i + 1 >= args.length) throw new IllegalArgumentException("启动参数缺少值：" + key);
             String value = args[++i];
-            switch (key) {
-                case "--db" -> database = Path.of(value);
-                case "--storage-config" -> storageFile = Path.of(value);
-                case "--port" -> port = Integer.parseInt(value);
-                case "--endpoint-file" -> endpoint = Path.of(value);
-                case "--token-file" -> token = Files.readString(Path.of(value)).trim();
-                case "--allow-origin" -> {
-                    java.net.URI uri = java.net.URI.create(value);
-                    if (!Set.of("http", "https").contains(uri.getScheme()) || uri.getHost() == null
-                            || uri.getRawUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null
-                            || !uri.getRawPath().isEmpty())
-                        throw new IllegalArgumentException("允许来源必须是完整的 HTTP 或 HTTPS Origin");
-                    origins.add(value);
+            try {
+                switch (key) {
+                    case "--db" -> database = Path.of(value);
+                    case "--storage-config" -> storageFile = Path.of(value);
+                    case "--port" -> port = Integer.parseInt(value);
+                    case "--endpoint-file" -> endpoint = Path.of(value);
+                    case "--token-file" -> token = Files.readString(Path.of(value)).trim();
+                    case "--allow-origin" -> {
+                        java.net.URI uri = java.net.URI.create(value);
+                        if (!Set.of("http", "https").contains(uri.getScheme()) || uri.getHost() == null
+                                || uri.getRawUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null
+                                || !uri.getRawPath().isEmpty())
+                            throw new IllegalArgumentException("允许来源必须是完整的 HTTP 或 HTTPS Origin");
+                        origins.add(value);
+                    }
+                    default -> throw new IllegalArgumentException("未知启动参数");
                 }
-                default -> throw new IllegalArgumentException("未知启动参数：" + key);
+            } catch (IllegalArgumentException e) {
+                // 参数名已经过白名单校验；解析异常可能包含密码、令牌或 URL 原文。
+                throw new IllegalArgumentException("启动参数无效：" + key);
             }
         }
         if (port < 0 || port > 65535) throw new IllegalArgumentException("管理端口无效");

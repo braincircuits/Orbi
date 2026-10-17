@@ -27,7 +27,7 @@ func startForwarding(engine string, ctx context.Context, dialer localDialer, tun
 	case "tun2socks":
 		return startTun2socks(ctx, dialer, tun)
 	default:
-		return nil, nil, fmt.Errorf("TUN 转发组件无效：%s", engine)
+		return nil, nil, fmt.Errorf("TUN 转发组件无效")
 	}
 }
 

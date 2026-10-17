@@ -38,7 +38,13 @@ public final class ProxyConfig {
     }
 
     public int integer(String name, int fallback, int min, int max) {
-        int value = Integer.parseInt(get(name, Integer.toString(fallback)));
+        final int value;
+        try {
+            value = Integer.parseInt(get(name, Integer.toString(fallback)));
+        } catch (NumberFormatException e) {
+            // 数值解析异常会回显输入；只报告字段名，不保留原值或异常链。
+            throw new IllegalArgumentException("配置无效：" + name);
+        }
         if (value < min || value > max) throw new IllegalArgumentException("配置无效：" + name);
         return value;
     }

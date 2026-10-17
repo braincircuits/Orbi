@@ -51,38 +51,41 @@ func loadControl(path string, uid int) (*controlClient, error) {
 	if err != nil || address.Scheme != "http" || address.Hostname() != "127.0.0.1" || address.Port() == "" || address.User != nil || address.RawQuery != "" || address.Fragment != "" || (address.Path != "" && address.Path != "/") || config.Version != 1 || len(config.Token) < 32 {
 		return nil, fmt.Errorf("只允许访问本机 API v1 内核")
 	}
-	return &controlClient{base: "http://" + address.Host, token: config.Token, client: &http.Client{Timeout: 4 * time.Second, Transport: &http.Transport{Proxy: nil}}}, nil
+	return &controlClient{base: "http://" + address.Host, token: config.Token, client: &http.Client{
+		Timeout: 4 * time.Second, Transport: &http.Transport{Proxy: nil},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}, nil
 }
 func (c *controlClient) call(path string, body any, result any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
-		return err
+		return fmt.Errorf("内核请求数据格式无效")
 	}
 	request, err := http.NewRequest(http.MethodPost, c.base+"/api/v1/tun/"+path, bytes.NewReader(data))
 	if err != nil {
-		return err
+		return fmt.Errorf("内核请求地址无效")
 	}
 	request.Header.Set("Authorization", "Bearer "+c.token)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := c.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("访问内核失败：%w", err)
+		return fmt.Errorf("访问内核失败，请检查本机管理接口")
 	}
 	defer response.Body.Close()
+	// 原始响应和解析错误可能带有认证信息，仅记录可信的数值状态码。
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("内核拒绝虚拟网卡操作（HTTP %d）", response.StatusCode)
+	}
 	var envelope struct {
-		Data  json.RawMessage `json:"data"`
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&envelope); err != nil {
-		return err
-	}
-	if response.StatusCode != 200 {
-		return fmt.Errorf("内核拒绝虚拟网卡操作：%s", envelope.Error.Message)
+		return fmt.Errorf("内核响应格式无效")
 	}
 	if result != nil {
-		return json.Unmarshal(envelope.Data, result)
+		if err = json.Unmarshal(envelope.Data, result); err != nil {
+			return fmt.Errorf("内核响应字段无效")
+		}
 	}
 	return nil
 }

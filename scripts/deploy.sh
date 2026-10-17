@@ -18,7 +18,7 @@ while [ "$#" -gt 0 ]; do
             printf '%s\n' '用法：bash scripts/deploy.sh [--config 配置文件] [--dry-run]' \
                 '默认读取项目根目录 deploy.local.properties；--dry-run 只预览，不连接服务器。'
             exit 0 ;;
-        *) fail "未知参数：$1" ;;
+        *) fail '包含不支持的部署参数，请检查命令选项' ;;
     esac
 done
 
@@ -73,7 +73,7 @@ while IFS= read -r line || [ -n "$line" ]; do
                 fail "命令编号必须是 1 至 999999999 的整数，不带前导零：$key"
             [ -n "$value" ] || fail "$key 不能为空"
             # 每条命令必须语法完整，避免未闭合引号吞掉下一条命令。
-            bash -n -c "$value" || fail "$key 的 Bash 语法无效"
+            bash -n -c "$value" 2>/dev/null || fail "$key 的 Bash 语法无效"
             numbers+=("$number"); commands+=("$value") ;;
         *) fail "未知配置项：$key" ;;
     esac
@@ -120,7 +120,7 @@ log "上传文件：$local_file"
 log "目标文件：${remote_dir%/}/$remote_name"
 if [ "$dry_run" = true ]; then
     for ((i=0; i<${#commands[@]}; i++)); do
-        log "command.${numbers[i]}：${commands[i]}"
+        log "command.${numbers[i]}：已配置（命令可能含凭据，内容不输出）"
     done
     log '预览完成，未连接服务器。'
     exit 0
@@ -192,7 +192,7 @@ REMOTE
     done
     printf '%s\n' 'printf "%s\n" "[部署] 所有远程命令执行成功。"'
 )
-bash -n -c "$remote_script" || fail '生成的远程脚本语法检查失败'
+bash -n -c "$remote_script" 2>/dev/null || fail '生成的远程脚本语法检查失败'
 log '连接服务器并上传；远程输出如下。'
 if SSH_ASKPASS_REQUIRE=never ssh "${ssh_args[@]}" "$host" "bash -c $(quote "$remote_script")" < "$local_file"; then
     log '部署完成。'

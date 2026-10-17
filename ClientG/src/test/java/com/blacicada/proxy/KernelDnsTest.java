@@ -31,6 +31,24 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(20)
 class KernelDnsTest {
+    @Test
+    void systemDnsProviderExceptionsDoNotEnterLogsVerbatim() throws Exception {
+        var group = OutboundNetwork.DEFAULT.newGroup();
+        try (var events = new ControlEvents(); var logs = new ControlLogs(events, text -> text)) {
+            var loop = group.next();
+            var dns = new KernelDns(OutboundNetwork.DEFAULT, null, name -> {
+                throw new IllegalStateException("Bearer unregistered-token-secret");
+            }, 100, System::nanoTime);
+            var answer = loop.submit(() -> dns.query(loop, query("failure.example", 1, 1), true)).sync().getNow();
+            assertEquals(2, answer.sync().getNow()[3] & 15);
+            String message = awaitLog(events, KernelDns.class.getName(), "读取系统 DNS 失败");
+            assertTrue(message.contains("IllegalStateException"));
+            assertFalse(message.contains("unregistered-token-secret"));
+        } finally {
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
+        }
+    }
+
     static String awaitLog(ControlEvents events, String logger, String text) throws Exception {
         long cursor = 0, deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
         while (System.nanoTime() < deadline) {

@@ -42,7 +42,7 @@ public final class ProxyHelloReceiver {
             char[] buffer = new char[1024];
             int count;
             while ((count = input.read(buffer)) != -1) {
-                System.out.printf("收到 [%s]：%s%n", peer, new String(buffer, 0, count));
+                System.out.printf("收到 [%s]：%d 个字符%n", peer, count);
                 output.write(buffer, 0, count);
                 output.flush();
             }

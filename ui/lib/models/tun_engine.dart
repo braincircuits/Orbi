@@ -7,6 +7,6 @@ enum TunEngine {
 
   static TunEngine parse(String value) => values.firstWhere(
     (engine) => engine.name == value,
-    orElse: () => throw FormatException('TUN 转发组件无效：$value'),
+    orElse: () => throw const FormatException('TUN 转发组件无效'),
   );
 }

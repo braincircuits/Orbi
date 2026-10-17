@@ -220,7 +220,7 @@ final class KernelDns {
                 if (!address.isUnresolved() && !upstreams.contains(address)) upstreams.add(address);
             }
         } catch (RuntimeException e) {
-            LogManager.getLogger(KernelDns.class).warn("读取系统 DNS 失败：{}", e.toString());
+            LogManager.getLogger(KernelDns.class).warn("读取系统 DNS 失败：{}", e.getClass().getSimpleName());
         }
         if (!proxy && upstreams.isEmpty()) return loop.newSucceededFuture(DnsMessage.failure(bytes, 2));
         // 只缓存无附加选项的标准查询，避免跨请求复用 EDNS Cookie、签名等状态。
@@ -373,7 +373,7 @@ final class KernelDns {
                 }
                 opening = null;
                 if (!done.isSuccess()) {
-                    failed(attempt, "建立连接失败：" + done.cause());
+                    failed(attempt, "建立连接失败：" + ProxySession.failureDescription(done.cause()));
                     return;
                 }
                 Channel upstream = request.getNow();
@@ -406,11 +406,12 @@ final class KernelDns {
 
                     @Override
                     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-                        failed(attempt, "DNS 通道异常：" + cause);
+                        failed(attempt, "DNS 通道异常：" + cause.getClass().getSimpleName());
                     }
                 });
                 upstream.writeAndFlush(Unpooled.wrappedBuffer(outgoing)).addListener(sent -> {
-                    if (!sent.isSuccess()) failed(attempt, "发送 DNS 查询失败：" + sent.cause());
+                    if (!sent.isSuccess())
+                        failed(attempt, "发送 DNS 查询失败：" + sent.cause().getClass().getSimpleName());
                 });
                 upstream.read();
             });

@@ -253,7 +253,7 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
         if (channel == null) {
             if (error != null) LogManager.getLogger(LocalRequestHandler.class).warn(
                     "目标连接失败：目标={}，原始协议={}，路由={}，原因={}",
-                    requestTarget, udp ? "UDP" : "TCP", direct ? "直连" : "代理", error.toString());
+                    requestTarget, udp ? "UDP" : "TCP", direct ? "直连" : "代理", ProxySession.failureDescription(error));
             fail(ctx, HttpResponseStatus.BAD_GATEWAY);
             return;
         }

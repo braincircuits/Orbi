@@ -59,7 +59,7 @@ class DnsRoutingIntegrationTest {
             values.setProperty("maxStreams", Integer.toString(maxStreams));
             DnsServerAddressStreamProvider remoteDns = name -> {
                 remoteNames.add(name);
-                if (unavailable) throw new IllegalStateException("测试服务端 DNS 不可用");
+                if (unavailable) throw new IllegalStateException("测试服务端 DNS 不可用：Bearer unregistered-upstream-token");
                 return (firstRemote == null ? DnsServerAddresses.singleton(remote.address())
                         : DnsServerAddresses.sequential(firstRemote, remote.address())).stream();
             };
@@ -282,9 +282,12 @@ class DnsRoutingIntegrationTest {
                 if (wrongPassword) assertTrue(f.remoteNames.isEmpty(), "认证失败不能选择或访问服务端 DNS");
                 else {
                     String logger = protocol.equals("http2") ? "com.blacicada.h2.H2ServerConnectHandler" : "com.blacicada.h3.ServerConnectHandler";
-                    String message = awaitLog(events, logger, "测试服务端 DNS 不可用");
+                    String message = awaitLog(events, logger, "原因=IllegalStateException");
                     assertTrue(message.contains("failed.example"));
                     assertTrue(message.contains("serverIndex=0"));
+                    assertTrue(message.contains("状态=502"));
+                    assertFalse(message.contains("测试服务端 DNS 不可用"), "服务端日志不能回显上游异常原文");
+                    assertFalse(message.contains("unregistered-upstream-token"));
                 }
             }
     }

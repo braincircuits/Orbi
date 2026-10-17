@@ -51,7 +51,7 @@ def main():
                 assert status.returncode == 0, status.stderr
                 result = subprocess.run([str(helper), "--client", "--control-file", str(endpoint), "--ticket", "0" * 36,
                                          "--owner-pid", str(os.getpid())], capture_output=True, text=True, timeout=15)
-                assert result.returncode != 0 and "验证用启动标识已撤销" in result.stderr, result.stderr
+                assert result.returncode != 0 and "HTTP 409" in result.stderr, result.stderr
                 print(f"第 {index + 1} 次无提权启动通过：系统服务运行会话进程，并在失效启动标识处停止。")
             assert requests == ["/api/v1/tun/prepare"] * 2, "验证流程不应执行路由接管"
             print("系统文件权限、组件一致性及重复使用均验证通过；未创建虚拟网卡或修改路由。")

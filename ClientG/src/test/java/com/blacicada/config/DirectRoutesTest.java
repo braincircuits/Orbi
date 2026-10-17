@@ -13,6 +13,19 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class DirectRoutesTest {
     @Test
+    void invalidRulesReportPositionWithoutEchoingCredentialsOrCauses() {
+        for (String rule : new String[]{"https://user:password-secret@example.com/?token=token-secret", "10.0.0.0/999999999999999999999999"}) {
+            var failure = assertThrows(IOException.class, () -> new DirectRoutes("# 说明\n" + rule));
+            var stack = new java.io.StringWriter();
+            failure.printStackTrace(new java.io.PrintWriter(stack));
+            assertTrue(failure.getMessage().contains("直连规则:2:"));
+            assertFalse(stack.toString().contains(rule));
+            assertFalse(stack.toString().contains("password-secret"));
+            assertFalse(stack.toString().contains("token-secret"));
+        }
+    }
+
+    @Test
     void mergeKeepsCommentsAndDeduplicatesEquivalentDomainsAndNetworks() throws Exception {
         String merged = DirectRoutes.mergeText("# 原规则\nExample.COM # 旧备注\n192.168.1.99/24\n::1",
                 "example.com. # 新备注\n192.168.1.0/24\n0:0:0:0:0:0:0:1\nother.test # 新目标");

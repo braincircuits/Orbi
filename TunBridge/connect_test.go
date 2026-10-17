@@ -8,12 +8,37 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"golang.getoutline.org/sdk/network/packetrelay"
 )
+
+func TestMalformedConnectResponseDoesNotEchoCredentials(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	const secret = "response-password-secret"
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		http.ReadRequest(bufio.NewReader(conn))
+		io.WriteString(conn, "HTTP/1.1 "+secret+"\r\n\r\n")
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = (localDialer{proxy: listener.Addr().String()}).DialStream(ctx, "example.test:443")
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("无效响应应只返回固定错误，不包含凭据：%v", err)
+	}
+}
 
 // 本机假内核按实际 CONNECT 线协议回显，不需要管理员权限或公网服务。
 func echoKernel(t *testing.T) (localDialer, <-chan string) {

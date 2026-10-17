@@ -1,13 +1,22 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
 	lwip "github.com/eycorsican/go-tun2socks/core"
 )
+
+func TestInvalidEngineDoesNotEchoInput(t *testing.T) {
+	_, _, err := startForwarding("unregistered-engine-secret", context.Background(), localDialer{}, packetTestIO{})
+	if err == nil || strings.Contains(err.Error(), "unregistered-engine-secret") {
+		t.Fatalf("组件错误不应回显任意输入：%v", err)
+	}
+}
 
 type packetTestIO struct {
 	io.Reader

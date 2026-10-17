@@ -90,7 +90,7 @@ func (d localDialer) connect(ctx context.Context, target string, udp bool) (tran
 	}
 	response, err := http.ReadResponse(bufio.NewReader(strings.NewReader(responseHeader.String())), &http.Request{Method: "CONNECT"})
 	if err != nil {
-		return nil, fmt.Errorf("CONNECT 响应无效：%w", err)
+		return nil, fmt.Errorf("CONNECT 响应格式无效")
 	}
 	if response.StatusCode != 200 {
 		return nil, fmt.Errorf("CONNECT 失败：%d", response.StatusCode)

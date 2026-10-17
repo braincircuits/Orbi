@@ -108,7 +108,7 @@ public final class DirectRoutes {
                         }
                     }
                 } catch (IllegalArgumentException e) {
-                    throw new IOException("直连规则无效，位置：" + source + ":" + lineNumber + ": " + rule, e);
+                    throw new IOException("直连规则无效，位置：" + source + ":" + lineNumber + ": 请填写有效域名、IP 或 CIDR 网段");
                 }
             }
         }
@@ -125,7 +125,7 @@ public final class DirectRoutes {
                     throw new IllegalArgumentException("目标规则应为 proxy/direct 域名或IP");
                 targetRules.put(normalizeHost(fields[1]), fields[0]);
             } catch (IllegalArgumentException e) {
-                throw new IOException("目标路由规则无效，位置：routesOverrides:" + lineNumber, e);
+                throw new IOException("目标路由规则无效，位置：routesOverrides:" + lineNumber);
             }
         }
         overrides = Map.copyOf(targetRules);
