@@ -36,6 +36,28 @@ Future<void> until(bool Function() condition) async {
   throw StateError('等待内核事件超时');
 }
 
+/// 直接查询真实 SQLite 文件，验证内核已提交密码，不争用内核的实例锁。
+Future<void> expectPersistedPassword(
+  String java,
+  String jar,
+  String database,
+  String password,
+) async {
+  final result = await Process.run(java, [
+    '--enable-native-access=ALL-UNNAMED',
+    '-cp',
+    jar,
+    File('test/fixtures/KernelPersistenceProbe.java').absolute.path,
+    database,
+    password,
+  ]);
+  expect(
+    result.exitCode,
+    0,
+    reason: '数据库密码持久化验证失败：${result.stdout}\n${result.stderr}',
+  );
+}
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   final jar = Platform.environment['UI_TEST_JAR'];
@@ -295,11 +317,10 @@ void main() {
         await model.apply();
         expect(messages.where((message) => message.failure), isEmpty);
 
-        final saved = jsonDecode(
-          await File(model.proxy.configPath).readAsString(),
-        ) as Map;
-        expect(
-          saved['connections'][0]['config']['password'],
+        await expectPersistedPassword(
+          java,
+          jar,
+          model.proxy.configPath,
           'apply-save-test-password',
         );
         await other.connect(model.draftProfile(), '', launch: false);
@@ -375,7 +396,7 @@ void main() {
         await until(
           () => controller.logs.any(
             (entry) =>
-                entry.level == 'WARN' && entry.message.contains('代理连接失败'),
+                entry.level == 'WARN' && entry.message.contains('目标连接失败'),
           ),
         );
         controller.dispose();
@@ -384,7 +405,7 @@ void main() {
         await until(
           () => controller.logs.any(
             (entry) =>
-                entry.level == 'WARN' && entry.message.contains('代理连接失败'),
+                entry.level == 'WARN' && entry.message.contains('目标连接失败'),
           ),
         );
         expect(
@@ -467,9 +488,12 @@ void main() {
         expect(controller.appliedProfile!.selected.hasPassword, isTrue);
         expect(controller.appliedProfile!.selected.values['password'], isEmpty);
 
-        final saved =
-            jsonDecode(await File(controller.configPath).readAsString()) as Map;
-        expect(saved['connections'][0]['config']['password'], 'test-password');
+        await expectPersistedPassword(
+          java,
+          jar,
+          controller.configPath,
+          'test-password',
+        );
         expect((await File(controller.configPath).stat()).mode & 0x1ff, 0x180);
         expect((await controller.endpointFile.stat()).mode & 0x1ff, 0x180);
         other = ProxyController(directory: directory);

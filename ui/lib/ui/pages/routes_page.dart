@@ -99,6 +99,8 @@ class _RoutesPageState extends State<RoutesPage> {
         return;
       }
       if (!await model.validateRuleDraft(host) || !mounted) return;
+      // 键盘仍可取消或修改表单，旧校验结果不能覆盖后续编辑。
+      if (!_editing || _host.text.trim() != host) return;
       // 校验期间外部配置可能更新，不能将旧行号应用到新的文本。
       if (model.rules.text != _editSource) {
         setState(() => _formError = '规则草稿已变化，请取消后重新编辑');

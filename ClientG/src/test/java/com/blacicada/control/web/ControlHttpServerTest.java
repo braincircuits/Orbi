@@ -739,6 +739,16 @@ class ControlHttpServerTest {
     }
 
     @Test
+    void passwordRotationWithSharedPrefixesDoesNotExposeSecretSuffixes() throws Exception {
+        addProfile("a", "http2", 4433, false);
+        ok("PATCH", "/profiles/a", "{\"config\":{\"password\":\"test-secret-new-token\"}}", 200);
+        assertEquals("当前=***，历史=***", control.redact("当前=test-secret-new-token，历史=test-secret"));
+        // 再改为短密码，也不能使历史长密码只遮住前缀。
+        ok("PATCH", "/profiles/a", "{\"config\":{\"password\":\"test\"}}", 200);
+        assertEquals("当前=***，历史=***，更早=***", control.redact("当前=test，历史=test-secret-new-token，更早=test-secret"));
+    }
+
+    @Test
     void eventDisconnectDoesNotStopProxyAndLogsAreRedactedAndPaged() throws Exception {
         addProfile("a", "http2", 4433, false);
         ok("PATCH", "/settings", "{\"port\":0}", 200);

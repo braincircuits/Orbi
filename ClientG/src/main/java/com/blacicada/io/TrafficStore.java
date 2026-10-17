@@ -71,6 +71,15 @@ final class TrafficStore {
         return Instant.ofEpochMilli(time).atZone(zone).truncatedTo(ChronoUnit.HOURS);
     }
 
+    private static ZonedDateTime nextHour(ZonedDateTime start) {
+        var candidate = start.plusHours(1);
+        var floor = candidate.truncatedTo(ChronoUnit.HOURS);
+        // 半小时夏令时可能使自然小时长达 90 分钟，或缩短到 30 分钟。
+        // 整小时回拨仍保留两个 offset 不同的同名小时。
+        if (floor.toInstant().isAfter(start.toInstant())) return floor;
+        return candidate.toLocalDateTime().truncatedTo(ChronoUnit.HOURS).plusHours(1).atZone(start.getZone());
+    }
+
     private static long number(Map<String, Object> value, String key) {
         return ((Number) value.get(key)).longValue();
     }
@@ -93,7 +102,7 @@ final class TrafficStore {
         JsonObject sessions = new JsonObject();
         long totalSent = 0, totalReceived = 0, totalDuration = 0;
         var start = hour(time, zone);
-        long hourStart = start.toInstant().toEpochMilli(), hourEnd = start.plusHours(1).toInstant().toEpochMilli();
+        long hourStart = start.toInstant().toEpochMilli(), hourEnd = nextHour(start).toInstant().toEpochMilli();
         try (var query = connection.prepareStatement("SELECT * FROM traffic_minutes WHERE minute_start=?")) {
             query.setLong(1, time);
             try (var row = query.executeQuery()) {
@@ -179,7 +188,7 @@ final class TrafficStore {
     Map<String, Object> series(long now, ZoneId zone, boolean hourly) throws SQLException {
         var endHour = hour(now, zone);
         long end = hourly ? endHour.toInstant().toEpochMilli() : Math.floorDiv(now, 60000) * 60000 + 60000;
-        long start = hourly ? endHour.minusMonths(1).toInstant().toEpochMilli() : end - 86400000L;
+        long start = hourly ? hour(endHour.minusMonths(1).toInstant().toEpochMilli(), zone).toInstant().toEpochMilli() : end - 86400000L;
         String column = hourly ? "hour_start" : "minute_start", table = hourly ? "traffic_hours" : "traffic_minutes";
         var stored = new HashMap<Long, long[]>();
         try (var query = connection.prepareStatement("SELECT " + column + ",sent_bytes,received_bytes FROM " + table + " WHERE " + column + ">=? AND " + column + "<? ORDER BY " + column)) {
@@ -192,7 +201,7 @@ final class TrafficStore {
         var buckets = new ArrayList<Map<String, Object>>();
         long sent = 0, received = 0, count = 0;
         for (long time = start; time < end; ) {
-            long next = Math.min(end, time + (hourly ? 3600000L : 60000L));
+            long next = Math.min(end, hourly ? nextHour(hour(time, zone)).toInstant().toEpochMilli() : time + 60000L);
             var value = stored.get(time);
             long up = value == null ? 0 : value[0], down = value == null ? 0 : value[1];
             if (value != null) count++;

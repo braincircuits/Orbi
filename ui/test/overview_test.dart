@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:network_ui/models/proxy_profile.dart';
+import 'package:network_ui/models/database_settings.dart';
 import 'package:network_ui/services/kernel_api_client.dart';
 import 'package:network_ui/services/proxy_controller.dart';
 import 'package:network_ui/ui/desktop_theme.dart';
@@ -176,9 +177,49 @@ class OverviewApi extends KernelApiClient {
   };
 }
 
-Future<(Directory, OverviewApi, ProxyController)> fixture() async {
+class DelayedConfigurationApi extends OverviewApi {
+  Completer<Map<String, dynamic>>? configurationGate;
+  Completer<void>? configurationStarted;
+  Completer<Map<String, dynamic>>? writeGate;
+  Completer<void>? writeStarted;
+
+  @override
+  Future<Map<String, dynamic>> request(
+    Uri base,
+    String token,
+    String method,
+    String path, {
+    Object? body,
+    int? expectedRevision,
+  }) {
+    final writing = writeGate;
+    if (path == 'config' && method == 'PUT' && writing != null) {
+      writeGate = null;
+      writeStarted?.complete();
+      return writing.future;
+    }
+    final gate = configurationGate;
+    if (path == 'config' && method == 'GET' && gate != null) {
+      configurationGate = null;
+      configurationStarted?.complete();
+      return gate.future;
+    }
+    return super.request(
+      base,
+      token,
+      method,
+      path,
+      body: body,
+      expectedRevision: expectedRevision,
+    );
+  }
+}
+
+Future<(Directory, OverviewApi, ProxyController)> fixture({
+  OverviewApi? client,
+}) async {
   final directory = await Directory.systemTemp.createTemp('overview-api-');
-  final api = OverviewApi();
+  final api = client ?? OverviewApi();
   final proxy = ProxyController(directory: directory, api: api);
   await proxy.endpointFile.parent.create(recursive: true);
   await proxy.endpointFile.writeAsString(
@@ -195,6 +236,157 @@ Future<(Directory, OverviewApi, ProxyController)> fixture() async {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('配置提交迟到响应不能覆盖忙碌期间同步的新版本快照', () async {
+    final api = DelayedConfigurationApi();
+    final (directory, _, proxy) = await fixture(client: api);
+    final profile = ProxyProfile.fromKernel(
+      proxy.appliedProfile!.runtimeConfiguration,
+    )..routingMode = 'direct';
+    final submitted = profile.runtimeConfiguration;
+    final gate = Completer<Map<String, dynamic>>();
+    api.writeGate = gate;
+    api.writeStarted = Completer<void>();
+    try {
+      final pending = proxy.apply(profile, '', expectedRevision: 1);
+      await api.writeStarted!.future;
+      expect(proxy.busy, isTrue);
+      api.revision = 3;
+      api.mode = 'rules';
+      // SSE 读取配置不经过命令忙碌检查，能够先同步另一次外部写入。
+      await proxy.refreshConfiguration();
+      expect(proxy.configurationRevision, 3);
+      expect(proxy.appliedProfile!.routingMode, 'rules');
+      gate.complete({'revision': 2, 'data': submitted});
+      expect(await pending, 2, reason: '命令仍应返回本次实际提交的版本');
+      expect(proxy.revision, 3);
+      expect(proxy.configurationRevision, 3);
+      expect(proxy.appliedProfile!.routingMode, 'rules');
+      expect(proxy.configurationChanged, isFalse);
+      expect(proxy.busy, isFalse);
+    } finally {
+      proxy.dispose();
+      await directory.delete(recursive: true);
+    }
+  });
+
+  test('并发配置刷新丢弃迟到的旧版本，保持最新快照和写入版本', () async {
+    final api = DelayedConfigurationApi();
+    final (directory, _, proxy) = await fixture(client: api);
+    final oldConfiguration = api.configuration;
+    final gate = Completer<Map<String, dynamic>>();
+    api.configurationGate = gate;
+    api.configurationStarted = Completer<void>();
+    try {
+      final previous = proxy.refreshConfiguration();
+      await api.configurationStarted!.future;
+      api.revision = 2;
+      api.mode = 'direct';
+      await proxy.refreshConfiguration();
+      expect(proxy.appliedProfile!.routingMode, 'direct');
+      gate.complete({'revision': 1, 'data': oldConfiguration});
+      await previous;
+      expect(proxy.revision, 2);
+      expect(proxy.configurationRevision, 2);
+      expect(proxy.appliedProfile!.routingMode, 'direct');
+      expect(proxy.configurationChanged, isFalse);
+    } finally {
+      proxy.dispose();
+      await directory.delete(recursive: true);
+    }
+  });
+
+  for (final unauthorized in [false, true]) {
+    test('更换内核后丢弃旧配置请求${unauthorized ? '的鉴权错误' : '的高版本响应'}', () async {
+      final api = DelayedConfigurationApi()..revision = 10;
+      final (directory, _, proxy) = await fixture(client: api);
+      final oldConfiguration = api.configuration;
+      final gate = Completer<Map<String, dynamic>>();
+      api.configurationGate = gate;
+      api.configurationStarted = Completer<void>();
+      try {
+        final previous = proxy.refreshConfiguration();
+        final rejected = expectLater(
+          previous,
+          throwsA(
+            isA<KernelApiException>().having(
+              (error) => error.code,
+              'code',
+              'KERNEL_RESTARTED',
+            ),
+          ),
+        );
+        await api.configurationStarted!.future;
+        await proxy.endpointFile.writeAsString(
+          jsonEncode({
+            'url': 'http://127.0.0.1:23456',
+            'token': 'new-kernel-token-00000000000000000000000000',
+            'apiVersion': 1,
+          }),
+        );
+        api.revision = 0;
+        api.mode = 'direct';
+        await proxy.attach();
+        await proxy.refreshConfiguration();
+        if (unauthorized) {
+          gate.completeError(
+            KernelApiException('UNAUTHORIZED', '旧令牌已失效', statusCode: 401),
+          );
+        } else {
+          gate.complete({'revision': 10, 'data': oldConfiguration});
+        }
+        await rejected;
+        expect(proxy.connected, isTrue);
+        expect(proxy.revision, 0);
+        expect(proxy.configurationRevision, 0);
+        expect(proxy.appliedProfile!.routingMode, 'direct');
+        expect(proxy.configurationChanged, isFalse);
+      } finally {
+        proxy.dispose();
+        await directory.delete(recursive: true);
+      }
+    });
+  }
+
+  test('日志完整遮盖互为前缀的代理密码、管理令牌和数据库密码', () async {
+    final (directory, _, proxy) = await fixture();
+    const token = 'test-token-00000000000000000000000000';
+    const password = 'proxy-prefix-long-password';
+    const databasePassword = 'database-prefix-password';
+    final profile = ProxyProfile(
+      connections: [
+        for (final (index, secret) in [
+          'proxy-prefix',
+          password,
+          'test-token-0000',
+          'database-prefix',
+        ].indexed)
+          ConnectionProfile(
+            id: 'node-$index',
+            name: '测试连接 $index',
+            config: {'password': secret},
+          ),
+      ],
+    );
+    try {
+      await proxy.databases.write(
+        directory,
+        const DatabaseSettings(
+          type: 'postgresql',
+          username: 'test',
+          password: databasePassword,
+        ),
+      );
+      await proxy.connect(profile, '', launch: false);
+      await proxy.validateConfiguration(profile);
+      proxy.addLog('ERROR $password | $token | $databasePassword');
+      expect(proxy.logs.last.message, '*** | *** | ***');
+      expect(proxy.logs.last.level, 'ERROR');
+    } finally {
+      proxy.dispose();
+      await directory.delete(recursive: true);
+    }
+  });
+
   test('概览结果按模式代次隔离，迟到响应不能恢复旧出口', () async {
     final (directory, api, proxy) = await fixture();
     try {

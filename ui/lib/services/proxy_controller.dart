@@ -171,12 +171,16 @@ class ProxyController extends ChangeNotifier {
   }
 
   String redact(String text) {
-    for (final secret in _secrets) {
+    final secrets =
+        {
+            ..._secrets,
+            _token,
+            databaseSettings.password,
+          }.where((secret) => secret.isNotEmpty).toList()
+          ..sort((first, second) => second.length.compareTo(first.length));
+    // 合并所有凭据后优先遮盖长值，避免短密码先替换前缀而泄露后缀。
+    for (final secret in secrets) {
       text = text.replaceAll(secret, '***');
-    }
-    if (_token.isNotEmpty) text = text.replaceAll(_token, '***');
-    if (databaseSettings.password.isNotEmpty) {
-      text = text.replaceAll(databaseSettings.password, '***');
     }
     return text;
   }
@@ -271,18 +275,31 @@ class ProxyController extends ChangeNotifier {
     if (expectedRevision != null && _instanceChanged) {
       throw KernelApiException('KERNEL_RESTARTED', '内核已重启，请等待配置同步后重新操作');
     }
+    final base = _base!;
+    final token = _token;
+    void checkInstance() {
+      if (_base != base || _token != token) {
+        throw KernelApiException(
+          'KERNEL_RESTARTED',
+          '内核已重启，已忽略旧内核的请求结果，请重新读取配置',
+        );
+      }
+    }
+
     try {
       final result = await _api.request(
-        _base!,
-        _token,
+        base,
+        token,
         method,
         path,
         body: body,
         expectedRevision: expectedRevision,
       );
+      checkInstance();
       _metadata(result);
       return result;
     } on KernelApiException catch (error) {
+      checkInstance();
       if (error.code == 'REVISION_CONFLICT') configurationChanged = true;
       if (error.statusCode == 401) connected = false;
       rethrow;
@@ -524,6 +541,16 @@ class ProxyController extends ChangeNotifier {
 
   Future<void> refreshConfiguration() async {
     final result = await _request('GET', 'config');
+    _acceptConfiguration(result);
+    _notify();
+  }
+
+  void _acceptConfiguration(Map<String, dynamic> result) {
+    // 配置读取和提交响应都可能迟到，不能覆盖已从 SSE 同步的新版本。
+    if (!_instanceChanged &&
+        (result['revision'] as int) < configurationRevision) {
+      return;
+    }
     appliedProfile = ProxyProfile.fromKernel(
       Map<String, dynamic>.from(result['data'] as Map<String, dynamic>),
       javaPath: _javaPath,
@@ -531,9 +558,7 @@ class ProxyController extends ChangeNotifier {
     );
     configurationRevision = result['revision'] as int;
     _instanceChanged = false;
-    configurationChanged =
-        _instanceChanged || revision != configurationRevision;
-    _notify();
+    configurationChanged = revision != configurationRevision;
   }
 
   Future<void> refreshLogs() async {
@@ -709,14 +734,7 @@ class ProxyController extends ChangeNotifier {
       body: profile.runtimeConfiguration,
       expectedRevision: expected,
     );
-    appliedProfile = ProxyProfile.fromKernel(
-      Map<String, dynamic>.from(result['data'] as Map<String, dynamic>),
-      javaPath: _javaPath,
-      jarPath: _jarPath,
-    );
-    configurationRevision = result['revision'] as int;
-    configurationChanged =
-        _instanceChanged || revision != configurationRevision;
+    _acceptConfiguration(result);
     _status((await _request('GET', 'status'))['data'] as Map<String, dynamic>);
     return result['revision'] as int;
   }

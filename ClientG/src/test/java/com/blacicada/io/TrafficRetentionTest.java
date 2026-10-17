@@ -99,6 +99,82 @@ class TrafficRetentionTest {
     }
 
     @Test
+    void halfHourBackwardTransitionPreservesCompletedHourBoundariesAndTotals() throws Exception {
+        var zone = ZoneId.of("Australia/Lord_Howe");
+        var file = directory.resolve("half-hour-backward.db");
+        long start = at("2026-04-04T14:00:00Z"), end = at("2026-04-04T15:30:00Z");
+        try (var db = new KernelDatabase(file); var sql = DriverManager.getConnection("jdbc:sqlite:" + file)) {
+            var store = new TrafficStore(sql, StorageConfig.Type.SQLITE);
+            store.write(minute("甲", at("2026-04-04T14:45:00Z"), 10), zone);
+            store.write(minute("甲", at("2026-04-04T15:15:00Z"), 20), zone);
+            store.write(minute("甲", at("2026-04-04T16:05:00Z"), 40), zone);
+            assertEquals(end, number(sql, "SELECT hour_end FROM traffic_minutes WHERE minute_start=" + at("2026-04-04T15:15:00Z")));
+            db.maintainTraffic(end - 1, zone, false);
+            assertEquals(0, number(sql, "SELECT COUNT(*) FROM traffic_hours"), "回拨后的同一自然小时尚未结束，不能提前汇总");
+            db.maintainTraffic(end, zone, false);
+            assertEquals(30, number(sql, "SELECT SUM(sent_bytes) FROM traffic_hours"));
+            db.maintainTraffic(at("2026-04-04T17:00:00Z"), zone, false);
+            var summary = db.trafficSeries(at("2026-04-04T17:00:00Z"), zone, true);
+            assertEquals(70L, summary.get("sentBytes"));
+            assertEquals(140L, summary.get("receivedBytes"));
+            assertHour(summary, start, end, 30);
+            assertHour(summary, end, at("2026-04-04T16:30:00Z"), 40);
+        }
+    }
+
+    @Test
+    void halfHourForwardTransitionPreservesCompletedHourBoundariesAndTotals() throws Exception {
+        var zone = ZoneId.of("Australia/Lord_Howe");
+        var file = directory.resolve("half-hour-forward.db");
+        long start = at("2026-10-03T15:30:00Z"), end = at("2026-10-03T16:00:00Z");
+        try (var db = new KernelDatabase(file); var sql = DriverManager.getConnection("jdbc:sqlite:" + file)) {
+            var store = new TrafficStore(sql, StorageConfig.Type.SQLITE);
+            store.write(minute("甲", at("2026-10-03T14:45:00Z"), 10), zone);
+            store.write(minute("甲", at("2026-10-03T15:45:00Z"), 20), zone);
+            store.write(minute("甲", at("2026-10-03T16:15:00Z"), 40), zone);
+            assertEquals(end, number(sql, "SELECT hour_end FROM traffic_minutes WHERE minute_start=" + at("2026-10-03T15:45:00Z")));
+            db.maintainTraffic(end - 1, zone, false);
+            assertEquals(10, number(sql, "SELECT SUM(sent_bytes) FROM traffic_hours"), "跳时后的半小时桶尚未结束");
+            db.maintainTraffic(end, zone, false);
+            assertEquals(30, number(sql, "SELECT SUM(sent_bytes) FROM traffic_hours"));
+            long now = at("2026-10-03T18:00:00Z");
+            db.maintainTraffic(now, zone, false);
+            var summary = db.trafficSeries(now, zone, true);
+            assertEquals(70L, summary.get("sentBytes"));
+            assertEquals(140L, summary.get("receivedBytes"));
+            assertHour(summary, at("2026-10-03T14:30:00Z"), start, 10);
+            assertHour(summary, start, end, 20);
+            assertHour(summary, end, at("2026-10-03T17:00:00Z"), 40);
+        }
+    }
+
+    @Test
+    void hourlyWindowStartsAtANaturalHourDuringHalfHourForwardTransition() throws Exception {
+        var zone = ZoneId.of("Australia/Lord_Howe");
+        var file = directory.resolve("half-hour-window.db");
+        long start = at("2026-09-03T15:30:00Z"), end = at("2026-09-03T16:30:00Z");
+        long now = at("2026-10-03T15:45:00Z");
+        try (var db = new KernelDatabase(file); var sql = DriverManager.getConnection("jdbc:sqlite:" + file)) {
+            var store = new TrafficStore(sql, StorageConfig.Type.SQLITE);
+            store.write(minute("甲", start, 123), zone);
+            db.maintainTraffic(end, zone, false);
+            var summary = db.trafficSeries(now, zone, true);
+            assertEquals(start, summary.get("from"));
+            assertEquals(123L, summary.get("sentBytes"));
+            assertHour(summary, start, end, 123);
+        }
+    }
+
+    private static void assertHour(Map<String, Object> summary, long start, long end, long sent) {
+        var buckets = (List<?>) summary.get("buckets");
+        var bucket = buckets.stream().map(value -> (Map<?, ?>) value)
+                .filter(value -> Long.valueOf(start).equals(value.get("from"))).findFirst().orElseThrow();
+        assertEquals(end, bucket.get("to"));
+        assertEquals(sent, bucket.get("sentBytes"));
+        assertEquals(sent * 2, bucket.get("receivedBytes"));
+    }
+
+    @Test
     void oldMinuteTableIsRejectedWithoutRewritingUserData() throws Exception {
         var file = directory.resolve("old.db");
         try (var db = new KernelDatabase(file)) {

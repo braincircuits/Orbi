@@ -20,6 +20,7 @@ import 'view_model_test.dart' show TestDesktop, TestKernel;
 
 class RulesKernel extends TestKernel {
   Completer<void>? modeResult;
+  Completer<void>? validationResult;
   bool failMode = false;
   @override
   Future<int> setRoutingMode(String mode, {int? expectedRevision}) async {
@@ -49,6 +50,7 @@ class RulesKernel extends TestKernel {
 
   @override
   Future<void> validateDirectRules(String rules) async {
+    await validationResult?.future;
     if (rules.contains('https://')) {
       throw KernelApiException('INVALID_RULE', '直连规则无效，位置：直连规则:1');
     }
@@ -344,6 +346,59 @@ void main() {
     expect(model.rulesDirty, isFalse);
     expect(tester.takeException(), isNull);
   });
+
+  for (final cancel in [true, false]) {
+    testWidgets('直连规则校验期间${cancel ? '取消' : '修改目标'}后不应用旧表单', (tester) async {
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await mount(tester);
+      final original = model.rules.text;
+      await tester.tap(find.byKey(const ValueKey('add-route')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('route-host')),
+        'old.example',
+      );
+      kernel.validationResult = Completer<void>();
+      await tester.ensureVisible(find.byKey(const ValueKey('save-route')));
+      await tester.tap(find.byKey(const ValueKey('save-route')));
+      await tester.pump();
+      expect(model.showBlockingProgress, isTrue);
+      // 页面遮挡指针时，已启用控件仍可通过键盘获取焦点。
+      final focus = cancel
+          ? Focus.of(tester.element(find.text('取消')))
+          : tester
+                .widget<TextField>(find.byKey(const ValueKey('route-host')))
+                .focusNode!;
+      for (var step = 0; step < 20 && !focus.hasFocus; step++) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.pump();
+      }
+      expect(focus.hasFocus, isTrue);
+      if (cancel) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(find.byKey(const ValueKey('route-host')), findsNothing);
+      } else {
+        tester.testTextInput.enterText('new.example');
+      }
+      await tester.pump();
+      kernel.validationResult!.complete();
+      await tester.pumpAndSettle();
+      expect(model.rules.text, original);
+      expect(kernel.ruleWrites, isEmpty);
+      if (!cancel) {
+        expect(find.byKey(const ValueKey('route-host')), findsOneWidget);
+        kernel.validationResult = null;
+        await tester.ensureVisible(find.byKey(const ValueKey('save-route')));
+        await tester.tap(find.byKey(const ValueKey('save-route')));
+        await tester.pumpAndSettle();
+        expect(model.rules.text, contains('new.example'));
+        expect(model.rules.text, isNot(contains('old.example')));
+      }
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets('导入预览取消不改草稿，追加只进入草稿且保留已有注释', (tester) async {
     addTearDown(tester.view.resetPhysicalSize);

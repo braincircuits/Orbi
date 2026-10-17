@@ -85,7 +85,8 @@ public final class KernelControl implements AutoCloseable {
     private void updateSecrets(KernelConfig next) {
         Set<String> all = new LinkedHashSet<>(secrets);
         for (var p : next.connections()) all.add(p.config().required("password"));
-        secrets = List.copyOf(all);
+        // 长密码先遮盖，避免较短的历史密码先替换前缀后留下新密码后缀。
+        secrets = all.stream().sorted(Comparator.comparingInt(String::length).reversed()).toList();
     }
 
     public synchronized Map<String, Object> info() {
