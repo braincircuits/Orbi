@@ -18,6 +18,31 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class LocalSessionTest {
+    @Test
+    void sharedDnsIpCannotBorrowAnotherDomainsDirectRuleAfterTenMinutes() throws Exception {
+        var now = new java.util.concurrent.atomic.AtomicLong();
+        var dns = new KernelDns(com.blacicada.common.OutboundNetwork.DEFAULT, null, null, 100, now::get);
+        dns.remember(new DnsMessage(KernelDnsTest.answer(KernelDnsTest.query("proxy.example", 1, 1), "192.0.2.10", 1800), true));
+        assertEquals("proxy.example", dns.domain("192.0.2.10"));
+        now.set(java.util.concurrent.TimeUnit.MINUTES.toNanos(10));
+        dns.remember(new DnsMessage(KernelDnsTest.answer(KernelDnsTest.query("direct.example", 1, 2), "192.0.2.10", 600), true));
+        assertNull(dns.domain("192.0.2.10"), "共享 IP 的实际域名无法确定，不能采用最后一次 DNS 查询的域名");
+        var browser = new EmbeddedChannel();
+        try (var resolver = new Resolver()) {
+            var decisions = new ArrayList<InetSocketAddress>();
+            var session = new LocalSession(browser, new Authority("192.0.2.10", 443), dns.domain("192.0.2.10"), resolver, decisions::add);
+            session.apply(new DirectRoutes("direct.example"));
+            assertEquals(1, decisions.size());
+            assertNull(decisions.getFirst(), "代理域名不能因其他直连域名共用 CDN IP 而改变出口");
+        } finally {
+            browser.finishAndReleaseAll();
+        }
+        now.set(java.util.concurrent.TimeUnit.MINUTES.toNanos(20));
+        assertEquals("proxy.example", dns.domain("192.0.2.10"), "冲突域名到期后应保留仍有效的唯一关联");
+        now.set(java.util.concurrent.TimeUnit.MINUTES.toNanos(30));
+        assertNull(dns.domain("192.0.2.10"), "所有关联均按各自 TTL 到期，不能无限延长路由提示");
+    }
+
     private DirectRoutes targetRoutes(String route) throws Exception {
         var values = new java.util.Properties();
         values.setProperty("routesInline", "example.com\n10.0.0.0/8");

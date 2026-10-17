@@ -38,15 +38,13 @@ final class KernelDns {
     private final DnsServerAddressStreamProvider servers;
     private final int timeoutMillis;
     private final LongSupplier clock;
-    private final Map<String, Association> names = new LinkedHashMap<>();
+    private final Map<String, Map<String, Long>> names = new LinkedHashMap<>();
+    private int associationCount;
     private final Map<String, Cached> cache = new LinkedHashMap<>();
     private final SessionRouter session;
     private DirectRoutes routes;
     private final Map<Promise<byte[]>, byte[]> pending = new HashMap<>();
     private int directQueries, proxyQueries;
-
-    private record Association(String domain, long expires) {
-    }
 
     private record Cached(byte[] bytes, DnsMessage message, long created, long expires) {
     }
@@ -90,18 +88,18 @@ final class KernelDns {
     String domain(String ip) {
         if (!NetUtil.isValidIpV4Address(ip) && !NetUtil.isValidIpV6Address(ip)) return null;
         String key = InetAddress.ofLiteral(ip).getHostAddress();
-        Association value = names.get(key);
-        if (value == null) return null;
-        if (clock.getAsLong() - value.expires >= 0) {
-            names.remove(key);
-            return null;
-        }
-        return value.domain;
+        Map<String, Long> values = names.get(key);
+        if (values == null) return null;
+        expireNames(values, clock.getAsLong());
+        if (values.isEmpty()) names.remove(key);
+        // CDN 的共享 IP 不能反推出实际域名，不能借用最后查询域名的直连或精确规则。
+        return values.size() == 1 ? values.keySet().iterator().next() : null;
     }
 
     void remember(DnsMessage response) {
         long now = clock.getAsLong();
-        names.entrySet().removeIf(entry -> now - entry.getValue().expires >= 0);
+        names.values().forEach(values -> expireNames(values, now));
+        names.values().removeIf(Map::isEmpty);
         // 域名关联只接受能用于连接目标的主机名，其他 DNS 记录仍原样转发。
         String domain;
         try {
@@ -110,11 +108,29 @@ final class KernelDns {
             return;
         }
         for (var entry : response.addresses().entrySet()) {
-            names.remove(entry.getKey());
-            if (entry.getValue() > 0) names.put(entry.getKey(), new Association(domain,
-                    now + TimeUnit.SECONDS.toNanos(entry.getValue())));
+            if (entry.getValue() > 0) {
+                var values = names.computeIfAbsent(entry.getKey(), ignored -> new LinkedHashMap<>());
+                if (values.put(domain, now + TimeUnit.SECONDS.toNanos(entry.getValue())) == null) associationCount++;
+            } else {
+                var values = names.get(entry.getKey());
+                if (values != null && values.remove(domain) != null) {
+                    associationCount--;
+                    if (values.isEmpty()) names.remove(entry.getKey());
+                }
+            }
         }
-        trim(names, MAX_NAMES);
+        // 上限按域名与 IP 的关联总数计算，不能让共享 IP 下的域名集合无限增长。
+        while (associationCount > MAX_NAMES) {
+            var oldest = names.entrySet().iterator().next();
+            associationCount -= oldest.getValue().size();
+            names.remove(oldest.getKey());
+        }
+    }
+
+    private void expireNames(Map<String, Long> values, long now) {
+        int previous = values.size();
+        values.entrySet().removeIf(entry -> now - entry.getValue() >= 0);
+        associationCount -= previous - values.size();
     }
 
     private static void trim(Map<?, ?> values, int maximum) {

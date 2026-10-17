@@ -45,7 +45,7 @@ public final class Http2Session implements ProxySession {
     private static final class Capacity {
         long maximum;
         int active;
-        boolean creating, draining;
+        boolean creating, draining, probing;
     }
 
     private final class Request {
@@ -121,7 +121,9 @@ public final class Http2Session implements ProxySession {
                 }
                 r.parent = (Channel) f.getNow();
                 r.waitingSince = r.phaseSince = System.nanoTime();
-                r.timeout = loop.schedule(() -> r.result.tryFailure(timeoutError(r)),
+                r.timeout = loop.schedule(() -> {
+                    if (r.result.tryFailure(timeoutError(r))) checkConnection(r.parent);
+                },
                         config.connectTimeoutMillis(), TimeUnit.MILLISECONDS);
                 drain(r.parent);
             });
@@ -150,6 +152,25 @@ public final class Http2Session implements ProxySession {
     private void phase(Request r, String phase) {
         r.phase = phase;
         r.phaseSince = System.nanoTime();
+    }
+
+    private void checkConnection(Channel parent) {
+        if (closed || parent != connection || !parent.isActive()) return;
+        Capacity capacity = parent.attr(CAPACITY).get();
+        if (capacity == null || capacity.probing || capacity.draining) return;
+        capacity.probing = true;
+        // 目标慢或流额度不足不能证明主连接失效，用不占流额度的 PING 单独确认。
+        measureLatency(parent).addListener(probe -> {
+            capacity.probing = false;
+            if (probe.isSuccess() || !(probe.cause() instanceof java.util.concurrent.TimeoutException)
+                    || closed || connection != parent || !parent.isActive()) return;
+            LOG.warn("请求超时后 HTTP/2 PING 仍无响应，关闭连接供后续请求重连：服务端={}，连接 ID={}",
+                    server, parent.id().asShortText());
+            connection = null;
+            state = "failed";
+            error = "服务端连接无响应，后续请求将重新连接";
+            parent.close();
+        });
     }
 
     private void drain(Channel parent) {
@@ -413,32 +434,45 @@ public final class Http2Session implements ProxySession {
                 result.tryFailure(ready.cause());
                 return;
             }
-            Channel channel = (Channel) ready.getNow();
-            long started = System.nanoTime();
-            var handler = new ChannelInboundHandlerAdapter() {
-                @Override
-                public void channelRead(ChannelHandlerContext ctx, Object message) {
-                    if (message instanceof Http2PingFrame ping && ping.ack() && ping.content() == started) {
-                        result.trySuccess((System.nanoTime() - started) / 1_000_000.0);
-                    } else ctx.fireChannelRead(message);
-                }
-
-                @Override
-                public void channelInactive(ChannelHandlerContext ctx) {
-                    result.tryFailure(new IOException("测量期间服务端连接已关闭"));
-                    ctx.fireChannelInactive();
-                }
-            };
-            channel.pipeline().addLast(handler);
-            var timeout = loop.schedule(() -> result.tryFailure(new java.util.concurrent.TimeoutException("连接延迟检测超时")), 5, TimeUnit.SECONDS);
+            Future<Double> measurement = measureLatency((Channel) ready.getNow());
             result.addListener(done -> {
-                timeout.cancel(false);
-                if (channel.pipeline().context(handler) != null) channel.pipeline().remove(handler);
+                if (done.isCancelled()) measurement.cancel(false);
             });
-            channel.writeAndFlush(new DefaultHttp2PingFrame(started)).addListener(sent -> {
-                if (!sent.isSuccess()) result.tryFailure(sent.cause());
+            measurement.addListener(done -> {
+                if (done.isSuccess()) result.trySuccess(measurement.getNow());
+                else if (done.isCancelled()) result.cancel(false);
+                else result.tryFailure(done.cause());
             });
         }));
+        return result;
+    }
+
+    private Future<Double> measureLatency(Channel channel) {
+        Promise<Double> result = loop.newPromise();
+        long started = System.nanoTime();
+        var handler = new ChannelInboundHandlerAdapter() {
+            @Override
+            public void channelRead(ChannelHandlerContext ctx, Object message) {
+                if (message instanceof Http2PingFrame ping && ping.ack() && ping.content() == started) {
+                    result.trySuccess((System.nanoTime() - started) / 1_000_000.0);
+                } else ctx.fireChannelRead(message);
+            }
+
+            @Override
+            public void channelInactive(ChannelHandlerContext ctx) {
+                result.tryFailure(new IOException("测量期间服务端连接已关闭"));
+                ctx.fireChannelInactive();
+            }
+        };
+        channel.pipeline().addLast(handler);
+        var timeout = loop.schedule(() -> result.tryFailure(new java.util.concurrent.TimeoutException("连接延迟检测超时")), 5, TimeUnit.SECONDS);
+        result.addListener(done -> {
+            timeout.cancel(false);
+            if (channel.pipeline().context(handler) != null) channel.pipeline().remove(handler);
+        });
+        channel.writeAndFlush(new DefaultHttp2PingFrame(started)).addListener(sent -> {
+            if (!sent.isSuccess()) result.tryFailure(sent.cause());
+        });
         return result;
     }
 

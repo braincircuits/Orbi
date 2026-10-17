@@ -274,7 +274,7 @@ class KernelDnsTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
-    void latestDomainAppearsOnConnectionsWithoutChangingDestination(boolean udp) throws Exception {
+    void sharedIpIsNotDisplayedAsLastQueriedDomain(boolean udp) throws Exception {
         try (var server = new Upstream(); var client = client(server);
              var origin = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
              var dns = connect(client, "203.0.113.53:53", udp, new byte[0])) {
@@ -284,7 +284,8 @@ class KernelDnsTest {
             }
             try (var business = connect(client, "127.0.0.1:" + origin.getLocalPort(), false, new byte[0]);
                  var accepted = origin.accept()) {
-                assertTrue(client.tunnels().stream().anyMatch(t -> t.get("target").equals("latest.example:" + origin.getLocalPort())));
+                assertTrue(client.tunnels().stream().anyMatch(t -> t.get("target").equals("127.0.0.1:" + origin.getLocalPort())),
+                        "同一 IP 对应多个有效域名时保留实际 IP，不能假定属于最后查询的域名");
                 business.getOutputStream().write(123);
                 assertEquals(123, accepted.getInputStream().read());
             }
@@ -309,15 +310,17 @@ class KernelDnsTest {
     }
 
     @Test
-    void expiresAndReplacesAssociationsIncludingCnameChain() throws Exception {
+    void expiresAssociationsIndependentlyIncludingCnameChain() throws Exception {
         var now = new AtomicLong();
         var resolver = OutboundNetwork.DEFAULT.resolver();
         try {
             var dns = new KernelDns(OutboundNetwork.DEFAULT, resolver, name -> DnsServerAddresses.singleton(new InetSocketAddress("127.0.0.1", 53)).stream(), 100, now::get);
             dns.remember(new DnsMessage(answer(query("first.example", 1, 1), "192.0.2.1", 10), true));
             dns.remember(new DnsMessage(answer(query("latest.example", 1, 1), "192.0.2.1", 2), true));
-            assertEquals("latest.example", dns.domain("192.0.2.1"));
+            assertNull(dns.domain("192.0.2.1"));
             now.set(TimeUnit.SECONDS.toNanos(2));
+            assertEquals("first.example", dns.domain("192.0.2.1"));
+            now.set(TimeUnit.SECONDS.toNanos(10));
             assertNull(dns.domain("192.0.2.1"));
             dns.remember(new DnsMessage(answer(query("zero.example", 1, 1), "192.0.2.1", 0), true));
             assertNull(dns.domain("192.0.2.1"));
@@ -356,6 +359,41 @@ class KernelDnsTest {
         } finally {
             resolver.close();
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"192.0.2.10", "2001:db8::10"})
+    void refreshAndZeroTtlOnlyAffectTheSameDomain(String ip) throws Exception {
+        var now = new AtomicLong();
+        var dns = new KernelDns(OutboundNetwork.DEFAULT, null, null, 100, now::get);
+        int type = ip.contains(":") ? 28 : 1;
+        dns.remember(new DnsMessage(answer(query("first.example", type, 1), ip, 600), true));
+        dns.remember(new DnsMessage(answer(query("second.example", type, 2), ip, 1200), true));
+        assertNull(dns.domain(ip));
+        // 新回答只撤销同一域名的关联，不能删除共享 IP 下其他域名的有效 TTL。
+        dns.remember(new DnsMessage(answer(query("second.example", type, 3), ip, 0), true));
+        assertEquals("first.example", dns.domain(ip));
+        now.set(TimeUnit.MINUTES.toNanos(5));
+        dns.remember(new DnsMessage(answer(query("first.example", type, 4), ip, 600), true));
+        now.set(TimeUnit.MINUTES.toNanos(10));
+        assertEquals("first.example", dns.domain(ip), "同一域名的新回答可以续期，不产生重复冲突");
+        now.set(TimeUnit.MINUTES.toNanos(15));
+        assertNull(dns.domain(ip));
+    }
+
+    @Test
+    void sharedDomainsCountTowardsAssociationLimit() throws Exception {
+        var now = new AtomicLong();
+        var dns = new KernelDns(OutboundNetwork.DEFAULT, null, null, 100, now::get);
+        dns.remember(new DnsMessage(answer(query("first.example", 1, 1), "192.0.2.1", 1800), true));
+        for (int i = 0; i < 8191; i++) {
+            String ip = "198.18." + (i / 256) + "." + (i % 256);
+            dns.remember(new DnsMessage(answer(query("other.example", 1, 2), ip, 1800), true));
+        }
+        dns.remember(new DnsMessage(answer(query("shared.example", 1, 3), "192.0.2.1", 600), true));
+        now.set(TimeUnit.MINUTES.toNanos(10));
+        assertNull(dns.domain("192.0.2.1"), "增加共享域名也必须计入总上限，不能绕过旧关联淘汰");
+        assertEquals("other.example", dns.domain("198.18.31.254"));
     }
 
     @Test

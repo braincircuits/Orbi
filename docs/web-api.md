@@ -155,13 +155,17 @@ UI 可提示“应用后立即断开路由变化的连接，其余连接保持�
 
 业务连接以浏览器提交的 HTTP/CONNECT 目标为判断单位，内核不解析 TLS 隧道内的加密请求。
 
+HTTP/2 等待流额度或 CONNECT 响应超时后，该请求仍返回失败，同时对当前主连接执行一次共享 PING 探测。能响应 PING 的连接保持；探测 5 秒仍无响应时关闭失效主连接，后续请求重新连接，不自动重放已失败的业务。探测只针对当前接收新流的连接，不关闭已经因 GOAWAY 排空的旧连接。
+
 ## 隧道列表
 
 `GET /tunnels` 的 `data` 是当前全部业务隧道的数组；`/info` 通过 `tunnels` 能力标记提供此功能。`GET /status` 与 SSE 的 `snapshot`、`status` 中也包含同一格式的 `tunnels` 数组，明细变化会触发状态推送。内核每 250 毫秒检查状态变化；短于该间隔的请求可能不会出现在事件快照中，此接口不用于请求审计。
 
 TUN 的 TCP/UDP 53 端口 DNS 查询也遵循全局模式与查询域名规则：直连使用客户端系统 DNS，代理通过当前默认连接使用服务端系统 DNS。精确域名覆盖优先于后缀直连规则；查询前不通过本机解析来匹配结果 IP 的网段规则。应用配置会清空 DNS 响应缓存并取消在途查询，未过期的 IP→域名关联保留。客户端与服务端均需支持 DNS 隧道标识，失败不自动直连；现有管理请求格式不变。
 
-每项包含 `id`（本地连接 ID）、`target`（HTTP/CONNECT 目标；TUN 连接存在有效 DNS 关联时显示关联域名和原端口）、`source`（本地请求来源）、`route`（resolving/proxy/direct）、`state`（resolving/pending/active）、`profileId`、`profileName`、`originalProtocol`（原始传输协议 tcp/udp）、`protocol`（实际连接协议 http2/http3/tcp/udp）以及 `createdAt`（收到请求时的 Unix 毫秒时间）。IPv6 地址使用方括号。DNS 路由解析期间为 resolving，等待目标套接字或代理流建立时为 pending，建立后为 active；直连的连接配置 ID 和名称为空，协议按目标传输类型为 tcp 或 udp。UDP 关联的 active 不代表目标在线。`originalProtocol` 在代理、直连及路由待确定期间均保留原始 TCP/UDP 类型，不随外层代理协议变化。域名访问统计不再保存逐连接协议，协议详情仅在实时隧道中展示。
+同一 IP 对应多个域名时，各关联分别按自己的 TTL 到期，只有恰好一个未过期域名时才用于展示和路由。多个域名仍有效时保留原始 IP，并按全局模式、IP 精确规则、IP 网段和默认路由判定，不使用最后一次查询域名的规则。关联总数上限为 8192，共享 IP 下的每个域名也计入上限；TTL 为 0 的回答只撤销同一域名的对应关联。
+
+每项包含 `id`（本地连接 ID）、`target`（HTTP/CONNECT 目标；TUN 连接存在唯一有效 DNS 关联时显示关联域名和原端口）、`source`（本地请求来源）、`route`（resolving/proxy/direct）、`state`（resolving/pending/active）、`profileId`、`profileName`、`originalProtocol`（原始传输协议 tcp/udp）、`protocol`（实际连接协议 http2/http3/tcp/udp）以及 `createdAt`（收到请求时的 Unix 毫秒时间）。IPv6 地址使用方括号。DNS 路由解析期间为 resolving，等待目标套接字或代理流建立时为 pending，建立后为 active；直连的连接配置 ID 和名称为空，协议按目标传输类型为 tcp 或 udp。UDP 关联的 active 不代表目标在线。`originalProtocol` 在代理、直连及路由待确定期间均保留原始 TCP/UDP 类型，不随外层代理协议变化。域名访问统计不再保存逐连接协议，协议详情仅在实时隧道中展示。
 
 列表包括普通 HTTP 转发、CONNECT 隧道和直连 TCP 连接，不包括尚未收到请求的本地空闲套接字、共享 HTTP/2 或 QUIC 主连接、独立诊断会话。连接关闭后自动移除，不保存历史记录。读取不改变配置版本、路由或代理连接；返回信息不包含密码、请求正文或 TLS 隧道内的数据。
 
@@ -298,7 +302,7 @@ python3 scripts/web-smoke-test.py
 
 `GET /access-records` 读取已经保存的域名累计统计，不触发提前落库。查询参数：`target`（域名/IP字面子串）、`failedOnly=true|false`（默认 false）、`order=host|count|recent|failure`（域名、连接次数、最后访问、最后失败，默认 recent）、`ascending=true|false`（默认 false）、`limit`（1～500，默认100）、`beforeValue`、`afterHost`。首次请求省略游标，后续请求带回 `nextValue` 和 `nextHost`；按选定列和方向对全部已保存数据排序；数值相同的行固定按域名升序分页。域名排序只使用 `nextHost`，`nextValue` 返回0；无失败记录按数值0参与排序，界面显示“—”。计数持续变化时刷新可读取最新排序；UI 对重复域名去重，切换筛选或排序从首页开始。
 
-响应包含 `items`、`hasMore`、`nextValue`、`nextHost`。每条统计仅包含 `host`、`connectionCount`、`lastAccessAt`、`lastFailureAt`；时间为 Unix 毫秒，没有失败时为0。完整域名分开，大小写、尾点和等价IP写法归一化；不同端口、TCP/UDP、代理/直连和连接节点合并。没有DNS域名关联时按IP保存；有效关联沿用最新域名，过去的统计不追溯改名。
+响应包含 `items`、`hasMore`、`nextValue`、`nextHost`。每条统计仅包含 `host`、`connectionCount`、`lastAccessAt`、`lastFailureAt`；时间为 Unix 毫秒，没有失败时为0。完整域名分开，大小写、尾点和等价IP写法归一化；不同端口、TCP/UDP、代理/直连和连接节点合并。没有唯一有效 DNS 域名关联时按 IP 保存；唯一关联使用对应域名，过去的统计不追溯改名。
 
 连接发起时计数一次，成功、失败、主动取消均不追加次数；内部连接重试不重复计数。最后访问时间是最近发起时间，最后失败时间只更新建立失败，之后成功不清空。TCP长连接内多个请求不逐个计数，UDP按现有会话统计。统计不表示网页请求次数或HTTP业务成功，不记录端口、来源、URL路径、协议、凭据或正文。
 
