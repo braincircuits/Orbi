@@ -30,6 +30,13 @@ class _TrafficSummaryChartState extends State<TrafficSummaryChart> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // 图高和坐标轴随说明文字缩放，日期标签按实际内容增高。
+    final labelSize = theme.textTheme.bodySmall!.fontSize!;
+    final textScale = math.max(
+      1.0,
+      MediaQuery.textScalerOf(context).scale(labelSize) / labelSize,
+    );
+    final plotHeight = 176 * textScale;
     final buckets = widget.summary.buckets
         .where((b) => b.from >= (widget.from ?? widget.summary.from))
         .toList();
@@ -87,111 +94,113 @@ class _TrafficSummaryChartState extends State<TrafficSummaryChart> {
           ],
         ),
         const SizedBox(height: 12),
-        SizedBox(
-          height: 204,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(
-                width: 72,
-                height: 176,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      formatTrafficBytes(maximum),
-                      style: theme.textTheme.bodySmall,
-                    ),
-                    Text(
-                      formatTrafficBytes(maximum / 2),
-                      style: theme.textTheme.bodySmall,
-                    ),
-                    Text('0 B', style: theme.textTheme.bodySmall),
-                  ],
-                ),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 72 * textScale,
+              height: plotHeight,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    formatTrafficBytes(maximum),
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  Text(
+                    formatTrafficBytes(maximum / 2),
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  Text('0 B', style: theme.textTheme.bodySmall),
+                ],
               ),
-              Expanded(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final width = constraints.maxWidth;
-                    void select(double x) {
-                      if (buckets.isEmpty || width <= 0) return;
-                      final value = ((x / width) * (buckets.length - 1))
-                          .round()
-                          .clamp(0, buckets.length - 1);
-                      if (value != selected) setState(() => selected = value);
-                    }
+            ),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final width = constraints.maxWidth;
+                  void select(double x) {
+                    if (buckets.isEmpty || width <= 0) return;
+                    final value = ((x / width) * (buckets.length - 1))
+                        .round()
+                        .clamp(0, buckets.length - 1);
+                    if (value != selected) setState(() => selected = value);
+                  }
 
-                    return Column(
-                      children: [
-                        Focus(
-                          onKeyEvent: (_, event) {
-                            if (event is KeyUpEvent || buckets.isEmpty) {
-                              return KeyEventResult.ignored;
-                            }
-                            final direction =
-                                event.logicalKey == LogicalKeyboardKey.arrowLeft
-                                ? -1
-                                : event.logicalKey ==
-                                      LogicalKeyboardKey.arrowRight
-                                ? 1
-                                : 0;
-                            if (direction == 0) return KeyEventResult.ignored;
-                            setState(
-                              () => selected = ((selected ?? 0) + direction)
-                                  .clamp(0, buckets.length - 1),
-                            );
-                            return KeyEventResult.handled;
-                          },
-                          child: Semantics(
-                            label: detail,
-                            child: MouseRegion(
-                              onHover: (event) =>
+                  return Column(
+                    children: [
+                      Focus(
+                        onKeyEvent: (_, event) {
+                          if (event is KeyUpEvent || buckets.isEmpty) {
+                            return KeyEventResult.ignored;
+                          }
+                          final direction =
+                              event.logicalKey == LogicalKeyboardKey.arrowLeft
+                              ? -1
+                              : event.logicalKey ==
+                                    LogicalKeyboardKey.arrowRight
+                              ? 1
+                              : 0;
+                          if (direction == 0) return KeyEventResult.ignored;
+                          setState(
+                            () => selected = ((selected ?? 0) + direction)
+                                .clamp(0, buckets.length - 1),
+                          );
+                          return KeyEventResult.handled;
+                        },
+                        child: Semantics(
+                          label: detail,
+                          child: MouseRegion(
+                            onHover: (event) => select(event.localPosition.dx),
+                            child: GestureDetector(
+                              onTapDown: (event) =>
                                   select(event.localPosition.dx),
-                              child: GestureDetector(
-                                onTapDown: (event) =>
-                                    select(event.localPosition.dx),
-                                child: CustomPaint(
-                                  key: const ValueKey('traffic-line-chart'),
-                                  size: Size(width, 176),
-                                  painter: _TrafficLines(
-                                    buckets,
-                                    maximum,
-                                    up,
-                                    down,
-                                    theme.colorScheme.outlineVariant,
-                                    showSend,
-                                    showReceive,
-                                    selected,
-                                  ),
+                              child: CustomPaint(
+                                key: const ValueKey('traffic-line-chart'),
+                                size: Size(width, plotHeight),
+                                painter: _TrafficLines(
+                                  buckets,
+                                  maximum,
+                                  up,
+                                  down,
+                                  theme.colorScheme.outlineVariant,
+                                  showSend,
+                                  showReceive,
+                                  selected,
                                 ),
                               ),
                             ),
                           ),
                         ),
-                        const SizedBox(height: 6),
-                        if (buckets.isNotEmpty)
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
+                      ),
+                      const SizedBox(height: 6),
+                      if (buckets.isNotEmpty)
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Flexible(
+                              child: Text(
                                 buckets.first.shortLabel,
                                 style: theme.textTheme.bodySmall,
                               ),
-                              Text(
+                            ),
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: Text(
                                 buckets.last.shortLabel,
+                                textAlign: TextAlign.end,
                                 style: theme.textTheme.bodySmall,
                               ),
-                            ],
-                          ),
-                      ],
-                    );
-                  },
-                ),
+                            ),
+                          ],
+                        ),
+                    ],
+                  );
+                },
               ),
-            ],
-          ),
+            ),
+          ],
         ),
         const SizedBox(height: 8),
         Text(detail, style: theme.textTheme.bodySmall),

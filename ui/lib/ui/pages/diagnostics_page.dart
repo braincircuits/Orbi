@@ -145,6 +145,7 @@ class DiagnosticsPage extends StatelessWidget {
                 const SizedBox(height: 12),
                 SelectableText(
                   _diagnosticResult(job),
+                  key: PageStorageKey(('diagnostic-result', job.id)),
                   style: TextStyle(fontSize: 12, height: 1.6, color: ui.ink),
                 ),
                 if (job.stages.isNotEmpty)

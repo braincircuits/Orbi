@@ -352,6 +352,9 @@ class _RoutesPageState extends State<RoutesPage> {
                               children: [
                                 if (_targets || !_bulk)
                                   SizedBox(
+                                    key: const PageStorageKey(
+                                      'route-search-scroll',
+                                    ),
                                     width: constraints.maxWidth < 460
                                         ? constraints.maxWidth
                                         : 220,
@@ -424,6 +427,7 @@ class _RoutesPageState extends State<RoutesPage> {
                           ],
                           if (!_targets && _bulk)
                             SizedBox(
+                              key: const PageStorageKey('rules-editor-scroll'),
                               height: 320,
                               child: TextField(
                                 key: const ValueKey('rules-editor'),
@@ -595,6 +599,7 @@ class _RoutesPageState extends State<RoutesPage> {
           Row(
             children: [
               Expanded(
+                key: const PageStorageKey('route-query-scroll'),
                 child: TextField(
                   key: const ValueKey('route-query'),
                   controller: _query,
@@ -647,6 +652,7 @@ class _RoutesPageState extends State<RoutesPage> {
                   'unavailable' => '暂无可用代理',
                   _ => '未返回路由结果',
                 }} · $description',
+                key: const PageStorageKey('route-query-result'),
               ),
               if (result?.resolvedAddress != null)
                 Text(
@@ -679,19 +685,23 @@ class _RoutesPageState extends State<RoutesPage> {
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 12),
-        TextField(
-          key: const ValueKey('route-host'),
-          controller: _host,
-          focusNode: _hostFocus,
-          readOnly: _targets && _editingTarget != null,
-          decoration: const InputDecoration(
-            labelText: '目标',
-            hintText: '例如 example.com',
+        KeyedSubtree(
+          key: const PageStorageKey('route-host-scroll'),
+          child: TextField(
+            key: const ValueKey('route-host'),
+            controller: _host,
+            focusNode: _hostFocus,
+            readOnly: _targets && _editingTarget != null,
+            decoration: const InputDecoration(
+              labelText: '目标',
+              hintText: '例如 example.com',
+            ),
           ),
         ),
         const SizedBox(height: 12),
         if (_targets)
           DesktopSelect<String>(
+            key: const PageStorageKey('route-action-scroll'),
             value: _route,
             options: const [('proxy', '通过代理'), ('direct', '直接连接')],
             onSelected: model.showBlockingProgress
@@ -699,10 +709,13 @@ class _RoutesPageState extends State<RoutesPage> {
                 : (value) => setState(() => _route = value!),
           )
         else
-          TextField(
-            key: const ValueKey('route-note'),
-            controller: _note,
-            decoration: const InputDecoration(labelText: '备注（可选）'),
+          KeyedSubtree(
+            key: const PageStorageKey('route-note-scroll'),
+            child: TextField(
+              key: const ValueKey('route-note'),
+              controller: _note,
+              decoration: const InputDecoration(labelText: '备注（可选）'),
+            ),
           ),
         const SizedBox(height: 8),
         Text(

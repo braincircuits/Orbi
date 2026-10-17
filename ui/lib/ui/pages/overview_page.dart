@@ -227,6 +227,7 @@ class _OverviewPageState extends State<OverviewPage> {
                       Flexible(
                         child: SelectableText(
                           localAddress,
+                          key: const PageStorageKey('overview-local-address'),
                           style: DesktopDesign.monoText,
                         ),
                       ),
@@ -324,6 +325,7 @@ class _OverviewPageState extends State<OverviewPage> {
                 ],
               ),
               SizedBox(
+                key: const PageStorageKey('overview-tun-engine-scroll'),
                 width: 240,
                 child: DesktopSelect<TunEngine>(
                   key: const ValueKey('overview-tun-engine'),
@@ -664,6 +666,7 @@ class _OverviewPageState extends State<OverviewPage> {
                       Flexible(
                         child: SelectableText(
                           result?.ip ?? '—',
+                          key: const PageStorageKey('overview-exit-ip'),
                           style: DesktopDesign.monoText,
                         ),
                       ),

@@ -193,36 +193,40 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
       const SizedBox(height: 18),
       LayoutBuilder(
         builder: (context, constraints) {
-          final searchField = TextField(
-            key: const ValueKey('connection-search'),
-            controller: search,
-            style: const TextStyle(fontSize: 13),
-            onChanged: (_) => _filterChanged(),
-            decoration: InputDecoration(
-              hintText: '搜索名称或服务器',
-              prefixIcon: const Icon(
-                Icons.search,
-                size: DesktopDesign.actionIconSize,
-              ),
-              suffixIcon: search.text.isEmpty
-                  ? null
-                  : IconButton(
-                      tooltip: '清除搜索',
-                      onPressed: () {
-                        search.clear();
-                        _filterChanged();
-                      },
-                      icon: const Icon(
-                        Icons.close,
-                        size: DesktopDesign.actionIconSize,
+          final searchField = KeyedSubtree(
+            key: const PageStorageKey('connection-search-scroll'),
+            child: TextField(
+              key: const ValueKey('connection-search'),
+              controller: search,
+              style: const TextStyle(fontSize: 13),
+              onChanged: (_) => _filterChanged(),
+              decoration: InputDecoration(
+                hintText: '搜索名称或服务器',
+                prefixIcon: const Icon(
+                  Icons.search,
+                  size: DesktopDesign.actionIconSize,
+                ),
+                suffixIcon: search.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: '清除搜索',
+                        onPressed: () {
+                          search.clear();
+                          _filterChanged();
+                        },
+                        icon: const Icon(
+                          Icons.close,
+                          size: DesktopDesign.actionIconSize,
+                        ),
                       ),
-                    ),
+              ),
             ),
           );
           final controls = Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               SizedBox(
+                key: const PageStorageKey('connection-protocol-scroll'),
                 width: 108,
                 child: DesktopSelect<String>(
                   key: ValueKey('connection-filter-$protocol'),

@@ -105,6 +105,50 @@ void main() {
       });
     }
   }
+  for (final scale in [1.3, 2.0]) {
+    for (final width in [480.0, 320.0]) {
+      testWidgets('趋势图大字和窄窗口日期标签完整显示：$scale/$width', (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = Size(width, 900);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetPhysicalSize);
+        final data = fixture();
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: desktopTheme(Brightness.dark),
+            home: MediaQuery(
+              data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+              child: Scaffold(
+                body: SingleChildScrollView(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: TrafficSummaryChart(summary: data),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final plot = tester.getRect(
+          find.byKey(const ValueKey('traffic-line-chart')),
+        );
+        final note = tester.getRect(find.text('空缺表示无记录；零流量显示为 0 B。'));
+        for (final label in [
+          data.buckets.first.shortLabel,
+          data.buckets.last.shortLabel,
+        ]) {
+          final rect = tester.getRect(find.text(label));
+          expect(rect.top, greaterThanOrEqualTo(plot.bottom));
+          expect(rect.bottom, lessThanOrEqualTo(note.top));
+          expect(rect.left, greaterThanOrEqualTo(0));
+          expect(rect.right, lessThanOrEqualTo(width));
+        }
+      });
+    }
+  }
+
   testWidgets('历史加载失败可重试，关闭后迟到响应不会更新已释放页面', (tester) async {
     final kernel = SummaryKernel()
       ..connected = true
