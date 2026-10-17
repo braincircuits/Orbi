@@ -33,7 +33,8 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final int MAX_BODY = 1_048_576;
 
     public ControlHttpServer(KernelControl control, int port, String token, Set<String> origins) throws IOException {
-        if (token == null || token.length() < 32) throw new IllegalArgumentException("管理令牌至少需要 32 个字符");
+        if (token == null || token.length() < 32 || token.chars().anyMatch(value -> value < 0x21 || value > 0x7e))
+            throw new IllegalArgumentException("管理令牌至少需要 32 个非空白可打印 ASCII 字符");
         this.control = control;
         this.api = new ControlApi(control);
         this.token = token;

@@ -13,6 +13,63 @@ import 'package:network_ui/view_models/proxy_view_model.dart';
 import 'view_model_test.dart' show TestDesktop;
 
 void main() {
+  const unknownHeaderToken = 'unknown-header-token-012345678901234567890';
+  for (final invalid in ['\r', '\n', '\u0000', '\t', ' ', '\u007f', '中文']) {
+    test('发现文件在请求前拒绝非法令牌字符 ${jsonEncode(invalid)}，保留状态和文件', () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'network-header-token-',
+      );
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final controller = ProxyController(directory: directory);
+      final token = '$unknownHeaderToken${invalid}continued';
+      var requests = 0;
+      server.listen((request) async {
+        requests++;
+        request.response.write('{}');
+        await request.response.close();
+      });
+      final content = jsonEncode({
+        'url': 'http://127.0.0.1:${server.port}',
+        'token': token,
+        'apiVersion': 1,
+      });
+      try {
+        await controller.endpointFile.parent.create(recursive: true);
+        await controller.endpointFile.writeAsString(content);
+        final failure = isA<StateError>()
+            .having((error) => error.message, '错误说明', contains('内核发现文件'))
+            .having(
+              (error) => error.toString(),
+              '异常不包含令牌前缀',
+              isNot(contains(unknownHeaderToken)),
+            );
+        await expectLater(controller.attach(), throwsA(failure));
+        expect(controller.canShutdown, isFalse);
+        expect(controller.connected, isFalse);
+        expect(controller.running, isFalse);
+        expect(controller.kernelGeneration, 0);
+        expect(controller.revision, 0);
+        expect(controller.redact(token), token, reason: '拒绝时不应缓存未经验证的令牌');
+        await expectLater(
+          controller.start(ProxyProfile(), ''),
+          throwsA(failure),
+        );
+        expect(controller.error, isNot(contains(unknownHeaderToken)));
+        expect(
+          controller.logs.single.message,
+          isNot(contains(unknownHeaderToken)),
+        );
+        expect(controller.logs.single.level, 'ERROR');
+        expect(requests, 0, reason: '非法凭据不能进入 HTTP 请求头');
+        expect(await controller.endpointFile.readAsString(), content);
+      } finally {
+        controller.dispose();
+        await server.close(force: true);
+        await directory.delete(recursive: true);
+      }
+    });
+  }
+
   const unknownToken = 'unknown-control-token-012345678901234567890';
   for (final (label, content) in [
     ('损坏 JSON', '{"token":"$unknownToken","url":'),
@@ -185,6 +242,18 @@ void main() {
       expect(controller.connected, isFalse);
       expect(controller.canShutdown, isTrue);
       expect(exits, 0);
+      const invalidToken = 'new-invalid-token-012345678901234567890\ncontinued';
+      final invalidDiscovery = jsonEncode({
+        'url': 'http://127.0.0.1:${server.port}',
+        'token': invalidToken,
+        'apiVersion': 1,
+      });
+      await controller.endpointFile.writeAsString(invalidDiscovery);
+      await expectLater(controller.attach(), throwsStateError);
+      expect(controller.canShutdown, isTrue, reason: '非法发现文件不得替换已校验的退出凭据');
+      expect(controller.redact(token), '***');
+      expect(controller.redact(invalidToken), invalidToken);
+      expect(await controller.endpointFile.readAsString(), invalidDiscovery);
       await controller.shutdown();
       expect(exits, 1);
       expect(infoReads, 1);

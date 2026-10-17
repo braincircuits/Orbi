@@ -39,6 +39,17 @@ class InitializeKernelTest(unittest.TestCase):
             endpoint.write_text(json.dumps({"apiVersion": 1, "url": "http://127.0.0.1:9090", "token": secret}))
             self.assertEqual(MODULE.load_access(endpoint), ("127.0.0.1:9090", secret))
 
+    def test_invalid_authorization_token_is_rejected_before_request(self):
+        secret = "unknown-management-token-012345678901234567890"
+        with tempfile.TemporaryDirectory() as directory:
+            endpoint = Path(directory) / "control.json"
+            for token in (secret + "\ninjected", secret + "\rinjected", secret + "\x00", secret + "中文", secret + " "):
+                with self.subTest(token=repr(token)):
+                    endpoint.write_text(json.dumps({"apiVersion": 1, "url": "http://127.0.0.1:9090", "token": token}))
+                    with self.assertRaises(RuntimeError) as raised:
+                        MODULE.load_access(endpoint)
+                    self.assertNotIn(secret, "".join(traceback.format_exception(raised.exception)))
+
     def test_startup_output_and_http_errors_are_not_reprinted(self):
         secret = "unknown-reflected-credential"
         for mode in ("startup", "http", "protocol", "success"):

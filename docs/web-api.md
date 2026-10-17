@@ -19,7 +19,7 @@ java --enable-native-access=ALL-UNNAMED -jar ClientG/target/clientG-1.0-SNAPSHOT
 | `--storage-config` | UTF-8 存储配置文件，选择 SQLite/PostgreSQL/MySQL，重启生效；与 `--db` 互斥，见 [数据库切换](database-storage.md) |
 | `--port` | 本机管理端口，默认 9090；0 表示自动分配 |
 | `--endpoint-file` | 管理连接信息文件，SQLite 默认在数据库目录下，远程库默认在存储配置目录下的 `run/control.json` |
-| `--token-file` | 可选，从文件读取至少 32 字符的管理令牌；默认每次启动生成随机令牌 |
+| `--token-file` | 可选，从文件读取至少 32 个非空白可打印 ASCII 字符的管理令牌；默认每次启动生成随机令牌 |
 | `--allow-origin` | 可重复指定网页 Origin，例如 `http://localhost:3000`；默认不允许其他网页来源 |
 
 管理接口固定监听 `127.0.0.1`。发现文件包含 `url`、`token`、`pid`、`apiVersion`，在支持 POSIX 权限的平台设置为 `600`，正常退出时清理。请将自定义发现文件加入 Git 忽略规则。令牌不写入日志，也不通过查询接口返回。持有令牌的同机程序能修改代理配置，应妥善保管发现文件。

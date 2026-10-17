@@ -19,6 +19,8 @@ def load_access(endpoint):
         raw_url, token = access["url"], access["token"]
         address = urllib.parse.urlsplit(raw_url)
         if (access["apiVersion"] == 1 and isinstance(token, str) and len(token) >= 32
+                # 非法请求头字符会让 HTTP 库的异常回显令牌，必须在传给 HTTP 库前拒绝。
+                and all(33 <= ord(character) <= 126 for character in token)
                 and address.scheme == "http" and address.hostname == "127.0.0.1"
                 and address.port is not None and 1 <= address.port <= 65535
                 and address.username is None and address.password is None

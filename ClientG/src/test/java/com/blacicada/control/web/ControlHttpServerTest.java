@@ -60,6 +60,37 @@ class ControlHttpServerTest {
     }
 
     @Test
+    void managementTokenRejectsCharactersThatCannotBeSentInAuthorization() {
+        String secret = "unregistered-token-secret-000000000000";
+        for (String token : Arrays.asList(null, "short", secret + "\rcontinued", secret + "\ncontinued",
+                secret + "\0", secret + "\tcontinued", secret + " continued", secret + "\u007f", secret + "中文")) {
+            var failure = assertThrows(IllegalArgumentException.class, () -> {
+                try (var invalid = new ControlHttpServer(control, 0, token, Set.of())) {
+                    fail("无效令牌不能启动管理监听");
+                }
+            });
+            var stack = new StringWriter();
+            failure.printStackTrace(new PrintWriter(stack));
+            assertFalse(stack.toString().contains(secret));
+            assertTrue(failure.getMessage().contains("ASCII"));
+        }
+    }
+
+    @Test
+    void managementTokenAcceptsCustomPrintableAsciiCharacters() throws Exception {
+        var token = new StringBuilder();
+        for (int value = 0x21; value <= 0x7e; value++) token.append((char) value);
+        try (var customControl = new KernelControl(directory.resolve("custom-token.db"));
+             var custom = new ControlHttpServer(customControl, 0, token.toString(), Set.of())) {
+            custom.start();
+            var request = HttpRequest.newBuilder(URI.create(custom.url() + "/api/v1/health"))
+                    .header("Authorization", "Bearer " + token).timeout(Duration.ofSeconds(5)).build();
+            assertEquals(200, client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode(),
+                    "自定义可打印 ASCII 令牌仍应支持真实 HTTP 鉴权");
+        }
+    }
+
+    @Test
     void cancelledTunAuthorizationCannotInstallRoutesLater() throws Exception {
         Assumptions.assumeTrue(System.getProperty("os.name").startsWith("Mac"));
         ok("POST", "/tun/request", "{\"engine\":\"outline\"}", 409);

@@ -331,7 +331,10 @@ class ProxyController extends ChangeNotifier {
         (uri.path.isNotEmpty && uri.path != '/') ||
         value['apiVersion'] != 1 ||
         value['token'] is! String ||
-        (value['token'] as String).length < 32) {
+        (value['token'] as String).length < 32 ||
+        (value['token'] as String).codeUnits.any(
+          (unit) => unit < 0x21 || unit > 0x7e,
+        )) {
       throw StateError('内核发现文件无效：只允许 API v1 的本机管理地址');
     }
     final token = value['token'] as String;
