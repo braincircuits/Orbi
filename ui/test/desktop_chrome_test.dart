@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:network_ui/main.dart';
+import 'package:network_ui/ui/pages/settings_dialog.dart';
 import 'package:network_ui/models/proxy_profile.dart';
 import 'package:network_ui/services/native_bridge.dart';
 import 'package:network_ui/view_models/proxy_view_model.dart';
@@ -18,6 +19,52 @@ void main() {
   setUp(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(NativeBridge.channel, (_) async => null);
+  });
+
+  testWidgets('设置信息弹窗首帧完成布局，关闭时不播放缩放或淡出', (tester) async {
+    final model = _DesktopModel();
+    addTearDown(model.dispose);
+    await tester.pumpWidget(NetworkApp(model: model));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设置…'));
+    await tester.pump();
+    final dialog = find.byType(SettingsDialog);
+    final close = find.byTooltip('关闭设置（保留草稿）');
+    expect(dialog, findsOneWidget);
+    expect(close.hitTestable(), findsOneWidget);
+    final first = tester.getRect(close);
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(tester.getRect(close), first);
+    await tester.tap(close);
+    await tester.pump();
+    expect(dialog, findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('信息提示首帧完整显示，关闭后不等待过渡动画', (tester) async {
+    final model = _DesktopModel();
+    addTearDown(model.dispose);
+    await tester.pumpWidget(NetworkApp(model: model));
+    await tester.pumpAndSettle();
+    model.message('规则已应用');
+    await tester.pump();
+    final message = find.byKey(const ValueKey('desktop-message'));
+    expect(message, findsOneWidget);
+    final fades = tester.widgetList<FadeTransition>(
+      find.descendant(of: message, matching: find.byType(FadeTransition)),
+    );
+    expect(fades.every((fade) => fade.opacity.value == 1), isTrue);
+    final text = find.text('规则已应用');
+    final first = tester.getRect(text);
+    expect(text.hitTestable(), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(tester.getRect(text), first);
+    await tester.tap(
+      find.descendant(of: message, matching: find.byType(IconButton)),
+    );
+    await tester.pump();
+    expect(message, findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('管理连接点击后的第一帧同步更新侧栏选中态和正文', (tester) async {

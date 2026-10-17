@@ -347,6 +347,72 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('规则搜索显示匹配数量，清空后恢复列表且不修改草稿', (tester) async {
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await mount(tester);
+    final original = model.rules.text;
+    await tester.enterText(find.byKey(const ValueKey('route-search')), '内网');
+    await tester.pumpAndSettle();
+    expect(find.text('找到 1 / 2 条规则'), findsOneWidget);
+    expect(find.text('192.168.1.0/24'), findsOneWidget);
+    expect(find.text('example.com'), findsNothing);
+    await tester.tap(find.byTooltip('清空规则搜索'));
+    await tester.pumpAndSettle();
+    expect(find.text('example.com'), findsOneWidget);
+    expect(model.rules.text, original);
+    expect(kernel.ruleWrites, isEmpty);
+  });
+
+  testWidgets('规则条目滚动到边界时不拉伸回弹或产生出现位移', (tester) async {
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    model.editRules(List.generate(80, (i) => 'route-$i.example').join('\n'));
+    await mount(tester);
+    final scrollable = find
+        .descendant(
+          of: find.byKey(const PageStorageKey('routes')),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    final position = tester.state<ScrollableState>(scrollable).position;
+    final before = tester.getRect(find.text('route-0.example'));
+    await tester.drag(scrollable, const Offset(0, 120));
+    await tester.pump();
+    expect(position.pixels, 0, reason: '条目在边界保持静止，不播放滚动回弹');
+    expect(tester.getRect(find.text('route-0.example')), before);
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('指定目标列表启用时首帧即显示最终状态，不逐项淡入', (tester) async {
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    kernel.publish(
+      kernel.copyProfile()..routesOverrides = 'proxy api.example.com',
+      1,
+    );
+    await mount(tester);
+    await tester.tap(find.text('指定目标 1'));
+    await tester.pumpAndSettle();
+    kernel.connected = false;
+    kernel.notifyListeners();
+    await tester.pumpAndSettle();
+    final remove = find.text('移除指定');
+    Color? color() =>
+        tester.renderObject<RenderParagraph>(remove).text.style!.color;
+    final disabledColor = color();
+    final before = tester.getRect(find.text('api.example.com'));
+    kernel.connected = true;
+    kernel.notifyListeners();
+    await tester.pump();
+    final firstColor = color();
+    expect(firstColor, isNot(disabledColor));
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(color(), firstColor);
+    expect(tester.getRect(find.text('api.example.com')), before);
+    expect(tester.takeException(), isNull);
+  });
+
   for (final cancel in [true, false]) {
     testWidgets('直连规则校验期间${cancel ? '取消' : '修改目标'}后不应用旧表单', (tester) async {
       addTearDown(tester.view.resetPhysicalSize);

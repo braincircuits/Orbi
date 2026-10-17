@@ -49,6 +49,8 @@ class _NetworkAppState extends State<NetworkApp> {
       theme: desktopTheme(Brightness.light),
       darkTheme: desktopTheme(Brightness.dark),
       themeMode: mode,
+      themeAnimationDuration: Duration.zero,
+      scrollBehavior: DesktopDesign.scrollBehavior,
       home: home,
     ),
   );

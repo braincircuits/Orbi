@@ -20,6 +20,7 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
   final search = TextEditingController();
   final scroll = ScrollController();
   List<AccessRecord> records = [];
+  final hosts = <String>{};
   String filter = '', error = '';
   String stateFilter = '', cursorHost = '';
   int sortColumn = 2;
@@ -43,6 +44,7 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
       generation = widget.proxy.kernelGeneration;
       request++;
       records = [];
+      hosts.clear();
       cursor = 0;
       cursorHost = '';
       hasMore = false;
@@ -92,14 +94,14 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
       if (!mounted || current != request) return;
       setState(() {
         // 查询完成前保留当前列表，成功后再一次性替换。
-        records = more
-            ? [
-                ...records,
-                ...page.items.where(
-                  (item) => !records.any((old) => old.host == item.host),
-                ),
-              ]
-            : page.items;
+        if (!more) {
+          records = [];
+          hosts.clear();
+        }
+        // 使用集合去重并原地追加，避免每页扫描、复制全部已加载记录。
+        for (final item in page.items) {
+          if (hosts.add(item.host)) records.add(item);
+        }
         cursor = page.nextValue;
         cursorHost = page.nextHost;
         hasMore = page.hasMore;
@@ -126,6 +128,12 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final available = widget.proxy.connected;
+    // 各列均为单行，固定行高后拖动滚动条无需测量中间的几千行。
+    final rowHeight =
+        48 *
+        (MediaQuery.textScalerOf(context).scale(DesktopDesign.bodyFontSize) /
+                DesktopDesign.bodyFontSize)
+            .clamp(1.0, double.infinity);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -235,6 +243,7 @@ class _AccessRecordsPageState extends State<AccessRecordsPage> {
             controller: scroll,
             listKey: const PageStorageKey('access-records'),
             rowCount: records.length,
+            itemExtent: rowHeight,
             rowKey: (index) => records[index].host,
             empty: Center(
               child: Text(

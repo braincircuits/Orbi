@@ -29,6 +29,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   Future<void> _removeTunService() async {
     final confirmed = await showDialog<bool>(
+      animationStyle: AnimationStyle.noAnimation,
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('卸载系统辅助服务？'),
@@ -182,6 +183,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
         onPressed: model.locked
             ? null
             : () => showDialog<void>(
+                animationStyle: AnimationStyle.noAnimation,
                 context: context,
                 barrierDismissible: false,
                 builder: (_) => DatabaseSettingsDialog(model: model),

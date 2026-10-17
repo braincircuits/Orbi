@@ -15,7 +15,12 @@ import 'package:network_ui/services/native_bridge.dart';
 import 'package:network_ui/view_models/proxy_view_model.dart';
 
 class _PreviewModel extends ProxyViewModel {
-  // 截图使用演示状态，不向真实内核发送检测请求。
+  // 截图状态由用例设置，不读取磁盘配置或向真实内核发送请求。
+  @override
+  Future<void> initialize() async {
+    loading = false;
+  }
+
   @override
   Future<void> refreshOverview() async {}
 }
@@ -67,15 +72,12 @@ void main() {
     final model = _PreviewModel();
     addTearDown(model.dispose);
     final boundary = GlobalKey();
-    await tester.runAsync(() async {
-      await tester.pumpWidget(
-        RepaintBoundary(
-          key: boundary,
-          child: NetworkApp(model: model),
-        ),
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    });
+    await tester.pumpWidget(
+      RepaintBoundary(
+        key: boundary,
+        child: NetworkApp(model: model),
+      ),
+    );
     await tester.pumpAndSettle();
     model.proxy.addLog('INFO 代理内核已就绪，等待请求');
     model.proxy.addLog('WARN 示例连接尚未配置，请填写服务端信息');
@@ -274,12 +276,14 @@ void main() {
       model.message('无法连接内核，请检查连接状态后重试。', failure: true);
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      await capture('${brightness.name}-message');
       final message = find.byKey(const ValueKey('desktop-message'));
+      expect(message, findsOneWidget);
+      await capture('${brightness.name}-message');
       await tester.tap(
         find.descendant(of: message, matching: find.byType(IconButton)),
       );
       await tester.pumpAndSettle();
+      expect(message, findsNothing);
     }
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(() => directory!.delete(recursive: true));

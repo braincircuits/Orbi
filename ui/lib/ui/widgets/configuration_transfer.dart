@@ -22,6 +22,7 @@ class ConfigurationTransfer extends StatelessWidget {
       if (document == null || !context.mounted) return;
       if (routes) {
         final strategy = await showDialog<String>(
+          animationStyle: AnimationStyle.noAnimation,
           context: context,
           builder: (context) => AlertDialog(
             title: const Text('导入路由规则'),
@@ -55,6 +56,7 @@ class ConfigurationTransfer extends StatelessWidget {
         final direct = preview['directRules'] as String;
         final targets = preview['targetRoutes'] as Map<String, dynamic>;
         final confirmed = await showDialog<bool>(
+          animationStyle: AnimationStyle.noAnimation,
           context: context,
           builder: (context) => AlertDialog(
             title: Text('${strategy == 'merge' ? '合并' : '整体替换'}预览'),
@@ -102,6 +104,7 @@ class ConfigurationTransfer extends StatelessWidget {
         final before = jsonEncode(model.draftProfile().runtimeConfiguration);
         final replacements = List<String?>.filled(incoming.length, null);
         final confirmed = await showDialog<bool>(
+          animationStyle: AnimationStyle.noAnimation,
           context: context,
           builder: (context) => StatefulBuilder(
             builder: (context, setState) => AlertDialog(
@@ -195,6 +198,7 @@ class ConfigurationTransfer extends StatelessWidget {
     final ids = profiles.map((c) => c.id).toSet();
     var includePassword = false;
     final confirmed = await showDialog<bool>(
+      animationStyle: AnimationStyle.noAnimation,
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setState) => AlertDialog(

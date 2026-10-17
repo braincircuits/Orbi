@@ -4,6 +4,36 @@ import 'package:network_ui/ui/desktop_theme.dart';
 import 'package:network_ui/ui/widgets/desktop_select.dart';
 
 void main() {
+  testWidgets('参数展开和收起立即完成，输入框首帧即可操作', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: desktopTheme(Brightness.light),
+        home: const Scaffold(
+          body: ExpansionTile(
+            title: Text('连接参数'),
+            children: [TextField(key: ValueKey('instant-parameter'))],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('连接参数'));
+    await tester.pump();
+    final field = find.byKey(const ValueKey('instant-parameter'));
+    expect(field.hitTestable(), findsOneWidget);
+    await tester.tap(field);
+    await tester.enterText(field, '参数草稿');
+    final editable = find.descendant(
+      of: field,
+      matching: find.byType(EditableText),
+    );
+    expect(tester.widget<EditableText>(editable).controller.text, '参数草稿');
+    await tester.tap(find.text('连接参数'));
+    await tester.pump();
+    expect(field.hitTestable(), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('普通输入、搜索、密码、选择框与按钮共享高度且支持文字缩放', (tester) async {
     tester.view.physicalSize = const Size(1100, 700);
     tester.view.devicePixelRatio = 1;

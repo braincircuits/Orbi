@@ -497,6 +497,7 @@ class _OverviewPageState extends State<OverviewPage> {
               child: TextButton.icon(
                 onPressed: proxy.connected
                     ? () => showDialog<void>(
+                        animationStyle: AnimationStyle.noAnimation,
                         context: context,
                         builder: (_) => TrafficHistoryDialog(proxy: proxy),
                       )

@@ -19,6 +19,7 @@ class SortableTable extends StatefulWidget {
     required this.empty,
     this.controller,
     this.listKey,
+    this.itemExtent,
   });
 
   final List<String> columns;
@@ -33,6 +34,8 @@ class SortableTable extends StatefulWidget {
   final Widget empty;
   final ScrollController? controller;
   final Key? listKey;
+  // 单行数据表可指定随文字缩放的行高，支持直接定位远处行。
+  final double? itemExtent;
 
   @override
   State<SortableTable> createState() => _SortableTableState();
@@ -74,118 +77,123 @@ class _SortableTableState extends State<SortableTable> {
       for (var i = 0; i < widget.rowCount; i++) widget.rowKey(i): i,
     };
     final scroll = widget.controller ?? vertical;
-    return Container(
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerLowest,
-        border: Border.all(color: scheme.outlineVariant),
-        borderRadius: BorderRadius.circular(DesktopDesign.panelRadius),
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) => Scrollbar(
-          controller: horizontal,
-          thumbVisibility: true,
-          notificationPredicate: (notice) =>
-              notice.metrics.axis == Axis.horizontal,
-          child: SingleChildScrollView(
+    // 表格已有横向和纵向滚动条，关闭桌面默认附加的重复滚动条。
+    return ScrollConfiguration(
+      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+      child: Container(
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerLowest,
+          border: Border.all(color: scheme.outlineVariant),
+          borderRadius: BorderRadius.circular(DesktopDesign.panelRadius),
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) => Scrollbar(
             controller: horizontal,
-            scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: math.max(
-                constraints.maxWidth,
-                widget.widths.reduce((a, b) => a + b) + 32,
-              ),
-              height: constraints.maxHeight,
-              child: Column(
-                children: [
-                  ColoredBox(
-                    color: scheme.surfaceContainerLow,
-                    child: _row([
-                      for (var i = 0; i < widget.columns.length; i++)
-                        Semantics(
-                          header: true,
-                          value: widget.sortColumn == i
-                              ? (widget.ascending ? '升序' : '降序')
-                              : '未排序',
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4),
-                            child: Align(
-                              alignment: Alignment.centerLeft,
-                              child: TextButton(
-                                onPressed: widget.onSort == null
-                                    ? null
-                                    : () => widget.onSort!(i),
-                                style: TextButton.styleFrom(
-                                  alignment: Alignment.centerLeft,
-                                  foregroundColor: widget.sortColumn == i
-                                      ? scheme.primary
-                                      : scheme.onSurfaceVariant,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 8,
+            thumbVisibility: true,
+            notificationPredicate: (notice) =>
+                notice.metrics.axis == Axis.horizontal,
+            child: SingleChildScrollView(
+              controller: horizontal,
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: math.max(
+                  constraints.maxWidth,
+                  widget.widths.reduce((a, b) => a + b) + 32,
+                ),
+                height: constraints.maxHeight,
+                child: Column(
+                  children: [
+                    ColoredBox(
+                      color: scheme.surfaceContainerLow,
+                      child: _row([
+                        for (var i = 0; i < widget.columns.length; i++)
+                          Semantics(
+                            header: true,
+                            value: widget.sortColumn == i
+                                ? (widget.ascending ? '升序' : '降序')
+                                : '未排序',
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton(
+                                  onPressed: widget.onSort == null
+                                      ? null
+                                      : () => widget.onSort!(i),
+                                  style: TextButton.styleFrom(
+                                    alignment: Alignment.centerLeft,
+                                    foregroundColor: widget.sortColumn == i
+                                        ? scheme.primary
+                                        : scheme.onSurfaceVariant,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 8,
+                                    ),
+                                    overlayColor: scheme.onSurface,
                                   ),
-                                  overlayColor: scheme.onSurface,
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Flexible(
-                                      child: Text(
-                                        widget.columns[i],
-                                        maxLines: 1,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Flexible(
+                                        child: Text(
+                                          widget.columns[i],
+                                          maxLines: 1,
+                                        ),
                                       ),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Icon(
-                                      widget.sortColumn == i
-                                          ? (widget.ascending
-                                                ? Icons.arrow_upward
-                                                : Icons.arrow_downward)
-                                          : Icons.unfold_more,
-                                      size: 14,
-                                    ),
-                                  ],
+                                      const SizedBox(width: 4),
+                                      Icon(
+                                        widget.sortColumn == i
+                                            ? (widget.ascending
+                                                  ? Icons.arrow_upward
+                                                  : Icons.arrow_downward)
+                                            : Icons.unfold_more,
+                                        size: 14,
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
                           ),
-                        ),
-                    ]),
-                  ),
-                  Expanded(
-                    child: widget.rowCount == 0
-                        ? widget.empty
-                        : Scrollbar(
-                            controller: scroll,
-                            child: SelectionArea(
-                              child: ListView.builder(
-                                key: widget.listKey,
-                                controller: scroll,
-                                itemCount: widget.rowCount,
-                                findChildIndexCallback: (key) =>
-                                    key is ValueKey<String>
-                                    ? indices[key.value]
-                                    : null,
-                                itemBuilder: (context, index) => Container(
-                                  key: ValueKey(widget.rowKey(index)),
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 12,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    border: Border(
-                                      bottom: BorderSide(
-                                        color: scheme.outlineVariant,
+                      ]),
+                    ),
+                    Expanded(
+                      child: widget.rowCount == 0
+                          ? widget.empty
+                          : Scrollbar(
+                              controller: scroll,
+                              child: SelectionArea(
+                                child: ListView.builder(
+                                  key: widget.listKey,
+                                  controller: scroll,
+                                  itemCount: widget.rowCount,
+                                  itemExtent: widget.itemExtent,
+                                  findChildIndexCallback: (key) =>
+                                      key is ValueKey<String>
+                                      ? indices[key.value]
+                                      : null,
+                                  itemBuilder: (context, index) => Container(
+                                    key: ValueKey(widget.rowKey(index)),
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      border: Border(
+                                        bottom: BorderSide(
+                                          color: scheme.outlineVariant,
+                                        ),
                                       ),
                                     ),
+                                    child: _row(widget.cells(index)),
                                   ),
-                                  child: _row(widget.cells(index)),
                                 ),
                               ),
                             ),
-                          ),
-                  ),
-                  const SizedBox(height: 10),
-                ],
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                ),
               ),
             ),
           ),

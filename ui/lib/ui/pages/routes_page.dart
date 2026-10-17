@@ -119,6 +119,7 @@ class _RoutesPageState extends State<RoutesPage> {
 
   Future<void> _confirmDiscard({bool reload = false}) async {
     final confirmed = await showDialog<bool>(
+      animationStyle: AnimationStyle.noAnimation,
       context: context,
       builder: (context) => AlertDialog(
         title: Text(reload ? '重新读取内核配置' : '放弃直连规则修改'),
@@ -152,6 +153,7 @@ class _RoutesPageState extends State<RoutesPage> {
     final text = await model.readRulesFile();
     if (text == null || !mounted) return;
     final choice = await showDialog<bool>(
+      animationStyle: AnimationStyle.noAnimation,
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('导入直连列表'),
@@ -244,8 +246,9 @@ class _RoutesPageState extends State<RoutesPage> {
           children: [
             Expanded(
               child: ScrollConfiguration(
-                behavior: ScrollConfiguration.of(context)
-                    .copyWith(scrollbars: false),
+                behavior: DesktopDesign.scrollBehavior.copyWith(
+                  scrollbars: false,
+                ),
                 child: CustomScrollView(
                   key: const PageStorageKey('routes'),
                   slivers: [
@@ -253,8 +256,6 @@ class _RoutesPageState extends State<RoutesPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          ConfigurationTransfer(model: model, routes: true),
-                          const SizedBox(height: 12),
                           Wrap(
                             alignment: WrapAlignment.spaceBetween,
                             crossAxisAlignment: WrapCrossAlignment.center,
@@ -315,6 +316,8 @@ class _RoutesPageState extends State<RoutesPage> {
                           ),
                           const SizedBox(height: 18),
                           Wrap(
+                            alignment: WrapAlignment.spaceBetween,
+                            crossAxisAlignment: WrapCrossAlignment.center,
                             spacing: 12,
                             runSpacing: 8,
                             children: [
@@ -337,6 +340,7 @@ class _RoutesPageState extends State<RoutesPage> {
                                   _search.clear();
                                 }),
                               ),
+                              ConfigurationTransfer(model: model, routes: true),
                             ],
                           ),
                           const SizedBox(height: 12),
@@ -355,9 +359,16 @@ class _RoutesPageState extends State<RoutesPage> {
                                       key: const ValueKey('route-search'),
                                       controller: _search,
                                       onChanged: (_) => setState(() {}),
-                                      decoration: const InputDecoration(
+                                      decoration: InputDecoration(
                                         hintText: '搜索目标或备注',
-                                        prefixIcon: Icon(Icons.search),
+                                        prefixIcon: const Icon(Icons.search),
+                                        suffixIcon: IconButton(
+                                          tooltip: '清空规则搜索',
+                                          onPressed: _search.text.isEmpty
+                                              ? null
+                                              : () => setState(_search.clear),
+                                          icon: const Icon(Icons.close),
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -393,6 +404,14 @@ class _RoutesPageState extends State<RoutesPage> {
                             ),
                           ),
                           const SizedBox(height: 12),
+                          if ((_targets || !_bulk) && query.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Text(
+                                '找到 $count / ${_targets ? targets.length : entries.length} 条规则',
+                                style: TextStyle(color: ui.muted, fontSize: 12),
+                              ),
+                            ),
                           if (_editing) ...[
                             KeyedSubtree(key: _formKey, child: _editor(ui)),
                             const SizedBox(height: 12),
@@ -567,19 +586,6 @@ class _RoutesPageState extends State<RoutesPage> {
       Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Wrap(
-            alignment: WrapAlignment.spaceBetween,
-            spacing: 8,
-            runSpacing: 4,
-            children: [
-              const Text(
-                '这个目标会怎么走？',
-                style: TextStyle(fontWeight: FontWeight.w600),
-              ),
-              Text('依据已应用规则', style: TextStyle(color: ui.muted, fontSize: 12)),
-            ],
-          ),
-          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
@@ -591,7 +597,10 @@ class _RoutesPageState extends State<RoutesPage> {
                       _queryRoute();
                     }
                   },
-                  decoration: const InputDecoration(hintText: '输入域名或 IP'),
+                  decoration: const InputDecoration(
+                    hintText: '查询域名或 IP 的实际路由',
+                    prefixIcon: Icon(Icons.alt_route),
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
@@ -637,13 +646,18 @@ class _RoutesPageState extends State<RoutesPage> {
                 ),
             ],
           ],
-          const SizedBox(height: 8),
-          Text(
-            model.rulesDirty ? '有未应用草稿；查询仍使用已应用规则。' : '路由结果不代表目标一定可访问。',
-            style: TextStyle(color: ui.muted, fontSize: 12),
-          ),
+          if (model.rulesDirty || job != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              model.rulesDirty
+                  ? '有未应用草稿；查询仍使用已应用规则。'
+                  : '依据已应用规则；路由结果不代表目标一定可访问。',
+              style: TextStyle(color: ui.muted, fontSize: 12),
+            ),
+          ],
         ],
       ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
     );
   }
 
@@ -737,9 +751,6 @@ class _RoutesPageState extends State<RoutesPage> {
             Text(description, style: TextStyle(color: ui.muted, fontSize: 12)),
           ],
         );
-        final actionStyle = route == null
-            ? const ButtonStyle(animationDuration: Duration.zero)
-            : null;
         final actions = Wrap(
           crossAxisAlignment: WrapCrossAlignment.center,
           spacing: 4,
@@ -750,14 +761,12 @@ class _RoutesPageState extends State<RoutesPage> {
                 style: TextStyle(fontSize: 12, color: ui.muted),
               ),
             TextButton(
-              style: actionStyle,
               onPressed: model.showBlockingProgress || model.routesConflict
                   ? null
                   : onEdit,
               child: const Text('编辑'),
             ),
             TextButton(
-              style: actionStyle,
               onPressed:
                   model.showBlockingProgress ||
                       model.routesConflict ||

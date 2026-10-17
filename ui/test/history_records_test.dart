@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -6,6 +7,7 @@ import 'package:network_ui/models/kernel_status.dart';
 import 'package:network_ui/services/proxy_controller.dart';
 import 'package:network_ui/ui/desktop_theme.dart';
 import 'package:network_ui/ui/pages/access_records_page.dart';
+import 'package:network_ui/ui/widgets/sortable_table.dart';
 
 class HistoryKernel extends ProxyController {
   final requests = <(String, int?, bool, String)>[];
@@ -75,7 +77,197 @@ class PagedHistoryKernel extends HistoryKernel {
   );
 }
 
+class LargeHistoryKernel extends HistoryKernel {
+  @override
+  Future<AccessRecordPage> accessHistory({
+    String target = '',
+    bool failedOnly = false,
+    String order = 'recent',
+    bool ascending = false,
+    int? beforeValue,
+    String afterHost = '',
+  }) async => AccessRecordPage.fromJson({
+    'items': List.generate(
+      5000,
+      (index) => {
+        'host': 'record-${index.toString().padLeft(5, '0')}.example',
+        'connectionCount': index + 1,
+        'lastAccessAt': 1791716489000,
+        'lastFailureAt': 0,
+      },
+    ),
+    'hasMore': false,
+    'nextValue': 0,
+    'nextHost': '',
+  });
+}
+
 void main() {
+  testWidgets('5000 条访问记录滚动跳到底部仅构建可见行', (tester) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final kernel = LargeHistoryKernel()..connected = true;
+    addTearDown(kernel.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: desktopTheme(Brightness.light)
+            .copyWith(platform: TargetPlatform.macOS),
+        home: Scaffold(body: AccessRecordsPage(proxy: kernel)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    var builds = 0;
+    final previous = debugOnRebuildDirtyWidget;
+    debugOnRebuildDirtyWidget = (element, builtOnce) {
+      if (element.widget is TableText) builds++;
+      previous?.call(element, builtOnce);
+    };
+    addTearDown(() => debugOnRebuildDirtyWidget = previous);
+    final position = tester
+        .state<ScrollableState>(
+          find.descendant(
+            of: find.byKey(const PageStorageKey('access-records')),
+            matching: find.byType(Scrollable),
+          ),
+        )
+        .position;
+    final elapsed = Stopwatch()..start();
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pumpAndSettle();
+    elapsed.stop();
+    debugPrint(
+      '访问记录跳到底部：5000 行，构建 $builds 个单元格，测试耗时 ${elapsed.elapsedMilliseconds} 毫秒',
+    );
+    expect(find.text('record-04999.example').hitTestable(), findsOneWidget);
+    expect(builds, lessThan(200), reason: '滚动跳跃不能逐行构建中间的几千条记录');
+    position.jumpTo(0);
+    await tester.pumpAndSettle();
+    builds = 0;
+    final controller = tester
+        .widget<ListView>(find.byKey(const PageStorageKey('access-records')))
+        .controller;
+    final scrollbar = find.byWidgetPredicate(
+      (widget) => widget is Scrollbar && widget.controller == controller,
+    );
+    final bounds = tester.getRect(scrollbar);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.down(Offset(bounds.right - 4, bounds.top + 12));
+    await mouse.moveTo(Offset(bounds.right - 4, bounds.top + 52));
+    await tester.pump();
+    await mouse.moveTo(Offset(bounds.right - 4, bounds.bottom - 24));
+    await tester.pump();
+    await mouse.up();
+    await tester.pumpAndSettle();
+    expect(position.pixels, greaterThan(position.maxScrollExtent * .8));
+    expect(builds, lessThan(200), reason: '鼠标拖动滚动条也只能构建可见行');
+    await mouse.removePointer();
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('分页集合去重保留顺序，刷新和内核切换不会误删相同域名', (tester) async {
+    final kernel = PagedHistoryKernel()..connected = true;
+    addTearDown(kernel.dispose);
+    Widget page() => MaterialApp(
+      theme: desktopTheme(Brightness.light),
+      home: Scaffold(body: AccessRecordsPage(proxy: kernel)),
+    );
+    await tester.pumpWidget(page());
+    kernel.completePage(0, 81);
+    await tester.pumpAndSettle();
+    final position = tester
+        .state<ScrollableState>(
+          find.descendant(
+            of: find.byKey(const PageStorageKey('access-records')),
+            matching: find.byType(Scrollable),
+          ),
+        )
+        .position;
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pump();
+    AccessRecordPage values(List<String> hosts) => AccessRecordPage.fromJson({
+      'items': [
+        for (final host in hosts)
+          {
+            'host': host,
+            'connectionCount': 1,
+            'lastAccessAt': 1791716489000,
+            'lastFailureAt': 0,
+          },
+      ],
+      'hasMore': false,
+      'nextValue': 0,
+      'nextHost': '',
+    });
+    kernel.pending[1].complete(
+      values([
+        'page-0-item-19.example',
+        'new-a.example',
+        'new-a.example',
+        'new-b.example',
+      ]),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已显示 22 个域名 / IP'), findsOneWidget);
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(find.text('new-a.example')).dy,
+      lessThan(tester.getTopLeft(find.text('new-b.example')).dy),
+    );
+    await tester.tap(find.text('查询 / 刷新'));
+    await tester.pump();
+    kernel.pending[2].complete(values(['new-a.example']));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已显示 1 个域名 / IP'), findsOneWidget);
+    expect(find.text('new-a.example'), findsOneWidget);
+    kernel.kernelGeneration++;
+    await tester.pumpWidget(page());
+    await tester.pump();
+    kernel.pending[3].complete(values(['new-a.example']));
+    await tester.pumpAndSettle();
+    expect(find.text('new-a.example'), findsOneWidget);
+    expect(find.textContaining('已显示 1 个域名 / IP'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final scale in [1.3, 2.0]) {
+    testWidgets('访问记录行高随文字缩放，远处行无裁切：$scale', (tester) async {
+      tester.platformDispatcher.textScaleFactorTestValue = scale;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      final kernel = LargeHistoryKernel()..connected = true;
+      addTearDown(kernel.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: desktopTheme(Brightness.dark),
+          home: Scaffold(body: AccessRecordsPage(proxy: kernel)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final position = tester
+          .state<ScrollableState>(
+            find.descendant(
+              of: find.byKey(const PageStorageKey('access-records')),
+              matching: find.byType(Scrollable),
+            ),
+          )
+          .position;
+      position.jumpTo(position.maxScrollExtent);
+      await tester.pumpAndSettle();
+      final text = find.text('record-04999.example');
+      expect(text, findsOneWidget);
+      final row = find
+          .ancestor(of: text, matching: find.byType(Container))
+          .first;
+      final textBounds = tester.getRect(text), rowBounds = tester.getRect(row);
+      expect(textBounds.top, greaterThanOrEqualTo(rowBounds.top));
+      expect(textBounds.bottom, lessThanOrEqualTo(rowBounds.bottom));
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets('刷新保留记录和布局，阻止重复请求，失败保留结果并可重试', (tester) async {
     final kernel = PagedHistoryKernel()..connected = true;
     addTearDown(kernel.dispose);

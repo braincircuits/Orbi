@@ -112,6 +112,7 @@ class _ProxyHomeState extends State<ProxyHome> {
             ),
           ),
         ),
+        snackBarAnimationStyle: AnimationStyle.noAnimation,
       );
       unawaited(
         controller.closed.then((_) {
@@ -216,6 +217,7 @@ class _ProxyHomeState extends State<ProxyHome> {
   Future<void> _reload() async {
     if (model.dirty) {
       final discard = await showDialog<bool>(
+        animationStyle: AnimationStyle.noAnimation,
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('重新读取内核配置'),
@@ -242,6 +244,7 @@ class _ProxyHomeState extends State<ProxyHome> {
     settingsOpen = true;
     try {
       await showDialog<void>(
+        animationStyle: AnimationStyle.noAnimation,
         context: context,
         builder: (_) => SettingsDialog(model: model),
       );

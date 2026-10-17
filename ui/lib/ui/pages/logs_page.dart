@@ -5,9 +5,30 @@ import '../widgets/desktop_widgets.dart';
 import '../widgets/desktop_select.dart';
 import '../desktop_theme.dart';
 
-class LogsPage extends StatelessWidget {
+class LogsPage extends StatefulWidget {
   const LogsPage({super.key, required this.model});
   final ProxyViewModel model;
+  @override
+  State<LogsPage> createState() => _LogsPageState();
+}
+
+class _LogsPageState extends State<LogsPage> {
+  final search = TextEditingController();
+  ProxyViewModel get model => widget.model;
+
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
+  }
+
+  void _searchChanged() {
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && model.logScroll.hasClients) model.logScroll.jumpTo(0);
+    });
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: model.proxy.logChanges,
@@ -21,59 +42,87 @@ class LogsPage extends StatelessWidget {
 
   Widget _content(BuildContext context, DesktopWidgets ui) {
     final source = model.pauseLogs ? model.pausedLines : model.proxy.logs;
+    final query = search.text.trim().toLowerCase();
     final lines = source
-        .where((log) => model.filter == '全部' || log.level == model.filter)
+        .where(
+          (log) =>
+              (model.filter == '全部' || log.level == model.filter) &&
+              log.message.toLowerCase().contains(query),
+        )
         .toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        ui.pageHeading('运行日志', '最近采集记录 · 按级别精确筛选'),
-        Row(
-          children: [
-            SizedBox(
-              width: 132,
-              child: DesktopSelect<String>(
-                value: model.filter,
-                options: [
-                  for (final level in [
-                    '全部',
-                    'TRACE',
-                    'DEBUG',
-                    'INFO',
-                    'WARN',
-                    'ERROR',
-                    'FATAL',
-                  ])
-                    (level, level == '全部' ? '所有级别' : level),
-                ],
-                onSelected: (value) {
-                  if (value != null) model.update(() => model.filter = value);
-                },
+        LayoutBuilder(
+          builder: (context, constraints) => Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SizedBox(
+                width: constraints.maxWidth < 620 ? constraints.maxWidth : 260,
+                child: TextField(
+                  key: const ValueKey('log-search'),
+                  controller: search,
+                  onChanged: (_) => _searchChanged(),
+                  decoration: InputDecoration(
+                    hintText: '搜索日志内容',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: IconButton(
+                      tooltip: '清空日志搜索',
+                      onPressed: search.text.isEmpty
+                          ? null
+                          : () {
+                              search.clear();
+                              _searchChanged();
+                            },
+                      icon: const Icon(Icons.close),
+                    ),
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Text(
-              '${lines.length} 条',
-              style: TextStyle(color: ui.muted, fontSize: 11),
-            ),
-            const Spacer(),
-            IconButton(
-              tooltip: model.pauseLogs ? '恢复日志' : '暂停日志',
-              onPressed: model.toggleLogPause,
-              icon: Icon(model.pauseLogs ? Icons.play_arrow : Icons.pause),
-            ),
-            IconButton(
-              tooltip: '清空显示',
-              onPressed: model.clearLogs,
-              icon: const Icon(Icons.delete_outline),
-            ),
-            const SizedBox(width: 6),
-            OutlinedButton.icon(
-              onPressed: lines.isEmpty ? null : () => model.exportLogs(lines),
-              icon: const Icon(Icons.file_upload_outlined),
-              label: const Text('导出'),
-            ),
-          ],
+              SizedBox(
+                width: 132,
+                child: DesktopSelect<String>(
+                  value: model.filter,
+                  options: [
+                    for (final level in [
+                      '全部',
+                      'TRACE',
+                      'DEBUG',
+                      'INFO',
+                      'WARN',
+                      'ERROR',
+                      'FATAL',
+                    ])
+                      (level, level == '全部' ? '所有级别' : level),
+                  ],
+                  onSelected: (value) {
+                    if (value != null) model.update(() => model.filter = value);
+                  },
+                ),
+              ),
+              Text(
+                '${lines.length} / ${source.length} 条',
+                style: TextStyle(color: ui.muted, fontSize: 11),
+              ),
+              IconButton(
+                tooltip: model.pauseLogs ? '恢复日志' : '暂停日志',
+                onPressed: model.toggleLogPause,
+                icon: Icon(model.pauseLogs ? Icons.play_arrow : Icons.pause),
+              ),
+              IconButton(
+                tooltip: '清空显示',
+                onPressed: model.clearLogs,
+                icon: const Icon(Icons.delete_outline),
+              ),
+              OutlinedButton.icon(
+                onPressed: lines.isEmpty ? null : () => model.exportLogs(lines),
+                icon: const Icon(Icons.file_upload_outlined),
+                label: const Text('导出'),
+              ),
+            ],
+          ),
         ),
         const SizedBox(height: 14),
         Expanded(
@@ -87,8 +136,8 @@ class LogsPage extends StatelessWidget {
             child: lines.isEmpty
                 ? ui.empty(
                     Icons.description_outlined,
-                    '暂无日志',
-                    '启动代理后将在这里显示运行记录',
+                    source.isEmpty ? '暂无日志' : '没有匹配的日志',
+                    source.isEmpty ? '启动代理后将在这里显示运行记录' : '调整关键词或日志级别，原始记录保留',
                   )
                 : SelectionArea(
                     child: ListView.builder(

@@ -116,6 +116,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
 
   Future<bool> _confirm(String title, String text, String action) async =>
       await showDialog<bool>(
+        animationStyle: AnimationStyle.noAnimation,
         context: context,
         builder: (context) => AlertDialog(
           title: Text(title),

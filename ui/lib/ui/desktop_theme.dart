@@ -28,6 +28,11 @@ abstract final class DesktopDesign {
   static const navigationWidth = 184.0;
   static const sectionSpacing = spacing * 3;
   static const panelPadding = spacing * 2;
+  // 信息列表在边界直接停止，不播放拉伸或回弹；保留宿主的输入行为。
+  static final scrollBehavior = const MaterialScrollBehavior().copyWith(
+    physics: const ClampingScrollPhysics(),
+    overscroll: false,
+  );
   static double pageInset(double width) => width < 760 ? 18 : 28;
   // 蓝色略深于系统默认强调色，保证白色按钮文字满足 4.5:1 对比度。
   static const applyAction = Color(0xFF006FE6);
@@ -102,6 +107,8 @@ ThemeData desktopTheme(Brightness brightness) {
     borderRadius: BorderRadius.circular(DesktopDesign.controlRadius),
   );
   final button = ButtonStyle(
+    // 桌面操作立即反馈状态，避免列表重新启用时逐项淡入。
+    animationDuration: Duration.zero,
     iconSize: const WidgetStatePropertyAll(DesktopDesign.actionIconSize),
     minimumSize: const WidgetStatePropertyAll(
       Size(0, DesktopDesign.controlHeight),
@@ -264,6 +271,7 @@ ThemeData desktopTheme(Brightness brightness) {
     ),
     iconButtonTheme: IconButtonThemeData(
       style: ButtonStyle(
+        animationDuration: Duration.zero,
         iconSize: const WidgetStatePropertyAll(DesktopDesign.actionIconSize),
         minimumSize: const WidgetStatePropertyAll(
           Size.square(DesktopDesign.controlHeight),
@@ -303,6 +311,9 @@ ThemeData desktopTheme(Brightness brightness) {
         borderRadius: BorderRadius.circular(DesktopDesign.panelRadius),
         side: BorderSide(color: scheme.outlineVariant),
       ),
+    ),
+    expansionTileTheme: const ExpansionTileThemeData(
+      expansionAnimationStyle: AnimationStyle.noAnimation,
     ),
     drawerTheme: const DrawerThemeData(shape: RoundedRectangleBorder()),
     navigationDrawerTheme: NavigationDrawerThemeData(
