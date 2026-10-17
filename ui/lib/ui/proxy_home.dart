@@ -256,6 +256,18 @@ class _ProxyHomeState extends State<ProxyHome> {
   @override
   Widget build(BuildContext context) {
     final ui = DesktopWidgets(context, model);
+    final pages = <Widget>[
+      OverviewPage(
+        model: model,
+        visible: model.page == 0,
+        onSettings: _showSettings,
+      ),
+      ConfigurationPage(model: model),
+      RoutesPage(model: model),
+      LogsPage(model: model, visible: model.page == 3),
+      TunnelsPage(model: model, visible: model.page == 4),
+      DiagnosticsPage(model: model, visible: model.page == 5),
+    ];
     return Shortcuts(
       // 表单焦点遍历使用统一规则，避免依赖宿主文本输入事件转换。
       shortcuts: const {
@@ -350,25 +362,13 @@ class _ProxyHomeState extends State<ProxyHome> {
                                       child: IndexedStack(
                                         index: model.page,
                                         children: [
-                                          OverviewPage(
-                                            model: model,
-                                            visible: model.page == 0,
-                                            onSettings: _showSettings,
-                                          ),
-                                          ConfigurationPage(model: model),
-                                          RoutesPage(model: model),
-                                          LogsPage(
-                                            model: model,
-                                            visible: model.page == 3,
-                                          ),
-                                          TunnelsPage(
-                                            model: model,
-                                            visible: model.page == 4,
-                                          ),
-                                          DiagnosticsPage(
-                                            model: model,
-                                            visible: model.page == 5,
-                                          ),
+                                          for (final (index, page)
+                                              in pages.indexed)
+                                            // 保留状态，同时停止隐藏页的进度和光标动画。
+                                            TickerMode(
+                                              enabled: model.page == index,
+                                              child: page,
+                                            ),
                                         ],
                                       ),
                                     ),

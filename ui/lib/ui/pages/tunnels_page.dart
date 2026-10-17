@@ -175,11 +175,17 @@ class _TunnelsPageState extends State<TunnelsPage> {
           child: IndexedStack(
             index: history ? 1 : 0,
             children: [
-              _live(context),
+              TickerMode(
+                enabled: widget.visible && !history,
+                child: _live(context),
+              ),
               if (historyOpened)
-                AccessRecordsPage(
-                  proxy: widget.model.proxy,
-                  visible: widget.visible && history,
+                TickerMode(
+                  enabled: widget.visible && history,
+                  child: AccessRecordsPage(
+                    proxy: widget.model.proxy,
+                    visible: widget.visible && history,
+                  ),
                 )
               else
                 const SizedBox.shrink(),

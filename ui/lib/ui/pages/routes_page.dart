@@ -26,6 +26,10 @@ class _RoutesPageState extends State<RoutesPage> {
   String? _editingTarget;
   String _route = 'proxy', _formError = '';
   String _editSource = '';
+  String? _rulesSource, _targetsSource;
+  List<DirectRuleEntry> _entries = [], _filteredRules = [];
+  List<MapEntry<String, String>> _targetEntries = [], _filteredTargets = [];
+  (String, String, String)? _filterSource;
   ProxyViewModel get model => widget.model;
 
   @override
@@ -222,21 +226,40 @@ class _RoutesPageState extends State<RoutesPage> {
     listenable: model,
     builder: (context, _) {
       final ui = DesktopWidgets(context, model);
-      final entries = DirectRuleEntry.parse(model.rules.text);
-      final targets =
-          (model.proxy.appliedProfile?.targetRoutes.entries.toList() ?? [])
-            ..sort((a, b) => a.key.compareTo(b.key));
       final query = _search.text.trim().toLowerCase();
-      final filteredRules = entries
-          .where(
-            (e) => '${e.target} ${e.note} ${e.group}'.toLowerCase().contains(
-              query,
-            ),
-          )
-          .toList();
-      final filteredTargets = targets
-          .where((e) => e.key.toLowerCase().contains(query))
-          .toList();
+      final rulesSource = model.rules.text;
+      final targetsSource = model.proxy.appliedProfile?.routesOverrides ?? '';
+      // 仅按源文本失效；导航、忙碌状态等通知不应重复解析和排序几千条规则。
+      if (_rulesSource != rulesSource) {
+        _rulesSource = rulesSource;
+        _entries = DirectRuleEntry.parse(rulesSource);
+      }
+      if (_targetsSource != targetsSource) {
+        _targetsSource = targetsSource;
+        _targetEntries =
+            (model.proxy.appliedProfile?.targetRoutes.entries.toList() ?? [])
+              ..sort((a, b) => a.key.compareTo(b.key));
+      }
+      final filterSource = (rulesSource, targetsSource, query);
+      if (_filterSource != filterSource) {
+        _filterSource = filterSource;
+        _filteredRules = query.isEmpty
+            ? _entries
+            : _entries
+                  .where(
+                    (e) => '${e.target} ${e.note} ${e.group}'
+                        .toLowerCase()
+                        .contains(query),
+                  )
+                  .toList();
+        _filteredTargets = query.isEmpty
+            ? _targetEntries
+            : _targetEntries
+                  .where((e) => e.key.toLowerCase().contains(query))
+                  .toList();
+      }
+      final entries = _entries, targets = _targetEntries;
+      final filteredRules = _filteredRules, filteredTargets = _filteredTargets;
       final count = _targets ? filteredTargets.length : filteredRules.length;
       // 模式切换仍阻止重复提交，但无关控件保持原有外观。
       return AbsorbPointer(

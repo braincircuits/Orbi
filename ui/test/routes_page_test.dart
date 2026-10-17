@@ -129,6 +129,15 @@ class ImportRulesModel extends ProxyViewModel {
   Future<String?> readRulesFile() async => '# 导入分组\nimport.example\n';
 }
 
+class _CountingProfile extends ProxyProfile {
+  int targetReads = 0;
+  @override
+  Map<String, String> get targetRoutes {
+    targetReads++;
+    return super.targetRoutes;
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late RulesKernel kernel;
@@ -267,6 +276,48 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  testWidgets('规则展示缓存仅在规则文本变化时重建，搜索和配置替换不串用', (tester) async {
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final profile = _CountingProfile()
+      ..rules = 'first.example # 首条备注'
+      ..routesOverrides = 'proxy target.example';
+    kernel.publish(profile, 2);
+    model.accept(profile);
+    await mount(tester);
+    profile.targetReads = 0;
+    model.update(() {});
+    await tester.pump();
+    expect(profile.targetReads, 0, reason: '无关状态变化不应重新解析指定目标');
+    await tester.enterText(find.byKey(const ValueKey('route-search')), 'first');
+    await tester.pumpAndSettle();
+    expect(find.text('first.example'), findsOneWidget);
+    expect(profile.targetReads, 0, reason: '搜索只筛选已解析的数据');
+    model.editRules('second.example # 第二条备注');
+    await tester.pumpAndSettle();
+    expect(find.text('没有匹配的规则'), findsOneWidget);
+    await tester.tap(find.byTooltip('清空规则搜索'));
+    await tester.pumpAndSettle();
+    expect(find.text('second.example'), findsOneWidget);
+    expect(find.text('first.example'), findsNothing);
+    profile.routesOverrides = 'direct changed.example';
+    model.update(() {});
+    await tester.pumpAndSettle();
+    expect(profile.targetReads, 1);
+    await tester.tap(find.text('指定目标 1'));
+    await tester.pumpAndSettle();
+    expect(find.text('changed.example'), findsOneWidget);
+    final replacement = ProxyProfile(
+      routesOverrides: 'proxy replacement.example',
+    );
+    kernel.publish(replacement, 3);
+    model.accept(replacement);
+    await tester.pumpAndSettle();
+    expect(find.text('replacement.example'), findsOneWidget);
+    expect(find.text('changed.example'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('切换模式期间按钮和底栏稳定，阻止重复提交，失败后恢复', (tester) async {
     addTearDown(tester.view.resetPhysicalSize);
