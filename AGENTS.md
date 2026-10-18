@@ -34,7 +34,7 @@
 ## 打包产物目录要求
 
 - 最终交付的打包产物统一放在项目根目录的 `release/` 下，按 UI、客户端内核和服务端分别存放，不直接堆放在 `release/` 根目录。
-- UI 应用放在 `release/ui/`，macOS 应用名称为 `Network-YYYYMMDD-HHMMSS.app`，例如 `Network-20261016-103025.app`；时间戳使用北京时间（`Asia/Shanghai`），在打包开始时确定，整个流程保持一致。每次生成新包，保留已有 UI 包；同名产物已存在时停止，不覆盖。JAR 模式应用仍内置客户端内核、Java 运行时和 TUN 辅助程序，可独立运行。
+- UI 应用放在 `release/ui/`，macOS 应用名称为 `Orbi-YYYYMMDD-HHMMSS.app`，例如 `Orbi-20261016-103025.app`；时间戳使用北京时间（`Asia/Shanghai`），在打包开始时确定，整个流程保持一致。每次生成新包，保留已有 UI 包；同名产物已存在时停止，不覆盖。JAR 模式应用仍内置客户端内核、Java 运行时和 TUN 辅助程序，可独立运行。
 - 独立客户端内核 JAR 放在 `release/client/client.jar`。
 - 服务端 JAR 放在 `release/server/server.jar`。
 - 构建中间文件可保留在 `target/`、`ui/build/` 等构建目录，但打包完成后的交付路径必须遵循上述规则。

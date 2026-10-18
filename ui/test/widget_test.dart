@@ -125,7 +125,7 @@ void main() {
     await tester.pumpAndSettle();
     final header = find.byKey(const ValueKey('desktop-titlebar'));
     expect(tester.getRect(header), const Rect.fromLTWH(185, 0, 935, 56));
-    expect(find.text('Network'), findsOneWidget);
+    expect(find.text('Orbi'), findsOneWidget);
     expect(find.text('代理客户端'), findsNothing);
     for (final text in ['代理概览']) {
       expect(tester.getCenter(find.text(text)).dy, closeTo(28, 1));
@@ -153,7 +153,7 @@ void main() {
       expect(brand.top, 72);
       expect(brand.right, lessThanOrEqualTo(navigation.right));
       expect(navigation.width, width < 760 ? 150 : 184);
-      expect(find.text('Network'), findsOneWidget);
+      expect(find.text('Orbi'), findsOneWidget);
     }
     expect(tester.takeException(), isNull);
   });

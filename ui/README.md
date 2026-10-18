@@ -1,4 +1,4 @@
-# Network 代理客户端
+# Orbi 代理客户端
 
 Flutter 桌面客户端，界面以 Flutter Material 和基础组件实现统一桌面侧栏、分层概览、工具栏与侧边编辑；当前已接入 macOS 原生宿主。通过本机 HTTP API 管理代理内核，通过 SSE 接收状态、活跃隧道、日志与诊断进度。接口依据 [内核 Web API](../docs/web-api.md)，要求支持 `--web` 的 API v1 内核。
 
@@ -50,7 +50,7 @@ AOT 应用不传入 JVM 参数。以下规避只用于开发环境的 JAR 启动
 - 修改本地监听地址或端口会立即重建监听，已有连接会断开；绑定失败时内核尝试恢复原监听。修改本地请求超时只影响后续请求。
 - 「断开会话」关闭当前代理会话，后续请求重新连接。替换同路径的 CA 文件后也需断开会话。
 - 「重启代理」重启转发，使用已应用配置，不重启管理内核。
-- 原生应用包直接启动 `Contents/Resources/proxy/network-core`，高级设置显示原生运行环境；Java / JAR 路径设置仅用于 JAR 开发环境，不影响原生应用。已有运行中的内核仍会被接管，切换到新内核程序需先退出 Network，再打开新应用。
+- 原生应用包直接启动 `Contents/Resources/proxy/network-core`，高级设置显示原生运行环境；Java / JAR 路径设置仅用于 JAR 开发环境，不影响原生应用。已有运行中的内核仍会被接管，切换到新内核程序需先退出 Orbi，再打开新应用。
 - API 返回的密码为空并附带 `hasPassword` 标志。编辑时留空保留原密码，填写则替换；新连接必须填写密码。
 - 默认以内核配置为准，首次连接、内核重启或外部配置版本变化时自动同步页面，替换尚未应用的草稿。同版本状态、日志及主题变化不影响编辑。手动「重新读取」有未应用修改时仍会确认是否丢弃。
 - 所有配置写入与保存带 `If-Match` 版本；应用后使用本次应用返回的版本保存。冲突时自动读取内核最新配置，提示核对后重新操作，不自动重试写入。概览切换默认连接、启动时应用草稿也会保存到内核。
@@ -68,8 +68,8 @@ AOT 应用不传入 JVM 参数。以下规避只用于开发环境的 JAR 启动
 ## 生命周期与数据
 
 - 关闭窗口 / Command-W：隐藏主窗口和 Dock 运行图标，保留菜单栏图标，内核和代理继续运行。已固定在 Dock 的快捷方式由 macOS 管理，不会被移除。
-- 左键点击托盘图标：恢复主窗口和 Dock 图标，并切换到前台；窗口已最小化时恢复窗口。右键点击托盘图标：显示菜单，可显示窗口、启动或停止代理、退出 Network。重新打开应用也会恢复窗口。
-- 菜单栏「退出 Network」、应用菜单「退出」/ Command-Q：先退出内核，再退出客户端。内核已退出、发现文件已移除时清理旧连接状态并直接退出客户端。发现文件仍存在但无法连接、内核退出失败或仍有操作进行时取消退出，恢复窗口并提示；不会强行结束进程。重复退出请求共用同一次关闭操作。
+- 左键点击托盘图标：恢复主窗口和 Dock 图标，并切换到前台；窗口已最小化时恢复窗口。右键点击托盘图标：显示菜单，可显示窗口、启动或停止代理、退出 Orbi。重新打开应用也会恢复窗口。
+- 菜单栏「退出 Orbi」、应用菜单「退出」/ Command-Q：先退出内核，再退出客户端。内核已退出、发现文件已移除时清理旧连接状态并直接退出客户端。发现文件仍存在但无法连接、内核退出失败或仍有操作进行时取消退出，恢复窗口并提示；不会强行结束进程。重复退出请求共用同一次关闭操作。
 - 停止代理：停止转发，内核管理接口仍运行。
 - 页面不再提供单独退出内核的按钮，托盘和应用菜单的退出行为保留。
 
@@ -124,9 +124,9 @@ JDK_HOME=/实际路径/jdk-25 FLUTTER=/实际路径/flutter \
   sh scripts/package-macos-jar.sh
 ```
 
-此脚本编译 JAR、TUN 辅助程序和 Flutter Release 界面，并进行本机临时签名。应用输出到根目录 `release/ui/Network-YYYYMMDD-HHMMSS.app`，同时更新 `release/client/client.jar` 和 `release/server/server.jar`；不接受自定义输出路径。应用先在构建目录完成组装和签名校验，通过后才发布新包，保留已有 UI 版本。已有发布配置、数据库、证书以及 `Application Support/NetworkUI` 中的 UI 运行数据保持不变。以下 Native Image 打包流程仅在明确需要原生内核时执行。
+此脚本编译 JAR、TUN 辅助程序和 Flutter Release 界面，并进行本机临时签名。应用输出到根目录 `release/ui/Orbi-YYYYMMDD-HHMMSS.app`，同时更新 `release/client/client.jar` 和 `release/server/server.jar`；不接受自定义输出路径。应用先在构建目录完成组装和签名校验，通过后才发布新包，保留已有 UI 版本。已有发布配置、数据库、证书以及 `Application Support/NetworkUI` 中的 UI 运行数据保持不变。以下 Native Image 打包流程仅在明确需要原生内核时执行。
 
-UI 包名中的时间戳在打包开始时按北京时间（`Asia/Shanghai`）确定，格式为年月日-时分秒，例如 `Network-20261016-103025.app`；同名产物已存在时停止，不覆盖。脚本输出完整产物路径和所在文件夹的 Markdown 链接，交付回复提供可点击的“打开所在文件夹”入口。
+UI 包名中的时间戳在打包开始时按北京时间（`Asia/Shanghai`）确定，格式为年月日-时分秒，例如 `Orbi-20261016-103025.app`；同名产物已存在时停止，不覆盖。脚本输出完整产物路径和所在文件夹的 Markdown 链接，交付回复提供可点击的“打开所在文件夹”入口。
 
 ### Native Image 内核应用包
 
@@ -136,7 +136,7 @@ UI 包名中的时间戳在打包开始时按北京时间（`Asia/Shanghai`）�
 GRAALVM_HOME=/实际路径/graalvm-25 sh scripts/package-macos.sh
 ```
 
-可通过 `FLUTTER`、`CORE_ROOT`、`GRAALVM_HOME` 指定工具位置，`MAVEN_OFFLINE=1` 使用本地 Maven 缓存。`NATIVE_CORE` 可指定已经编译并验证过的原生内核，避免再次编译；程序旁的 GraalVM `.dylib` 一起打包。应用同样输出到 `release/ui/Network-YYYYMMDD-HHMMSS.app`，构建和签名校验通过后发布新包，保留已有 UI 版本。应用包含原生内核及所需动态库，不包含 JAR/JRE；仅构建当前机器架构。目前使用本机临时签名，公开分发仍需正式签名、公证。
+可通过 `FLUTTER`、`CORE_ROOT`、`GRAALVM_HOME` 指定工具位置，`MAVEN_OFFLINE=1` 使用本地 Maven 缓存。`NATIVE_CORE` 可指定已经编译并验证过的原生内核，避免再次编译；程序旁的 GraalVM `.dylib` 一起打包。应用同样输出到 `release/ui/Orbi-YYYYMMDD-HHMMSS.app`，构建和签名校验通过后发布新包，保留已有 UI 版本。应用包含原生内核及所需动态库，不包含 JAR/JRE；仅构建当前机器架构。目前使用本机临时签名，公开分发仍需正式签名、公证。
 
 ## 验证
 
@@ -156,7 +156,7 @@ flutter test
 
 ```sh
 # 将下面的时间戳替换为本次 Native Image 应用包的实际时间戳
-NATIVE_CORE="$PWD/../release/ui/Network-YYYYMMDD-HHMMSS.app/Contents/Resources/proxy/network-core" \
+NATIVE_CORE="$PWD/../release/ui/Orbi-YYYYMMDD-HHMMSS.app/Contents/Resources/proxy/network-core" \
 flutter test test/native_kernel_integration_test.dart
 ```
 

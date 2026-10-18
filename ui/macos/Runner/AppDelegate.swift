@@ -5,7 +5,7 @@ import FlutterMacOS
 class AppDelegate: FlutterAppDelegate {
   override func applicationDidFinishLaunching(_ notification: Notification) {
     // FlutterAppDelegate 未实现这个可选回调，不能调用 super。
-    mainFlutterWindow?.title = "Network"
+    mainFlutterWindow?.title = "Orbi"
   }
 
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

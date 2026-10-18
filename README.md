@@ -1,4 +1,6 @@
-# HTTP/2 与 HTTP/3 多路复用代理
+# Orbi
+
+Orbi 是基于 HTTP/2 与 HTTP/3 的多路复用代理项目，包含桌面客户端、代理内核与服务端。后续计划扩展软路由能力，统一管理局域网流量。
 
 Java 25 + Netty 4.2.18.Final。Flutter UI 称为「代理客户端」，Java ClientG 称为「代理内核」，Java Server 称为「代理服务端」。代理内核提供本地 HTTP 代理入口，支持保存多份连接配置并切换默认连接，每份配置选择 HTTP/2 或 HTTP/3；每个代理隧道使用独立的 CONNECT 流。
 
@@ -69,7 +71,7 @@ sh scripts/package-release.sh
 release/
 ├── README.md
 ├── ui/
-│   └── Network-YYYYMMDD-HHMMSS.app  # 由 UI 打包脚本生成，使用北京时间
+│   └── Orbi-YYYYMMDD-HHMMSS.app  # 由 UI 打包脚本生成，使用北京时间
 ├── server/
 │   ├── server.jar
 │   ├── start.sh / start.cmd / background.sh
@@ -613,7 +615,7 @@ sh scripts/build-tun.sh
 # 开发运行，同时构建 JAR 和辅助进程
 sh ui/scripts/run-dev.sh
 
-# 打包到 release/ui/Network-YYYYMMDD-HHMMSS.app，并更新 release/client/client.jar 和 release/server/server.jar
+# 打包到 release/ui/Orbi-YYYYMMDD-HHMMSS.app，并更新 release/client/client.jar 和 release/server/server.jar
 sh ui/scripts/package-macos-jar.sh
 ```
 

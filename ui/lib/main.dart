@@ -45,7 +45,7 @@ class _NetworkAppState extends State<NetworkApp> {
     child: ProxyHome(key: ObjectKey(model), model: model),
     builder: (context, mode, home) => MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Network · 代理客户端',
+      title: 'Orbi · 代理客户端',
       theme: desktopTheme(Brightness.light),
       darkTheme: desktopTheme(Brightness.dark),
       themeMode: mode,

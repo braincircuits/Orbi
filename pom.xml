@@ -6,6 +6,8 @@
     <groupId>com.m20891.proxy</groupId>
     <artifactId>network</artifactId>
     <packaging>pom</packaging>
+    <name>Orbi</name>
+    <description>Orbi 多路复用代理与局域网流量管理项目</description>
     <version>1.0-SNAPSHOT</version>
     <modules>
         <module>Server</module>

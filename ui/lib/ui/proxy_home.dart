@@ -427,7 +427,7 @@ class _ProxyHomeState extends State<ProxyHome> {
                   const SizedBox(width: 10),
                   const Expanded(
                     child: Text(
-                      'Network',
+                      'Orbi',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(

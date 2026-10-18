@@ -36,7 +36,7 @@ class MainFlutterWindow: NSWindow {
     isOpaque = false
     setContentSize(NSSize(width: 1120, height: 780))
     minSize = NSSize(width: 860, height: 640)
-    title = "Network"
+    title = "Orbi"
     // Flutter 顶栏延伸到窗口顶部，原生只保留真实的窗口按钮。
     styleMask.insert(.fullSizeContentView)
     titleVisibility = .hidden
@@ -61,7 +61,7 @@ class MainFlutterWindow: NSWindow {
           self.toggleItem.title = running ? "停止代理" : "启动代理"
           self.toggleItem.isEnabled = !busy
           self.applyItem.isEnabled = state["canApply"] as? Bool ?? false
-          self.statusItem?.button?.toolTip = "Network · " + self.proxyStatus.title
+          self.statusItem?.button?.toolTip = "Orbi · " + self.proxyStatus.title
           result(nil)
         case "showWindow":
           self.showMainWindow()
@@ -230,10 +230,10 @@ class MainFlutterWindow: NSWindow {
 
   private func configureMenuBar() {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-    let image = NSImage(systemSymbolName: "network", accessibilityDescription: "Network 代理")
+    let image = NSImage(systemSymbolName: "network", accessibilityDescription: "Orbi 代理")
     image?.isTemplate = true
     item.button?.image = image
-    item.button?.toolTip = "Network · 代理未运行"
+    item.button?.toolTip = "Orbi · 代理未运行"
     item.button?.target = self
     item.button?.action = #selector(statusItemClicked)
     item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -249,7 +249,7 @@ class MainFlutterWindow: NSWindow {
     toggleItem.isEnabled = false
     menu.addItem(toggleItem)
     menu.addItem(.separator())
-    let quit = NSMenuItem(title: "退出 Network", action: #selector(quitApplication), keyEquivalent: "q")
+    let quit = NSMenuItem(title: "退出 Orbi", action: #selector(quitApplication), keyEquivalent: "q")
     quit.target = self
     menu.addItem(quit)
     statusItem = item
