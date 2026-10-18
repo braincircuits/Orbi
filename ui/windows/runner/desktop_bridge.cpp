@@ -148,6 +148,8 @@ DesktopBridge::DesktopBridge(HWND window, flutter::BinaryMessenger* messenger) :
         result->Success(Value(Map{{Value("support"), Value(Utf8(support.wstring()))}, {Value("resources"), Value(Utf8(Resources().wstring()))}, {Value("sidebarMaterial"), Value("false")}}));
       } else if (method == "desktopState") {
         running_ = Flag(args, "running"); busy_ = Flag(args, "busy"); can_apply_ = Flag(args, "canApply");
+        EnableMenuItem(GetSystemMenu(window_, FALSE), kSystemQuit,
+            MF_BYCOMMAND | (busy_ ? MF_GRAYED : MF_ENABLED));
         result->Success();
       } else if (method == "showWindow") {
         ShowWindow(window_, SW_RESTORE); SetForegroundWindow(window_); result->Success();
@@ -197,7 +199,7 @@ DesktopBridge::DesktopBridge(HWND window, flutter::BinaryMessenger* messenger) :
   });
   auto system_menu = GetSystemMenu(window_, FALSE);
   AppendMenuW(system_menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(system_menu, MF_STRING, kSystemQuit, L"退出 Orbi");
+  AppendMenuW(system_menu, MF_STRING | MF_GRAYED, kSystemQuit, L"退出 Orbi");
   taskbar_created_ = RegisterWindowMessageW(L"TaskbarCreated");
   AddTray();
 }
@@ -268,7 +270,8 @@ std::optional<LRESULT> DesktopBridge::HandleMessage(UINT message, WPARAM wparam,
       AppendMenuW(menu, MF_STRING, kShow, L"显示窗口");
       AppendMenuW(menu, MF_STRING | (busy_ ? MF_GRAYED : 0), kToggle, running_ ? L"停止代理" : L"启动代理");
       AppendMenuW(menu, MF_STRING | (can_apply_ ? 0 : MF_GRAYED), kApply, L"应用并保存配置");
-      AppendMenuW(menu, MF_SEPARATOR, 0, nullptr); AppendMenuW(menu, MF_STRING, kQuit, L"退出 Orbi");
+      AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      AppendMenuW(menu, MF_STRING | (busy_ ? MF_GRAYED : 0), kQuit, L"退出 Orbi");
       POINT point; GetCursorPos(&point); SetForegroundWindow(window_);
       UINT selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, window_, nullptr); DestroyMenu(menu);
       if (selected == kShow) { ShowWindow(window_, SW_RESTORE); SetForegroundWindow(window_); }
