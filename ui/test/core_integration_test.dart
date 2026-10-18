@@ -36,6 +36,24 @@ Future<void> until(bool Function() condition) async {
   throw StateError('等待内核事件超时');
 }
 
+/// Windows 需等 JVM 释放日志和工作目录句柄后才能清理测试目录。
+Future<void> deleteKernelDirectory(Directory directory) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  while (true) {
+    try {
+      await directory.delete(recursive: true);
+      return;
+    } on FileSystemException catch (error) {
+      if (!Platform.isWindows ||
+          error.osError?.errorCode != 32 ||
+          DateTime.now().isAfter(deadline)) {
+        rethrow;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+  }
+}
+
 /// 直接查询真实 SQLite 文件，验证内核已提交密码，不争用内核的实例锁。
 Future<void> expectPersistedPassword(
   String java,
@@ -156,7 +174,7 @@ void main() {
         await model.proxy.shutdown();
         model.dispose();
         seed.dispose();
-        await directory.delete(recursive: true);
+        await deleteKernelDirectory(directory);
       }
     },
     timeout: const Timeout(Duration(seconds: 60)),
@@ -213,7 +231,7 @@ void main() {
         await model.proxy.shutdown();
         model.dispose();
         seed.dispose();
-        await directory.delete(recursive: true);
+        await deleteKernelDirectory(directory);
       }
     },
     timeout: const Timeout(Duration(seconds: 60)),
@@ -291,7 +309,7 @@ void main() {
         other.dispose();
         await controller.shutdown();
         controller.dispose();
-        await directory.delete(recursive: true);
+        await deleteKernelDirectory(directory);
       }
     },
     timeout: const Timeout(Duration(seconds: 60)),
@@ -355,7 +373,7 @@ void main() {
         other.dispose();
         await model.proxy.shutdown();
         model.dispose();
-        await directory.delete(recursive: true);
+        await deleteKernelDirectory(directory);
       }
     },
     timeout: const Timeout(Duration(seconds: 90)),
@@ -421,7 +439,7 @@ void main() {
         http.close(force: true);
         await controller.shutdown();
         controller.dispose();
-        await directory.delete(recursive: true);
+        await deleteKernelDirectory(directory);
       }
     },
     timeout: const Timeout(Duration(seconds: 60)),
@@ -499,8 +517,13 @@ void main() {
           controller.configPath,
           'test-password',
         );
-        expect((await File(controller.configPath).stat()).mode & 0x1ff, 0x180);
-        expect((await controller.endpointFile.stat()).mode & 0x1ff, 0x180);
+        if (!Platform.isWindows) {
+          expect(
+            (await File(controller.configPath).stat()).mode & 0x1ff,
+            0x180,
+          );
+          expect((await controller.endpointFile.stat()).mode & 0x1ff, 0x180);
+        }
         other = ProxyController(directory: directory);
         await other.connect(profile, '', launch: false);
         final staleRevision = other.configurationRevision;
@@ -603,7 +626,7 @@ void main() {
         await controller.shutdown();
         controller.dispose();
         await origin.close(force: true);
-        await directory.delete(recursive: true);
+        await deleteKernelDirectory(directory);
       }
     },
     timeout: const Timeout(Duration(seconds: 90)),

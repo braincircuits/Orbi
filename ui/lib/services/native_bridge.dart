@@ -36,11 +36,13 @@ class NativeBridge {
     required double top,
     required double height,
     required String brightness,
+    required int backgroundColor,
   }) => channel.invokeMethod('configureTitlebar', {
     'right': right,
     'top': top,
     'height': height,
     'brightness': brightness,
+    'backgroundColor': backgroundColor,
   });
 
   Future<String?> chooseFile(String kind) =>

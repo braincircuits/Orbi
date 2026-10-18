@@ -15,6 +15,26 @@ class DatabasePreferences {
   }
 
   Future<void> write(Directory directory, DatabaseSettings settings) async {
+    if (Platform.isWindows && settings.type == 'sqlite') {
+      await directory.create(recursive: true);
+      final root = directory.absolute.uri.normalizePath().toFilePath();
+      final file = File(settings.path);
+      final resolved =
+          (file.isAbsolute
+                  ? file.uri
+                  : directory.absolute.uri.resolveUri(file.uri))
+              .normalizePath()
+              .toFilePath();
+      final prefix = root.endsWith(Platform.pathSeparator)
+          ? root
+          : '$root${Platform.pathSeparator}';
+      if (!resolved.toLowerCase().startsWith(prefix.toLowerCase())) {
+        throw StateError('Windows 便携版的 SQLite 数据库必须位于程序同级的 data 目录内');
+      }
+      settings = DatabaseSettings(
+        path: resolved.substring(prefix.length).replaceAll('\\', '/'),
+      );
+    }
     final text = settings.encode();
     await directory.create(recursive: true);
     final staging = await directory.createTemp('.database-');

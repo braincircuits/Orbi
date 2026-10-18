@@ -17,7 +17,7 @@ class BuildToolsTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.config = self.root / "build.local.properties"
         self.env = {key: value for key, value in os.environ.items()
-                    if key not in {"JDK_HOME", "JAVA_HOME", "MVN", "GO", "FLUTTER", "GRAALVM_HOME"}}
+                    if key not in {"JDK_HOME", "JAVA_HOME", "MVN", "GO", "FLUTTER", "GRAALVM_HOME", "CC", "WINTUN_HOME"}}
 
     def load(self, text=None, env=None):
         if text is not None:
@@ -30,7 +30,7 @@ sh -c 'printf "%s\\n" "$JDK_HOME" "${JAVA_HOME:-}" "$MVN" "$GO" "$FLUTTER" "$GRA
 '''
         return subprocess.run(["sh", "-c", script, "构建配置测试", str(LOADER), str(self.root)],
                               cwd="/", env=self.env if env is None else env,
-                              capture_output=True, text=True, timeout=5)
+                              capture_output=True, text=True, encoding="utf-8", timeout=5)
 
     def test_missing_config_uses_defaults(self):
         result = self.load()
@@ -41,9 +41,13 @@ sh -c 'printf "%s\\n" "$JDK_HOME" "${JAVA_HOME:-}" "$MVN" "$GO" "$FLUTTER" "$GRA
         result = self.load("  # 注释\r\njava.home = tools/JDK 25 \r\nmaven.bin=~/maven/bin/mvn\r\n"
                            "go.bin=/工具/go/bin/go\r\nflutter.bin=tools/flutter/bin/flutter\r\ngraalvm.home=")
         self.assertEqual(result.returncode, 0, result.stderr)
-        jdk = str(self.root / "tools/JDK 25")
-        self.assertEqual(result.stdout.splitlines(), [jdk, jdk, str(Path.home() / "maven/bin/mvn"),
-                         "/工具/go/bin/go", str(self.root / "tools/flutter/bin/flutter"), jdk])
+        # 输出采用构建入口所在 Shell 的路径语义；Windows 的 Git Bash 使用 /c 和 /tmp。
+        paths = subprocess.run(["sh", "-c", 'cd "$1"; printf "%s\\n" "$PWD" "$HOME"',
+                                "路径检查", str(self.root)], env=self.env,
+                               capture_output=True, text=True, encoding="utf-8", check=True).stdout.splitlines()
+        jdk = paths[0] + "/tools/JDK 25"
+        self.assertEqual(result.stdout.splitlines(), [jdk, jdk, paths[1] + "/maven/bin/mvn",
+                         "/工具/go/bin/go", paths[0] + "/tools/flutter/bin/flutter", jdk])
 
     def test_environment_overrides_config(self):
         env = dict(self.env, JDK_HOME="/环境/jdk", JAVA_HOME="/次选/jdk", MVN="custom-mvn",
@@ -73,6 +77,18 @@ sh -c 'printf "%s\\n" "$JDK_HOME" "${JAVA_HOME:-}" "$MVN" "$GO" "$FLUTTER" "$GRA
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines()[3], value)
         self.assertFalse(marker.exists())
+
+    def test_windows_tools_are_exported_and_environment_has_priority(self):
+        self.config.write_text("cc.bin=/工具/Zig 编译器/zig.exe\nwintun.home=/工具/wintun", encoding="utf-8")
+        script = '. "$1"; load_build_tools "$2"; sh -c \'printf "%s\\n" "$CC" "$WINTUN_HOME"\''
+        for environment, expected in (
+            (self.env, ["/工具/Zig 编译器/zig.exe", "/工具/wintun"]),
+            (dict(self.env, CC="custom-cc", WINTUN_HOME="/环境/wintun"), ["custom-cc", "/环境/wintun"]),
+        ):
+            result = subprocess.run(["sh", "-c", script, "Windows 工具检查", str(LOADER), str(self.root)],
+                                    env=environment, capture_output=True, text=True, encoding="utf-8", timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), expected)
 
 
 if __name__ == "__main__":

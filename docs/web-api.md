@@ -310,17 +310,17 @@ python3 scripts/web-smoke-test.py
 
 `access_domains` 长期保存累计统计，不参与流量数据过期清理。`access_flush` 只保留最后一个提交批次标记，不随连接数增长。旧 `access_records` 明细表不再创建、读取或写入，已有内容不迁移、不删除，由使用者手动处理。`status.historyStorage` 继续报告待保存数量、丢弃数量及错误。
 
-## macOS TUN 生命周期
+## 桌面 TUN 生命周期
 
-`info.capabilities` 包含 `macosTun`；桌面 UI 同时检查 macOS 宿主及打包的辅助程序。`status.tun` 包含 `state`、`error`、`engine`、`interfaceIndex`。状态为 `off`、`authorizing`、`starting`、`running`、`stopping` 或 `failed`。这些运行状态不持久化；以下接口需要 Bearer 认证，无需 `If-Match`。
+`info.capabilities` 在 macOS 包含 `macosTun`，在 Windows 包含 `windowsTun`；桌面 UI 同时检查宿主平台。`status.tun` 包含 `state`、`error`、`engine`、`interfaceIndex`。状态为 `off`、`authorizing`、`starting`、`running`、`stopping` 或 `failed`。这些运行状态不持久化；以下接口需要 Bearer 认证，无需 `If-Match`。
 
 | POST 路径 | 请求及行为 |
 | --- | --- |
 | `/tun/request` | 必须提交 `{"engine":"outline"}` 或 `{"engine":"tun2socks"}`，缺失或未知值返回 400；代理运行时创建单次 `ticket`，进入 `authorizing`；重复启动返回 409 |
-| `/tun/prepare` | 辅助进程提交 `{"interface":"en0","ticket":"启动标识"}`，验证真实网络接口并重建受保护的 Java 出口；返回 `session`、本机 `proxy` 地址和本次 `engine`，进入 `starting`；此时尚未安装系统路由 |
+| `/tun/prepare` | 辅助进程提交 `{"interface":"en0","ticket":"启动标识"}`；Windows 的 `interface` 使用字符串形式的接口索引，例如 `"9"`。验证真实网络接口并重建受保护的 Java 出口；返回 `session`、本机 `proxy` 地址和本次 `engine`，进入 `starting`；此时尚未安装系统路由 |
 | `/tun/heartbeat` | 辅助进程提交 `{"session":"会话标识","ready":true}`；仅路由与转发就绪后设置 `ready:true`，进入 `running`；返回 `stop`，为 true 时必须清理并退出 |
 | `/tun/stop` | 授权阶段立即撤销 ticket；其他活动阶段标记 `stopping`，由辅助进程清理；返回当前状态 |
-| `/tun/finish` | 辅助进程先移除路由并关闭 utun，再提交 `{"session":"会话标识","error":""}`；恢复普通内核出口并进入 `off`，非空错误进入 `failed`；旧会话退出不能覆盖新会话 |
+| `/tun/finish` | 辅助进程先移除路由并关闭 utun 或 Wintun，再提交 `{"session":"会话标识","error":""}`；恢复普通内核出口并进入 `off`，非空错误进入 `failed`；旧会话退出不能覆盖新会话 |
 
 辅助进程每两秒续约；授权超时 120 秒、准备阶段超时 30 秒、运行阶段失联 10 秒会使会话失效。授权超时保留普通代理；准备或运行期间失联会停止 Java 代理，避免在状态不明时继续转发。正常关闭 TUN 仍保持普通代理运行；停止代理或关闭内核也会通知或使辅助进程检测到退出条件。TUN 活动期间禁止修改本地监听地址/端口及直接重启代理，规则、模式与节点操作保持可用。
 

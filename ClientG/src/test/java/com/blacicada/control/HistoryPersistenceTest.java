@@ -60,7 +60,7 @@ class HistoryPersistenceTest {
     @Test
     void failedBatchRetriesWithoutLosingDataAndConfigurationRemainsIndependent() throws Exception {
         var path = directory.resolve("kernel.db");
-        try (var db = new KernelDatabase(path); var external = DriverManager.getConnection("jdbc:sqlite:" + path); var sql = external.createStatement()) {
+        try (var db = new KernelDatabase(path); var external = com.blacicada.io.SQLiteTestSupport.open(path); var sql = external.createStatement()) {
             var recorder = new HistoryRecorder(db, java.time.Clock.fixed(java.time.Instant.ofEpochMilli(2_000_000L), java.time.ZoneOffset.UTC));
             recorder.traffic(traffic(10));
             sql.execute("CREATE TRIGGER reject_history BEFORE INSERT ON traffic_minutes BEGIN SELECT RAISE(FAIL, '测试写入失败'); END");

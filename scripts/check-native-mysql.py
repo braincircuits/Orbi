@@ -42,7 +42,7 @@ def main():
             config.write_text(f'type=mysql\nhost=127.0.0.1\nport={server.getsockname()[1]}\n'
                               'database=test\nusername=test\npassword=test\nsslMode=disable\n')
             command = os.environ.get('NATIVE_CORE', str(root / 'ClientG/target/native/network-core'))
-            result = subprocess.run([command, '--web', '--storage-config', str(config), '--port', '0'],
+            result = subprocess.run([command, '-XX:MissingRegistrationReportingMode=Exit', '--web', '--storage-config', str(config), '--port', '0'],
                                     capture_output=True, timeout=15)
             thread.join(9)
             output = (result.stdout + result.stderr).decode(errors='replace')

@@ -92,7 +92,7 @@ class ControlHttpServerTest {
 
     @Test
     void cancelledTunAuthorizationCannotInstallRoutesLater() throws Exception {
-        Assumptions.assumeTrue(System.getProperty("os.name").startsWith("Mac"));
+        Assumptions.assumeTrue(System.getProperty("os.name").startsWith("Mac") || System.getProperty("os.name").startsWith("Windows"));
         ok("POST", "/tun/request", "{\"engine\":\"outline\"}", 409);
         ok("PUT", "/routing/mode", "{\"mode\":\"direct\"}", 200);
         ok("PATCH", "/settings", "{\"port\":0}", 200);
@@ -118,10 +118,11 @@ class ControlHttpServerTest {
     @ParameterizedTest
     @ValueSource(strings = {"outline", "tun2socks"})
     void tunLifecycleRestoresUnboundKernelAfterHelperCleanup(String engine) throws Exception {
-        Assumptions.assumeTrue(System.getProperty("os.name").startsWith("Mac"));
+        boolean windows = System.getProperty("os.name").startsWith("Windows");
+        Assumptions.assumeTrue(windows || System.getProperty("os.name").startsWith("Mac"));
         var network = Collections.list(NetworkInterface.getNetworkInterfaces()).stream().filter(n -> {
             try {
-                return n.getName().startsWith("en") && n.isUp() && !n.isLoopback() && !n.isPointToPoint();
+                return (windows || n.getName().startsWith("en")) && n.isUp() && !n.isLoopback() && !n.isPointToPoint();
             } catch (SocketException e) {
                 return false;
             }
@@ -131,7 +132,8 @@ class ControlHttpServerTest {
         ok("PATCH", "/settings", "{\"port\":0}", 200);
         ok("POST", "/proxy/start", null, 200);
         String ticket = ok("POST", "/tun/request", "{\"engine\":\"" + engine + "\"}", 200).getAsJsonObject("data").get("ticket").getAsString();
-        var prepared = ok("POST", "/tun/prepare", "{\"interface\":\"" + network.get().getName() + "\",\"ticket\":\"" + ticket + "\"}", 200).getAsJsonObject("data");
+        var interfaceName = windows ? Integer.toString(network.get().getIndex()) : network.get().getName();
+        var prepared = ok("POST", "/tun/prepare", "{\"interface\":\"" + interfaceName + "\",\"ticket\":\"" + ticket + "\"}", 200).getAsJsonObject("data");
         assertEquals(ticket, prepared.get("session").getAsString());
         assertEquals(engine, prepared.get("engine").getAsString());
         String heartbeat = "{\"session\":\"" + ticket + "\",\"ready\":true}";
@@ -192,7 +194,7 @@ class ControlHttpServerTest {
 
     KernelConfig persisted() throws Exception {
         // 通过独立只读 SQL 查询验证提交结果，不另开一个持有进程锁的内核。
-        try (var db = java.sql.DriverManager.getConnection("jdbc:sqlite:" + directory.resolve("kernel.db"))) {
+        try (var db = com.blacicada.io.SQLiteTestSupport.open(directory.resolve("kernel.db"))) {
             JsonObject root = control.configuration();
             try (var query = db.createStatement(); var rows = query.executeQuery("SELECT revision FROM metadata")) {
                 assertTrue(rows.next());
@@ -347,7 +349,17 @@ class ControlHttpServerTest {
         assertTrue(persisted().connections().isEmpty());
         web.writeEndpoint(directory.resolve("control.json"));
         assertTrue(Files.readString(directory.resolve("control.json")).contains(token));
-        assertEquals("rw-------", java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(directory.resolve("control.json"))));
+        var endpoint = directory.resolve("control.json");
+        if (Files.getFileStore(endpoint).supportsFileAttributeView("posix")) {
+            assertEquals("rw-------", java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(endpoint)));
+        } else {
+            var acl = Files.getFileAttributeView(endpoint, java.nio.file.attribute.AclFileAttributeView.class);
+            assertNotNull(acl);
+            assertFalse(acl.getAcl().isEmpty());
+            var owner = Files.getOwner(endpoint);
+            assertTrue(acl.getAcl().stream().filter(entry -> entry.type() == java.nio.file.attribute.AclEntryType.ALLOW)
+                    .allMatch(entry -> entry.principal().equals(owner)));
+        }
     }
 
     @Test
@@ -673,7 +685,7 @@ class ControlHttpServerTest {
         addProfile("a", "http2", 4433, false);
         var before = control.configuration();
         long unchanged = revision;
-        try (var db = java.sql.DriverManager.getConnection("jdbc:sqlite:" + directory.resolve("kernel.db"));
+        try (var db = com.blacicada.io.SQLiteTestSupport.open(directory.resolve("kernel.db"));
              var sql = db.createStatement()) {
             sql.execute("CREATE TRIGGER reject_settings BEFORE INSERT ON settings BEGIN SELECT RAISE(ABORT,'测试写入失败'); END");
             ok("PATCH", "/settings", "{\"port\":12345}", 503);
@@ -691,7 +703,7 @@ class ControlHttpServerTest {
         ok("PATCH", "/settings", "{\"port\":0,\"routingMode\":\"direct\"}", 200);
         ok("POST", "/proxy/start", null, 200);
         long unchanged = revision;
-        try (var reader = java.sql.DriverManager.getConnection("jdbc:sqlite:" + directory.resolve("kernel.db"))) {
+        try (var reader = com.blacicada.io.SQLiteTestSupport.open(directory.resolve("kernel.db"))) {
             reader.setAutoCommit(false);
             try (var query = reader.createStatement(); var rows = query.executeQuery("SELECT revision FROM metadata")) {
                 assertTrue(rows.next());

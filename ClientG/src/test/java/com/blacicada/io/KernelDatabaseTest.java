@@ -52,8 +52,21 @@ class KernelDatabaseTest {
             assertEquals("direct 0:0:0:0:0:0:0:1\nproxy www.example.com", stored.configuration().local().get("routesOverrides", ""));
             assertEquals(12345, stored.configuration().local().integer("port", 0, 0, 65535));
             assertThrows(IOException.class, () -> new KernelDatabase(file));
-            Path alias = directory.resolve("alias.db");
-            Files.createSymbolicLink(alias, file);
+        }
+    }
+
+    @Test
+    void symbolicAliasCannotBypassExclusiveDatabaseLock() throws Exception {
+        Path file = directory.resolve("kernel.db"), alias = directory.resolve("alias.db");
+        try (var database = new KernelDatabase(file)) {
+            try {
+                Files.createSymbolicLink(alias, file);
+            } catch (FileSystemException failure) {
+                // Windows 的普通会话可能没有创建符号链接的权限，其他配置恢复检查仍独立执行。
+                org.junit.jupiter.api.Assumptions.assumeFalse(System.getProperty("os.name").startsWith("Windows"),
+                        "当前 Windows 会话不能创建符号链接");
+                throw failure;
+            }
             assertThrows(IOException.class, () -> new KernelDatabase(alias));
         }
     }
@@ -90,7 +103,7 @@ class KernelDatabaseTest {
             database.stage(configuration(), 0);
             database.commit();
         }
-        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + newer); var statement = connection.createStatement()) {
+        try (var connection = com.blacicada.io.SQLiteTestSupport.open(newer); var statement = connection.createStatement()) {
             statement.execute("PRAGMA user_version=99");
         }
         byte[] before = Files.readAllBytes(newer);
@@ -106,7 +119,7 @@ class KernelDatabaseTest {
     @Test
     void summariesAddMinuteDeltasAcrossRestartsAndRetriesWithoutReadingOldTable() throws Exception {
         Path file = directory.resolve("kernel.db");
-        try (var database = new KernelDatabase(file); var connection = DriverManager.getConnection("jdbc:sqlite:" + file);
+        try (var database = new KernelDatabase(file); var connection = com.blacicada.io.SQLiteTestSupport.open(file);
              var sql = connection.createStatement()) {
             // 故意保留不同结构的旧表；新的查询不能读取、修改或删除它。
             sql.execute("CREATE TABLE traffic_samples (original TEXT)");
@@ -132,7 +145,7 @@ class KernelDatabaseTest {
                 assertTrue(row.getString(1).contains("按自然分钟合并业务流量"));
             }
         }
-        try (var database = new KernelDatabase(file); var connection = DriverManager.getConnection("jdbc:sqlite:" + file);
+        try (var database = new KernelDatabase(file); var connection = com.blacicada.io.SQLiteTestSupport.open(file);
              var sql = connection.createStatement(); var rows = sql.executeQuery("SELECT original FROM traffic_samples")) {
             assertTrue(rows.next());
             assertEquals("保留旧记录", rows.getString(1));

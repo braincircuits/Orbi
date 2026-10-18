@@ -105,7 +105,7 @@ class AccessAggregationTest {
     @Test
     void failedBatchesKeepNewArrivalsAndDuplicateCommitIsIdempotent() throws Exception {
         var path = directory.resolve("retry.db");
-        try (var db = new KernelDatabase(path); var sql = DriverManager.getConnection("jdbc:sqlite:" + path); var statement = sql.createStatement()) {
+        try (var db = new KernelDatabase(path); var sql = com.blacicada.io.SQLiteTestSupport.open(path); var statement = sql.createStatement()) {
             var clock = new MutableClock();
             var recorder = new HistoryRecorder(db, clock);
             recorder.access(event("example.com:443", "pending", 100));
@@ -167,7 +167,7 @@ class AccessAggregationTest {
     @Test
     void filtersAndCompoundCursorHandleTiesWithoutDuplicatesAndOldRowsStayUntouched() throws Exception {
         var path = directory.resolve("paging.db");
-        try (var db = new KernelDatabase(path); var sql = DriverManager.getConnection("jdbc:sqlite:" + path); var statement = sql.createStatement()) {
+        try (var db = new KernelDatabase(path); var sql = com.blacicada.io.SQLiteTestSupport.open(path); var statement = sql.createStatement()) {
             statement.execute("CREATE TABLE access_records(marker TEXT)");
             statement.execute("INSERT INTO access_records VALUES('旧访问记录')");
             var batch = new ArrayList<Map<String, Object>>();
@@ -186,7 +186,7 @@ class AccessAggregationTest {
             db.maintainTraffic(Instant.parse("2099-01-01T00:00:00Z").toEpochMilli(), ZoneOffset.UTC, true);
             assertEquals(4, rows(db).size());
         }
-        try (var db = new KernelDatabase(path); var sql = DriverManager.getConnection("jdbc:sqlite:" + path); var statement = sql.createStatement(); var row = statement.executeQuery("SELECT marker FROM access_records")) {
+        try (var db = new KernelDatabase(path); var sql = com.blacicada.io.SQLiteTestSupport.open(path); var statement = sql.createStatement(); var row = statement.executeQuery("SELECT marker FROM access_records")) {
             assertEquals(4, rows(db).size());
             assertTrue(row.next());
             assertEquals("旧访问记录", row.getString(1));

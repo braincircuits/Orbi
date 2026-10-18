@@ -6,10 +6,11 @@ PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 load_build_tools "$PROJECT_ROOT"
 MODE=${1:-build}
 case "$MODE" in build|--test|--bench|--measure-ack|--build-test-binary) ;; *) printf '%s\n' '用法：sh scripts/build-tun.sh [--test|--bench|--measure-ack|--build-test-binary]' >&2; exit 1 ;; esac
-if [ "$(uname -s)" != Darwin ]; then
-  printf '%s\n' '虚拟网卡辅助程序目前只支持在 macOS 构建。' >&2
-  exit 1
-fi
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) exec python3 "$PROJECT_ROOT/scripts/build-tun-windows.py" "$MODE" ;;
+  Darwin) ;;
+  *) printf '%s\n' '虚拟网卡辅助程序支持在 macOS 和 Windows 构建。' >&2; exit 1 ;;
+esac
 mkdir -p "$PROJECT_ROOT/target"
 BUILD_DIR=$(mktemp -d "$PROJECT_ROOT/target/tun-build.XXXXXX")
 trap 'rm -rf "$BUILD_DIR"' EXIT HUP INT TERM

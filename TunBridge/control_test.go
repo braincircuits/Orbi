@@ -41,6 +41,7 @@ func TestControlDoesNotFollowRedirectsWithCredentials(t *testing.T) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
+	privateTestFile(t, path)
 	client, err := loadControl(path, os.Getuid())
 	if err != nil {
 		t.Fatal(err)
@@ -65,28 +66,11 @@ func TestControlDiscoveryRequiresPrivateOwnedLoopbackFile(t *testing.T) {
 		}
 	}
 	write("http://127.0.0.1:9090")
+	privateTestFile(t, path)
 	if _, err := loadControl(path, os.Getuid()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadControl(path, os.Getuid()+1); err == nil {
-		t.Fatal("错误的文件所有者未被拒绝")
-	}
-	if err := os.Chmod(path, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadControl(path, os.Getuid()); err == nil {
-		t.Fatal("可被其他用户读取的发现文件未被拒绝")
-	}
-	if err := os.Chmod(path, 0600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(directory, "link.json")
-	if err := os.Symlink(path, link); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadControl(link, os.Getuid()); err == nil {
-		t.Fatal("符号链接未被拒绝")
-	}
+	assertDiscoveryPermissions(t, path)
 	for _, address := range []string{"http://example.com:9090", "https://127.0.0.1:9090", "http://127.0.0.1:9090/private", "http://user@127.0.0.1:9090"} {
 		write(address)
 		if _, err := loadControl(path, os.Getuid()); err == nil {

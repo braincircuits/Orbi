@@ -13,6 +13,8 @@ ClientG/target/native/network-core --web --db /配置绝对路径/kernel.db --po
 
 macOS 需要 Xcode 命令行工具。`GRAALVM_HOME` 默认读取 `JAVA_HOME`，要求该目录包含 `native-image`；`MAVEN_OFFLINE=1` 仅使用本地 Maven 缓存。构建输出在 `ClientG/target/native/`，第一个脚本参数可指定其他输出位置。构建阶段限制为 6 GB Java 堆和 6 个线程。
 
+Windows x64 使用相同的 `sh scripts/build-native.sh` 入口，要求安装 Visual Studio C++ 构建工具与 Windows SDK，并在 `build.local.properties` 配置 `graalvm.home`。入口自动加载 MSVC 环境，生成 `ClientG/target/native/network-core.exe`，使用兼容 CPU 指令集并禁止回退为 JVM 启动器。`sh scripts/package-windows.sh --native` 构建完整桌面应用，直接启动该内核，不携带 Java 运行时。Windows 的 QUIC DLL 与接口绑定 JNI 元数据位于 `ProxyCommon/src/main/resources-windows/META-INF/native-image/com.blacicada/windows-network/reachability-metadata.json`，仅由 Windows Maven profile 纳入；首次变更后必须验证 HTTP/3 与真实接口绑定。
+
 发布时保留程序旁的 GraalVM 动态库，例如 macOS 的 `libmanagement_ext.dylib`。Netty QUIC 和 DNS 原生库作为资源嵌入程序，由 Netty 在运行时加载。构建结果只适用于对应操作系统和 CPU 架构，不是跨平台可执行文件。本次验证环境为 macOS arm64、GraalVM CE 25.4.4.1.1、Netty 4.2.18.Final。
 
 Netty、Log4j 和 Disruptor 在运行时初始化，避免将构建机的日志上下文、线程和网络状态写入原生程序。原生程序不接受 `-jar` 或 JVM 的 `CompileCommand` 参数。

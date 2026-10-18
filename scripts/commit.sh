@@ -35,8 +35,10 @@ else
     validate_messages "$@"
 fi
 
-project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-repo_dir=$(git -C "$project_dir" rev-parse --show-toplevel)
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+# 统一 Git for Windows 的盘符路径与 Git Bash 路径，同时解析目录符号链接。
+repo_path=$(git -C "$project_dir" rev-parse --show-toplevel)
+repo_dir=$(CDPATH= cd -- "$repo_path" && pwd -P)
 [ "$repo_dir" = "$project_dir" ] || {
     echo '脚本必须位于项目 Git 仓库的 scripts 目录中。' >&2; exit 1;
 }

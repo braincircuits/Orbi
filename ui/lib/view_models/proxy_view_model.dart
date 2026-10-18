@@ -146,6 +146,7 @@ class ProxyViewModel extends ChangeNotifier {
   String resources = '';
   bool sidebarMaterial = false;
   bool get usesNativeKernel => nativeKernelExecutable(resources).isNotEmpty;
+  bool get usesBundledKernel => usesNativeKernel || bundledJarKernel(resources);
   int page = 0;
   bool loading = true, dirty = false, showPassword = false, pauseLogs = false;
   String filter = '全部';
@@ -575,7 +576,7 @@ class ProxyViewModel extends ChangeNotifier {
       final profile = ProxyProfile();
       final runtime = await preferences.read(proxy.directory);
       _tunEngine = runtime.tunEngine;
-      if (!usesNativeKernel) {
+      if (!usesBundledKernel) {
         profile.javaPath = runtime.javaPath;
         profile.jarPath = runtime.jarPath;
       }
@@ -587,7 +588,7 @@ class ProxyViewModel extends ChangeNotifier {
       baseRevision = null;
       dirty = true;
       final launch =
-          usesNativeKernel ||
+          usesBundledKernel ||
           profile.jarPath.isNotEmpty ||
           const String.fromEnvironment('PROXY_JAR').isNotEmpty;
       await proxy.connect(profile, resources, launch: launch);

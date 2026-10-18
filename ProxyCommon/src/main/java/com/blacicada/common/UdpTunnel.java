@@ -78,8 +78,8 @@ public final class UdpTunnel {
         return new Bootstrap().group(loop).channelFactory(() -> {
                     try {
                         // 必须在解析后选择原生地址族；macOS 上双栈通配端口可能与 IPv4 套接字重叠。
-                        var socket = network.bound() ? null : DatagramChannel.open(
-                                ipv4 ? java.net.StandardProtocolFamily.INET : java.net.StandardProtocolFamily.INET6);
+                        var socket = network.bound() && !System.getProperty("os.name").startsWith("Windows") ? null : network.nioUdp(
+                                ipv4 ? io.netty.channel.socket.InternetProtocolFamily.IPv4 : io.netty.channel.socket.InternetProtocolFamily.IPv6);
                         io.netty.channel.socket.DatagramChannel channel = socket == null ? network.udp(ipv4
                                 ? io.netty.channel.socket.InternetProtocolFamily.IPv4
                                 : io.netty.channel.socket.InternetProtocolFamily.IPv6) : new NioDatagramChannel(socket);

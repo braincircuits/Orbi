@@ -26,4 +26,29 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+    <profiles>
+        <profile>
+            <id>windows-network</id>
+            <activation><os><family>Windows</family></os></activation>
+            <build>
+                <resources>
+                    <resource><directory>src/main/resources</directory></resource>
+                    <resource><directory>src/main/resources-windows</directory></resource>
+                    <resource><directory>${project.build.directory}/generated-resources</directory><includes><include>**/*.dll</include></includes></resource>
+                </resources>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.6.4</version>
+                        <executions><execution><id>windows-interface-binding</id><phase>generate-resources</phase><goals><goal>exec</goal></goals>
+                            <configuration><executable>python3</executable><arguments>
+                                <argument>${project.basedir}/../scripts/build-windows-network.py</argument>
+                                <argument>${java.home}</argument>
+                                <argument>${project.build.directory}/generated-resources/native/windows-x86_64</argument>
+                            </arguments></configuration>
+                        </execution></executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

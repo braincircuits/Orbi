@@ -4,6 +4,9 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$ROOT/scripts/build-tools.sh"
 load_build_tools "$ROOT"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) exec python3 "$ROOT/scripts/build-native-windows.py" "$@" ;;
+esac
 if [ -z "$GRAALVM_HOME" ] || [ ! -x "$GRAALVM_HOME/bin/native-image" ]; then
     printf '%s\n' '请在 build.local.properties 的 graalvm.home 或 GRAALVM_HOME 中指定包含 native-image 的 GraalVM 25。' >&2
     exit 1

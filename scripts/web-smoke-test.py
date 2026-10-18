@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """通过真实内核验证 Web 控制、HTTP/2 与 HTTP/3 转发、热更新和退出。"""
 import http.client
+from contextlib import ExitStack, closing
 import http.server
 import json
 import os
@@ -25,14 +26,25 @@ def main():
     origin = http.server.ThreadingHTTPServer(("127.0.0.1", 0), smoke.Origin)
     threading.Thread(target=origin.serve_forever, daemon=True).start()
     processes = []
+    def stop_processes():
+        for process in reversed(processes):
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
     try:
-        with tempfile.TemporaryDirectory(prefix="network-web-smoke-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="network-web-smoke-") as temporary, ExitStack() as cleanup:
+            # Windows 不允许删除仍被服务端日志占用的目录，先关闭进程再清理文件。
+            cleanup.callback(stop_processes)
             base = pathlib.Path(temporary)
             cert = ROOT / "ClientG/src/test/resources/tls/localhost.crt"
             profile_ports = {}
             for protocol in ("http2", "http3"):
                 settings = base / (protocol + ".properties")
-                settings.write_text(f"bind=127.0.0.1\nport=0\nprotocols={protocol}\npassword=web-test-secret\ntls.cert={cert}\ntls.key={cert.with_suffix('.key')}\n")
+                settings.write_text(f"bind=127.0.0.1\nport=0\nprotocols={protocol}\npassword=web-test-secret\ntls.cert={cert.as_posix()}\ntls.key={cert.with_suffix('.key').as_posix()}\n")
                 profile_ports[protocol] = smoke.launch(ROOT / "Server/target/Server-1.0-SNAPSHOT.jar", settings,
                     "HTTP/2 代理服务端已监听" if protocol == "http2" else "HTTP/3 代理服务端已监听", processes)
             endpoint = base / "control.json"
@@ -46,13 +58,14 @@ def main():
                 for pattern in ("*.dylib", "*.so", "*.dll"):
                     for library in executable.parent.glob(pattern):
                         shutil.copy2(library, program_directory / library.name)
-            command = [str(copied)] if native else [os.environ.get("UI_TEST_JAVA", "java"), "--enable-native-access=ALL-UNNAMED", "-jar", str(copied)]
+            encoding_options = ["-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8"]
+            command = [str(copied), *encoding_options] if native else [os.environ.get("UI_TEST_JAVA", "java"), *encoding_options, "--enable-native-access=ALL-UNNAMED", "-jar", str(copied)]
             arguments = [*command, "--web", "--port", "0", "--endpoint-file", str(endpoint)]
             diagnostics = []
 
             def launch_kernel():
                 process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=base)
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", cwd=base)
                 processes.append(process)
                 threading.Thread(target=lambda: diagnostics.extend(process.stdout), daemon=True).start()
                 deadline = time.monotonic() + 15
@@ -66,7 +79,7 @@ def main():
             database_file = program_directory / "kernel.db"
             assert database_file.is_file(), "数据库必须位于程序同目录"
             assert not (base / "kernel.db").exists(), "数据库不应创建在启动工作目录"
-            duplicate = subprocess.run(arguments, cwd=base, capture_output=True, text=True, timeout=15)
+            duplicate = subprocess.run(arguments, cwd=base, capture_output=True, text=True, encoding="utf-8", timeout=15)
             assert duplicate.returncode != 0 and "数据库已被其他内核实例占用" in duplicate.stdout + duplicate.stderr
             assert json.loads(endpoint.read_text()) == access, "第二个实例不得覆盖管理发现文件"
             address = access["url"].removeprefix("http://")
@@ -128,7 +141,7 @@ def main():
             api("PUT", "/routing/direct-rules", {"rules": ""})
             api("POST", "/routing/import", {"document": exported, "strategy": "replace"})
             assert api("GET", "/routing/export") == exported
-            with sqlite3.connect(database_file) as database:
+            with closing(sqlite3.connect(database_file)) as database:
                 assert database.execute("SELECT direct_rules FROM routing").fetchone()[0] == "127.0.0.0/8"
                 assert database.execute("SELECT revision FROM metadata").fetchone()[0] == revision
             api("POST", "/proxy/stop")
@@ -149,14 +162,7 @@ def main():
             assert not any(access["token"] in line or "web-test-secret" in line for line in diagnostics)
             print("Web 联调通过：" + ("AOT 原生内核" if native else "JAR 内核") + "、HTTP/2、HTTP/3、HTTP/CONNECT、异步诊断、热更新、SQLite 自动保存、程序同目录默认路径、独占运行、重启恢复、路由导入导出及退出清理。")
     finally:
-        for process in reversed(processes):
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+        stop_processes()
         origin.shutdown()
         origin.server_close()
 

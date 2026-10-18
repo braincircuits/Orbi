@@ -30,8 +30,9 @@ class Origin(http.server.BaseHTTPRequestHandler):
 
 def launch(jar, config, marker, processes, captured=None):
     process = subprocess.Popen(
-        ["java", "--enable-native-access=ALL-UNNAMED", "-jar", str(jar), str(config)],
+        ["java", "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8", "--enable-native-access=ALL-UNNAMED", "-jar", str(jar), str(config)],
         cwd=config.parent, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        encoding="utf-8",
     )
     processes.append(process)
     lines = queue.Queue()

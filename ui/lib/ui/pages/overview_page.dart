@@ -277,14 +277,19 @@ class _OverviewPageState extends State<OverviewPage> {
                       : proxy.tunError.isNotEmpty
                       ? proxy.tunError
                       : switch (proxy.tunState) {
-                          'authorizing' => '正在连接系统辅助服务；首次安装或更新时需要授权',
+                          'authorizing' =>
+                            model.supportsTunService
+                                ? '正在连接系统辅助服务；首次安装或更新时需要授权'
+                                : '等待 Windows 管理员授权',
                           'starting' => '正在准备虚拟网卡和网络路由',
                           'running' => '正在接管系统 TCP / UDP 流量',
                           'stopping' => '正在恢复网络路由',
                           _ =>
                             proxy.tunSupported
-                                ? '首次安装辅助服务需管理员授权，之后启停无需重复输入密码'
-                                : '仅支持包含虚拟网卡组件的 macOS 内核',
+                                ? model.supportsTunService
+                                      ? '首次安装辅助服务需管理员授权，之后启停无需重复输入密码'
+                                      : '每次启动虚拟网卡时需要 Windows 管理员授权'
+                                : '需要包含虚拟网卡组件的 macOS 或 Windows 内核',
                         },
                 ),
                 trailing: SizedBox(

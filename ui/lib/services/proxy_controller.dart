@@ -30,6 +30,9 @@ String nativeKernelExecutable(String resources) {
       : const String.fromEnvironment('PROXY_NATIVE');
 }
 
+bool bundledJarKernel(String resources) =>
+    Platform.isWindows && File('$resources/proxy/client.jar').existsSync();
+
 class KernelLog {
   KernelLog(this.id, this.level, this.message, this.time);
   factory KernelLog.fromJson(Map<String, dynamic> value) => KernelLog(
@@ -44,6 +47,15 @@ class KernelLog {
   String toString() => '${time.isEmpty ? '' : '$time '} $level $message';
 }
 
+Directory defaultSupportDirectory() {
+  if (Platform.isWindows) {
+    return Directory('${File(Platform.resolvedExecutable).parent.path}/data');
+  }
+  return Directory(
+    '${Platform.environment['HOME']}/Library/Application Support/NetworkUI',
+  );
+}
+
 /// HTTP 负责命令，SSE 负责推送；释放界面资源不会退出独立运行的内核。
 class ProxyController extends ChangeNotifier {
   ProxyController({
@@ -52,11 +64,7 @@ class ProxyController extends ChangeNotifier {
     DatabasePreferences? databases,
   }) : _api = api ?? KernelApiClient(),
        databases = databases ?? DatabasePreferences(),
-       directory =
-           directory ??
-           Directory(
-             '${Platform.environment['HOME']}/Library/Application Support/NetworkUI',
-           );
+       directory = directory ?? defaultSupportDirectory();
   Directory directory;
   final DatabasePreferences databases;
   DatabaseSettings? _databaseSettings;
@@ -84,7 +92,8 @@ class ProxyController extends ChangeNotifier {
   bool get tunEnabled =>
       {'authorizing', 'starting', 'running', 'stopping'}.contains(tunState);
   bool get tunSupported =>
-      Platform.isMacOS && capabilities.contains('macosTun');
+      (Platform.isMacOS && capabilities.contains('macosTun')) ||
+      (Platform.isWindows && capabilities.contains('windowsTun'));
   bool configurationChanged = false;
   int revision = 0, configurationRevision = 0;
   int kernelGeneration = 0, networkGeneration = 0;
@@ -442,21 +451,27 @@ class ProxyController extends ChangeNotifier {
       var executable = nativeKernel;
       final arguments = <String>[];
       if (nativeKernel.isEmpty) {
-        // JAR 启动仅用于开发环境；原生应用包不会回退到 JVM。
-        final jar = profile.jarPath.isNotEmpty
+        // Windows JAR 应用包自带内核与运行时；开发环境允许显式选择路径。
+        final bundledJar = bundledJarKernel(resources);
+        final jar = bundledJar
+            ? '$resources/proxy/client.jar'
+            : profile.jarPath.isNotEmpty
             ? profile.jarPath
             : const String.fromEnvironment('PROXY_JAR');
         if (jar.isEmpty || !File(jar).existsSync()) {
           throw StateError('找不到代理内核，请在高级设置中选择新版 JAR');
         }
-        var java = profile.javaPath.isNotEmpty
+        var java = bundledJar
+            ? '$resources/proxy/runtime/bin/javaw.exe'
+            : profile.javaPath.isNotEmpty
             ? profile.javaPath
             : const String.fromEnvironment('JAVA_PATH');
         final javaHome = Platform.environment['JAVA_HOME'];
         if (java.isEmpty &&
             javaHome != null &&
-            File('$javaHome/bin/java').existsSync()) {
-          java = '$javaHome/bin/java';
+            File('$javaHome/bin/java${Platform.isWindows ? '.exe' : ''}')
+                .existsSync()) {
+          java = '$javaHome/bin/java${Platform.isWindows ? '.exe' : ''}';
         }
         if (java.isEmpty && Platform.isMacOS) {
           final result = await Process.run('/usr/libexec/java_home', [
@@ -740,15 +755,54 @@ class ProxyController extends ChangeNotifier {
     for (final c in profile.connections) {
       if (c.values['password']!.isNotEmpty) _secrets.add(c.values['password']!);
     }
+    final configuration = profile.runtimeConfiguration;
+    if (Platform.isWindows) {
+      // 内核返回绝对证书路径供界面显示，保存时收回 data 并使用相对路径。
+      for (final connection in configuration['connections'] as List) {
+        final values = connection['config'] as Map<String, dynamic>;
+        final ca = values['tls.ca'] as String? ?? '';
+        if (ca.isNotEmpty) values['tls.ca'] = await _portableCertificate(ca);
+      }
+    }
     final result = await _request(
       'PUT',
       'config',
-      body: profile.runtimeConfiguration,
+      body: configuration,
       expectedRevision: expected,
     );
     _acceptConfiguration(result);
     _status((await _request('GET', 'status'))['data'] as Map<String, dynamic>);
     return result['revision'] as int;
+  }
+
+  Future<String> _portableCertificate(String path) async {
+    // 内核以 SQLite 文件所在目录解析证书；远程数据库使用启动配置所在目录。
+    final databasePath = databaseSettings.path;
+    final base = databaseSettings.type == 'sqlite'
+        ? File(
+            File(databasePath).isAbsolute
+                ? databasePath
+                : '${directory.path}/$databasePath',
+          ).parent
+        : directory;
+    final root = await base.resolveSymbolicLinks();
+    final prefix = '$root${Platform.pathSeparator}';
+    final source = File(
+      File(path).isAbsolute ? path : '${directory.path}/$path',
+    );
+    final resolved = await source.resolveSymbolicLinks();
+    if (resolved.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return resolved.substring(prefix.length).replaceAll('\\', '/');
+    }
+    final certificates = await Directory('$root/certs').create();
+    final target = await certificates.createTemp('ca-');
+    try {
+      await source.copy('${target.path}/ca.crt');
+      return 'certs/${target.uri.pathSegments.where((part) => part.isNotEmpty).last}/ca.crt';
+    } catch (_) {
+      await target.delete(recursive: true);
+      rethrow;
+    }
   }
 
   Future<int> apply(
@@ -814,7 +868,9 @@ class ProxyController extends ChangeNotifier {
     if (!_disposed && tunState == 'authorizing') await stopTun();
   }
 
-  Future<void> waitTunStopped() => _operate(() async {
+  Future<void> waitTunStopped() => _operate(_waitTunStopped);
+
+  Future<void> _waitTunStopped() async {
     final deadline = DateTime.now().add(const Duration(seconds: 30));
     while (true) {
       _status(
@@ -827,7 +883,8 @@ class ProxyController extends ChangeNotifier {
       }
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-  });
+  }
+
   Future<int> selectConnection(String id, {int? expectedRevision}) =>
       _operate(() async {
         final result = await _request(
@@ -1034,34 +1091,52 @@ class ProxyController extends ChangeNotifier {
   }
 
   Future<void> shutdown() => _operate(() async {
+    final resumeEvents = _subscribed;
     unsubscribe();
-    // 内核退出会移除发现文件，此时不能继续请求缓存中的旧地址。
-    if (await endpointFile.exists()) {
-      try {
-        // 发现地址和令牌已校验时，即使状态 JSON 损坏，也允许显式退出内核。
-        if (!canShutdown) await attach();
-        if (canShutdown) await _request('POST', 'kernel/shutdown');
-      } catch (e) {
-        if (e is! SocketException && e is! HttpException) rethrow;
-        // 请求期间内核也可能完成退出；仍有发现文件时不能把断线当作退出成功。
-        if (await endpointFile.exists()) {
-          throw StateError('无法连接内核管理接口，尚不能确认内核已退出，请稍后重试');
+    try {
+      // 内核退出会移除发现文件，此时不能继续请求缓存中的旧地址。
+      if (await endpointFile.exists()) {
+        try {
+          // 发现地址和令牌已校验时，即使状态 JSON 损坏，也允许显式退出内核。
+          if (!canShutdown) await attach();
+          if (canShutdown) {
+            if (connected || tunEnabled) {
+              // 保留管理接口和真实出口，直到辅助程序移除网卡、路由并完成 finish。
+              // 主动请求停止，不依赖可能滞后的 SSE 状态判断是否存在 TUN 会话。
+              _status(
+                (await _request('POST', 'tun/stop'))['data']
+                    as Map<String, dynamic>,
+              );
+              if (tunEnabled) await _waitTunStopped();
+            }
+            await _request('POST', 'kernel/shutdown');
+          }
+        } catch (e) {
+          if (e is! SocketException && e is! HttpException) rethrow;
+          // 请求期间内核也可能完成退出；仍有发现文件时不能把断线当作退出成功。
+          if (await endpointFile.exists()) {
+            throw StateError('无法连接内核管理接口，尚不能确认内核已退出，请稍后重试');
+          }
         }
       }
+      unsubscribe();
+      connected = running = false;
+      connection = 'idle';
+      for (var i = 0; i < 60 && await endpointFile.exists(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      if (await endpointFile.exists()) {
+        throw StateError('等待内核退出超时，请检查运行日志后重试');
+      }
+      _base = null;
+      _token = '';
+      _lastEventId = '';
+      tunnels = const [];
+    } catch (_) {
+      // 退出被取消时继续同步状态，保留界面的监控和重试能力。
+      if (resumeEvents) subscribe();
+      rethrow;
     }
-    unsubscribe();
-    connected = running = false;
-    connection = 'idle';
-    for (var i = 0; i < 60 && await endpointFile.exists(); i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    }
-    if (await endpointFile.exists()) {
-      throw StateError('等待内核退出超时，请检查运行日志后重试');
-    }
-    _base = null;
-    _token = '';
-    _lastEventId = '';
-    tunnels = const [];
   });
   @override
   void dispose() {

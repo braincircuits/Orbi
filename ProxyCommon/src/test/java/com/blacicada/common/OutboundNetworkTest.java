@@ -15,6 +15,61 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(15)
 class OutboundNetworkTest {
     @Test
+    void windowsBoundSocketsExchangeTcpAndUdpInBothFamilies() throws Exception {
+        Assumptions.assumeTrue(System.getProperty("os.name").startsWith("Windows"));
+        for (String host : new String[]{"127.0.0.1", "::1"}) {
+            var address = InetAddress.getByName(host);
+            int index = NetworkInterface.getByInetAddress(address).getIndex();
+            var network = new OutboundNetwork(index);
+            // 在真实 Windows 套接字上执行 JNI 绑定并双向收发，覆盖描述符读取和字节序。
+            try (var origin = new ServerSocket(0, 1, address)) {
+                var channel = network.tcp();
+                var group = network.newGroup();
+                try {
+                    group.register(channel).sync();
+                    channel.connect(new InetSocketAddress(address, origin.getLocalPort())).sync();
+                    origin.setSoTimeout(3000);
+                    try (var accepted = origin.accept()) {
+                        accepted.setSoTimeout(3000);
+                        channel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{42})).sync();
+                        assertEquals(42, accepted.getInputStream().read());
+                    }
+                } finally {
+                    channel.close().sync();
+                    group.shutdownGracefully(0, 1, TimeUnit.SECONDS).sync();
+                }
+            }
+            var group = network.newGroup();
+            var resolver = network.resolver();
+            try (var origin = new DatagramSocket(new InetSocketAddress(address, 0))) {
+                origin.setSoTimeout(3000);
+                var channel = UdpTunnel.connect(group.next(), resolver,
+                        new InetSocketAddress(address, origin.getLocalPort()), network).sync().getNow();
+                try {
+                    var replies = new LinkedBlockingQueue<byte[]>();
+                    channel.pipeline().addLast(new SimpleChannelInboundHandler<ByteBuf>() {
+                        @Override protected void channelRead0(ChannelHandlerContext ctx, ByteBuf data) {
+                            byte[] bytes = new byte[data.readableBytes()]; data.readBytes(bytes); replies.add(bytes); ctx.read();
+                        }
+                    });
+                    channel.read();
+                    for (byte[] bytes : new byte[][]{new byte[0], new byte[]{1, 2, 3}}) {
+                        channel.writeAndFlush(Unpooled.wrappedBuffer(bytes)).sync();
+                        var packet = new DatagramPacket(new byte[10], 10);
+                        origin.receive(packet);
+                        assertEquals(bytes.length, packet.getLength());
+                        origin.send(packet);
+                        assertArrayEquals(bytes, replies.poll(3, TimeUnit.SECONDS));
+                    }
+                } finally { channel.close().sync(); }
+            } finally {
+                resolver.close();
+                group.shutdownGracefully(0, 1, TimeUnit.SECONDS).sync();
+            }
+        }
+    }
+
+    @Test
     void udpUsesResolvedNativeAddressFamily() throws Exception {
         var network = OutboundNetwork.DEFAULT;
         var group = network.newGroup();

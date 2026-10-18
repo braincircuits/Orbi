@@ -38,7 +38,7 @@ class TrafficCleanupScheduleTest {
     void cleansAtStartupAndLocalThreeAmWithCatchupAfterDowntime() throws Exception {
         var file = directory.resolve("schedule.db");
         var clock = new MutableClock();
-        try (var db = new KernelDatabase(file); var connection = DriverManager.getConnection("jdbc:sqlite:" + file); var sql = connection.createStatement()) {
+        try (var db = new KernelDatabase(file); var connection = com.blacicada.io.SQLiteTestSupport.open(file); var sql = connection.createStatement()) {
             sql.execute("INSERT INTO traffic_hours VALUES(0,3600000,1,1,60000)");
             var history = new HistoryRecorder(db, clock);
             assertEquals(0, count(sql));

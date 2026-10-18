@@ -244,7 +244,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
         collapsedShape: const Border(),
         title: const Text('内核运行环境', style: TextStyle(fontSize: 13)),
         children: [
-          if (model.usesNativeKernel)
+          if (model.usesBundledKernel)
             ui.caption('当前使用应用内置内核，无需配置外部运行环境。')
           else ...[
             ui.fileField('Java', 'java', model.java, '自动使用系统 Java 25'),

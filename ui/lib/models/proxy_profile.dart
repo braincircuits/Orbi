@@ -193,8 +193,11 @@ class ProxyProfile {
         return '协议、服务端地址和端口不能重复';
       }
       final ca = v['tls.ca']!;
+      // 使用宿主路径语义，保留 Windows 盘符、UNC 和 Unix 绝对路径。
       final caFile = File(
-        ca.startsWith('/') || baseDirectory == null ? ca : '$baseDirectory/$ca',
+        File(ca).isAbsolute || baseDirectory == null
+            ? ca
+            : '$baseDirectory/$ca',
       );
       if (ca.isNotEmpty && !caFile.existsSync()) {
         return '${c.name}：找不到信任证书，请重新选择';

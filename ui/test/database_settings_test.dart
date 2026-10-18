@@ -39,6 +39,28 @@ class SwitchingKernel extends ProxyController {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('Windows SQLite 路径保存为 data 内的相对路径，拒绝外部目录', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'portable-database-',
+    );
+    final store = DatabasePreferences();
+    try {
+      await store.write(
+        directory,
+        DatabaseSettings(path: '${directory.path}/数据库/kernel.db'),
+      );
+      expect((await store.read(directory)).path, '数据库/kernel.db');
+      await store.write(directory, const DatabaseSettings(path: 'kernel.db'));
+      expect((await store.read(directory)).path, 'kernel.db');
+      await expectLater(
+        store.write(directory, const DatabaseSettings(path: '../outside.db')),
+        throwsStateError,
+      );
+      expect((await store.read(directory)).path, 'kernel.db');
+    } finally {
+      await directory.delete(recursive: true);
+    }
+  }, skip: !Platform.isWindows);
   test('properties 保留密码中的空格、换行、反斜杠和中文，原子保存使用私有权限', () async {
     final directory = await Directory.systemTemp.createTemp(
       'database-settings-',

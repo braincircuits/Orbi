@@ -1,0 +1,16 @@
+{
+  "reflection": [
+    {
+      "type": "com.blacicada.common.WindowsSocketBinding",
+      "jniAccessible": true,
+      "methods": [{"name": "bind", "parameterTypes": ["java.nio.channels.SelectableChannel", "int", "boolean"]}]
+    },
+    {"type": "sun.nio.ch.SocketChannelImpl", "jniAccessible": true, "fields": [{"name": "fd"}]},
+    {"type": "sun.nio.ch.DatagramChannelImpl", "jniAccessible": true, "fields": [{"name": "fd"}]},
+    {"type": "java.io.FileDescriptor", "jniAccessible": true, "fields": [{"name": "fd"}]}
+  ],
+  "resources": [
+    {"glob": "native/windows-x86_64/orbi-network.dll"},
+    {"glob": "META-INF/native/netty_quiche42_windows_x86_64.dll"}
+  ]
+}

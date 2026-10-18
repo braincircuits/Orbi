@@ -1,8 +1,13 @@
 """用本地 SSH 替身验证部署流程，不连接真实服务器。"""
 
+import os
+import unittest
+
+if os.name != "posix":
+    raise unittest.SkipTest("部署测试依赖 POSIX 的 PTY、fcntl 和 termios")
+
 import fcntl
 import json
-import os
 from pathlib import Path
 import pty
 import select
@@ -10,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 import termios
-import unittest
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]

@@ -91,7 +91,7 @@ public final class KernelControl implements AutoCloseable {
 
     public synchronized Map<String, Object> info() {
         return Map.of("name", "network", "version", "1.0-SNAPSHOT", "apiVersion", 1, "storageBackend", database.backend(),
-                "capabilities", List.of("http2", "http3", "multiConnection", "immediateSwitch", "hotSettings", "hotRoutes", "hotProfiles", "events", "logs", "asyncTests", "tunnels", "targetRoutes", "routingMode", "overviewTests", "sqlite", "postgresql", "mysql", "routingImportExport", "profileExport", "traffic", "persistentHistory", "macosTun"));
+                "capabilities", List.of("http2", "http3", "multiConnection", "immediateSwitch", "hotSettings", "hotRoutes", "hotProfiles", "events", "logs", "asyncTests", "tunnels", "targetRoutes", "routingMode", "overviewTests", "sqlite", "postgresql", "mysql", "routingImportExport", "profileExport", "traffic", "persistentHistory", System.getProperty("os.name").startsWith("Windows") ? "windowsTun" : "macosTun"));
     }
 
     public synchronized Map<String, Object> metadata() {
@@ -505,8 +505,8 @@ public final class KernelControl implements AutoCloseable {
         ensureOpen();
         if (!Set.of("outline", "tun2socks").contains(engine))
             throw new ControlException(400, "INVALID_TUN_ENGINE", "TUN 转发组件无效");
-        if (!System.getProperty("os.name").startsWith("Mac"))
-            throw new ControlException(400, "UNSUPPORTED_PLATFORM", "虚拟网卡仅支持 macOS");
+        if (!System.getProperty("os.name").startsWith("Mac") && !System.getProperty("os.name").startsWith("Windows"))
+            throw new ControlException(400, "UNSUPPORTED_PLATFORM", "虚拟网卡仅支持 macOS 和 Windows");
         if (!tunSession.isEmpty()) throw new ControlException(409, "TUN_ACTIVE", "虚拟网卡正在运行或清理");
         if (!runtime.isRunning()) throw new ControlException(409, "PROXY_STOPPED", "请先开启代理");
         tunEngine = engine;
@@ -523,7 +523,14 @@ public final class KernelControl implements AutoCloseable {
         if (!tunState.equals("authorizing") || !tunSession.equals(ticket))
             throw new ControlException(409, "TUN_CANCELLED", "虚拟网卡启动已取消或失效");
         if (!runtime.isRunning()) throw new ControlException(409, "PROXY_STOPPED", "请先开启代理");
-        var network = java.net.NetworkInterface.getByName(interfaceName);
+        java.net.NetworkInterface network;
+        try {
+            network = System.getProperty("os.name").startsWith("Windows")
+                    ? java.net.NetworkInterface.getByIndex(Integer.parseInt(interfaceName))
+                    : java.net.NetworkInterface.getByName(interfaceName);
+        } catch (IllegalArgumentException e) {
+            throw new ControlException(400, "INVALID_INTERFACE", "真实网络接口索引无效");
+        }
         if (network == null || !network.isUp() || network.isLoopback() || network.isPointToPoint() || interfaceName.startsWith("utun"))
             throw new ControlException(400, "INVALID_INTERFACE", "需要可用的真实网络接口");
         if (!runtime.probeAddress().getAddress().isLoopbackAddress())

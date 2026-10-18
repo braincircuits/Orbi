@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' show AppExitResponse;
+import 'dart:ui' show AppExitResponse, AppExitType;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -59,6 +59,7 @@ class _ProxyHomeState extends State<ProxyHome> {
           top: box.localToGlobal(Offset.zero).dy,
           height: box.size.height,
           brightness: layout.$5.name,
+          backgroundColor: Theme.of(context).colorScheme.surface.toARGB32(),
         ),
       );
     });
@@ -121,6 +122,10 @@ class _ProxyHomeState extends State<ProxyHome> {
       );
     });
     NativeBridge.channel.setMethodCallHandler((call) async {
+      if (call.method == 'requestExit') {
+        await ServicesBinding.instance.exitApplication(AppExitType.cancelable);
+        return;
+      }
       if (call.method == 'showSettings') {
         unawaited(_showSettings());
         return;
@@ -572,7 +577,10 @@ class _ProxyHomeState extends State<ProxyHome> {
       height: DesktopDesign.toolbarHeight,
       color: Theme.of(context).colorScheme.surface,
       padding: EdgeInsets.only(
-        right: DesktopDesign.pageInset(MediaQuery.sizeOf(context).width),
+        // Windows 在共享工具栏右侧保留系统窗口按钮的位置。
+        right:
+            DesktopDesign.pageInset(MediaQuery.sizeOf(context).width) +
+            (Theme.of(context).platform == TargetPlatform.windows ? 138 : 0),
       ),
       key: const ValueKey('desktop-titlebar'),
       child: Row(
