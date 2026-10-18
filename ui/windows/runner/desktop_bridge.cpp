@@ -208,6 +208,7 @@ void DesktopBridge::AddTray() {
   tray_added_ = Shell_NotifyIconW(NIM_ADD, &tray) != FALSE;
 }
 DesktopBridge::~DesktopBridge() {
+  channel_->SetMethodCallHandler(nullptr);
   NOTIFYICONDATAW tray{sizeof(tray)}; tray.hWnd = window_; tray.uID = 1; Shell_NotifyIconW(NIM_DELETE, &tray);
 }
 std::optional<LRESULT> DesktopBridge::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {

@@ -243,7 +243,11 @@ Win32Window* Win32Window::GetThisFromHandle(HWND const window) noexcept {
 }
 
 void Win32Window::SetChildContent(HWND content) {
+  if (child_content_) {
+    RemoveWindowSubclass(child_content_, ChildSubclass, 1);
+  }
   child_content_ = content;
+  if (!content) return;
   SetParent(content, window_handle_);
   SetWindowSubclass(content, ChildSubclass, 1, reinterpret_cast<DWORD_PTR>(this));
   RECT frame = GetClientArea();

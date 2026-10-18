@@ -36,9 +36,10 @@ bool FlutterWindow::OnCreate() {
 
 void FlutterWindow::OnDestroy() {
   desktop_.reset();
-  if (flutter_controller_) {
-    flutter_controller_ = nullptr;
-  }
+  // 销毁 Flutter 子窗口会回调父窗口；先断开消息转发，避免访问已释放的视图。
+  SetChildContent(nullptr);
+  auto controller = std::move(flutter_controller_);
+  controller.reset();
 
   Win32Window::OnDestroy();
 }
@@ -62,7 +63,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
 
   switch (message) {
     case WM_FONTCHANGE:
-      flutter_controller_->engine()->ReloadSystemFonts();
+      if (flutter_controller_) {
+        flutter_controller_->engine()->ReloadSystemFonts();
+      }
       break;
   }
 

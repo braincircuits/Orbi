@@ -23,6 +23,29 @@ windows.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
 windows.OpenProcess.restype = ctypes.c_void_p
 windows.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
 windows.CloseHandle.argtypes = [ctypes.c_void_p]
+user = ctypes.WinDLL("user32", use_last_error=True)
+window_callback = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+user.EnumWindows.argtypes = [window_callback, ctypes.c_void_p]
+user.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+user.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+user.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+
+
+def request_exit(process):
+    # 调用与托盘共用的正常退出流程，强制终止会掩盖 Flutter 宿主析构时的崩溃。
+    found = []
+    @window_callback
+    def visit(window, _):
+        pid = ctypes.c_uint32()
+        user.GetWindowThreadProcessId(window, ctypes.byref(pid))
+        name = ctypes.create_unicode_buffer(128)
+        user.GetClassNameW(window, name, len(name))
+        if pid.value == process.pid and name.value == "FLUTTER_RUNNER_WIN32_WINDOW":
+            found.append(window)
+        return 1
+    user.EnumWindows(visit, None)
+    if len(found) != 1 or not user.PostMessageW(found[0], 0x0112, 0x1f00, 0):
+        raise RuntimeError("无法调用测试副本的正常退出入口")
 
 
 with tempfile.TemporaryDirectory(prefix="portable-host-", dir=root / "target") as temporary:
@@ -79,23 +102,38 @@ with tempfile.TemporaryDirectory(prefix="portable-host-", dir=root / "target") a
             assert not (outside / "kernel.db").exists()
             assert not (outside / "logc").exists()
             assert json.loads((application / "data/appearance.json").read_text())["themeMode"] == "dark"
+            # 内核接口先于界面初始化完成；留出首轮配置同步时间，避免忙碌保护取消退出。
+            time.sleep(1)
             print(f"真实界面启动通过：第 {attempt + 1} 次，工作目录独立，data 与证书路径正确", flush=True)
         finally:
-            if access:
-                try:
-                    api("POST", "/kernel/shutdown")
-                finally:
+            try:
+                if process.poll() is None:
+                    try:
+                        exit_started = time.monotonic()
+                        request_exit(process)
+                        process.wait(timeout=15)
+                        print(f"正常退出耗时：{(time.monotonic() - exit_started) * 1000:.0f} 毫秒", flush=True)
+                    except BaseException:
+                        # 仅在测试失败时回收本次副本，不把强制终止算作通过。
+                        if process.poll() is None:
+                            process.terminate()
+                            process.wait(timeout=10)
+                        raise
+                if process.returncode != 0:
+                    raise RuntimeError(f"测试界面异常退出：{process.returncode:#x}")
+                if endpoint.exists():
+                    raise RuntimeError("界面退出后控制接口文件仍存在")
+            finally:
+                if access:
                     handle = windows.OpenProcess(0x100000, 0, access["pid"])
                     if handle:
                         try:
+                            if endpoint.exists():
+                                api("POST", "/kernel/shutdown")
                             if windows.WaitForSingleObject(handle, 15000) != 0:
                                 raise RuntimeError("测试内核退出超时")
                         finally:
                             windows.CloseHandle(handle)
-            if process.poll() is None:
-                # 只关闭本测试副本；用户正在运行的旧版不属于此进程。
-                process.terminate()
-            process.wait(timeout=10)
         if attempt == 0:
             moved = base / "移动后 程序"
             application.rename(moved)

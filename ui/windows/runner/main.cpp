@@ -34,6 +34,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     ::DispatchMessage(&msg);
   }
 
+  // 托盘退出可能只结束消息循环；在成员析构和 COM 释放前主动销毁窗口及引擎。
+  window.Destroy();
   ::CoUninitialize();
   return EXIT_SUCCESS;
 }
