@@ -7,10 +7,12 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
+import io.netty.util.NetUtil;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.ScheduledFuture;
+import io.netty.util.concurrent.Promise;
 
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -49,6 +51,8 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     private boolean ready;
     private boolean failed;
     private ScheduledFuture<?> timeout;
+    private boolean tlsAccepted;
+    private Promise<Void> tlsReady;
 
     LocalRequestHandler(ProxyConfig config, SessionRouter session, DnsAddressResolverGroup resolver, Supplier<DirectRoutes> routes, TrafficStatistics traffic,
                         Consumer<Map<String, Object>> accessRecorder, OutboundNetwork network, KernelDns dns) {
@@ -96,7 +100,13 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
             ctx.channel().config().setAutoRead(false);
             if (!tunnel) prepareHttpRequest(ctx, target);
             if (fromTun && target.port() == 53) acceptDns(ctx);
-            else route(ctx, target);
+            else {
+                var rules = routeSource.get();
+                if (fromTun && !udp && target.port() == 443
+                        && (NetUtil.isValidIpV4Address(target.host()) || NetUtil.isValidIpV6Address(target.host()))
+                        && rules.mode().equals("rules") && rules.override(target.host()) == null) acceptTls(ctx, target);
+                else route(ctx, target, fromTun ? dns.domain(target.host()) : null);
+            }
         } else if (msg instanceof HttpContent content && request != null) {
             if (!content.decoderResult().isSuccess()) {
                 content.release();
@@ -170,11 +180,34 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
         });
     }
 
-    private void route(ChannelHandlerContext ctx, Authority target) {
+    /**
+     * 优先读取 TLS 握手中的 SNI 来选择规则，缺失时再使用 DNS 关联。
+     * 不解密 TLS、不修改握手、不改变应用选定的 IP，也不污染共享 DNS 关联。
+     */
+    private void acceptTls(ChannelHandlerContext ctx, Authority target) {
+        tlsReady = ctx.executor().newPromise();
+        ctx.writeAndFlush(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK)).addListener(sent -> {
+            if (!sent.isSuccess() || !ctx.channel().isActive()) {
+                ctx.close();
+                return;
+            }
+            tlsAccepted = true;
+            ctx.pipeline().addBefore(ctx.name(), "tunSni", new TunTlsRouter(domain -> {
+                ctx.channel().config().setAutoRead(false);
+                route(ctx, target, domain);
+                return tlsReady;
+            }, () -> dns.domain(target.host())));
+            ctx.pipeline().remove("responseEncoder");
+            ctx.pipeline().remove("requestDecoder");
+            ctx.channel().read();
+        });
+    }
+
+    private void route(ChannelHandlerContext ctx, Authority target, String domain) {
         requestTarget = target;
         requestConfig = session.config();
         requestMethod = udp ? "CONNECT-UDP" : request.method().name();
-        localSession = new LocalSession(ctx.channel(), target, fromTun ? dns.domain(target.host()) : null, resolver.getResolver(ctx.executor()), address -> {
+        localSession = new LocalSession(ctx.channel(), target, domain, resolver.getResolver(ctx.executor()), address -> {
             if (failed || !ctx.channel().isActive()) return;
             if (address == null) connectProxy(ctx, target);
             else connectDirect(ctx, address);
@@ -274,6 +307,15 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
      * 成功响应写入后再接管协议；先安装转发处理器，再移除解码器以接收其累积数据。
      */
     private void acceptTunnel(ChannelHandlerContext ctx) {
+        if (tlsAccepted) {
+            releasePending();
+            ctx.pipeline().replace(this, "relay", new RelayHandler(remote));
+            // 转发处理器安装完毕后，才释放嗅探器缓存的原始握手数据。
+            tlsReady.trySuccess(null);
+            remote.read();
+            ctx.channel().read();
+            return;
+        }
         var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
         if (udp) response.headers().set(UdpTunnel.HEADER, UdpTunnel.VALUE);
         ctx.writeAndFlush(response).addListener(f -> {
@@ -325,6 +367,11 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
         releasePending();
         if (remote != null) remote.close();
         if (!ctx.channel().isActive()) return;
+        if (tlsAccepted) {
+            tlsReady.cancel(false);
+            ctx.close();
+            return;
+        }
         var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status);
         response.headers().setInt(HttpHeaderNames.CONTENT_LENGTH, 0).set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
         ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
@@ -343,6 +390,7 @@ final class LocalRequestHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
         failed = true;
+        if (tlsReady != null) tlsReady.cancel(false);
         if (opening != null && !opening.isDone()) opening.cancel(false);
         if (timeout != null) timeout.cancel(false);
         releasePending();
